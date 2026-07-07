@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import html
 import json
 import os
@@ -7,8 +8,11 @@ import string
 import re
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
@@ -33,12 +37,18 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 DATA_DIR = "runtime"
 HISTORY_DIR = os.path.join(DATA_DIR, "history")
 HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
+CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_AUTH_FALLBACK = os.getenv("GMAIL_AUTH_FALLBACK", "auto").strip().lower()
 GMAIL_OAUTH_REDIRECT_BASE = os.getenv("GMAIL_OAUTH_REDIRECT_BASE", "http://localhost:8000").rstrip("/")
+CODEX_USAGE_BASE_URL = os.getenv("CODEX_USAGE_BASE_URL", "https://chatgpt.com").rstrip("/")
+CODEX_CLIENT_ID = os.getenv("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann").strip()
+CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", "https://auth.openai.com/oauth/token").strip()
+CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 AUTH_LOCK = threading.Lock()
 HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
+CODEX_ACCOUNTS_LOCK = threading.Lock()
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
 ACCESS_COOKIE_NAME = "chatgpt_code_access"
@@ -173,6 +183,700 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def now_ts() -> int:
+    return int(time.time())
+
+
+def decode_jwt_claims(token: str) -> Dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8"))
+        value = json.loads(decoded.decode("utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def normalize_scoped_identity_value(value: Optional[str], marker: str) -> Optional[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+
+    scoped = raw.rsplit("::", 1)[-1]
+    for segment in scoped.split("|"):
+        segment = segment.strip()
+        if segment.startswith(marker):
+            found = segment[len(marker) :].strip()
+            if found:
+                return found
+
+    if "::" in raw or "|" in raw or "=" in raw or raw.startswith("import-sub-"):
+        return None
+    return raw
+
+
+def normalize_chatgpt_account_id(value: Optional[str]) -> Optional[str]:
+    return normalize_scoped_identity_value(value, "cgpt=")
+
+
+def normalize_workspace_id(value: Optional[str]) -> Optional[str]:
+    return normalize_scoped_identity_value(value, "ws=")
+
+
+def extract_auth_claims(claims: Dict[str, Any]) -> Dict[str, Any]:
+    auth = claims.get("https://api.openai.com/auth")
+    return auth if isinstance(auth, dict) else {}
+
+
+def extract_chatgpt_account_id_from_token(token: str) -> Optional[str]:
+    claims = decode_jwt_claims(token)
+    direct = normalize_chatgpt_account_id(str(claims.get("chatgpt_account_id", "") or ""))
+    if direct:
+        return direct
+    auth = extract_auth_claims(claims)
+    return normalize_chatgpt_account_id(str(auth.get("chatgpt_account_id", "") or ""))
+
+
+def extract_workspace_id_from_token(token: str) -> Optional[str]:
+    claims = decode_jwt_claims(token)
+    for key in ("workspace_id", "chatgpt_account_id", "organization_id", "org_id"):
+        found = normalize_workspace_id(str(claims.get(key, "") or ""))
+        if found:
+            return found
+
+    auth = extract_auth_claims(claims)
+    orgs = auth.get("organizations")
+    if isinstance(orgs, list):
+        default_org = next(
+            (item for item in orgs if isinstance(item, dict) and item.get("is_default")),
+            None,
+        )
+        for item in (default_org, orgs[0] if orgs else None):
+            if isinstance(item, dict):
+                found = normalize_workspace_id(str(item.get("id", "") or ""))
+                if found:
+                    return found
+
+    for key in ("workspace_id", "chatgpt_account_id", "organization_id", "org_id"):
+        found = normalize_workspace_id(str(auth.get(key, "") or ""))
+        if found:
+            return found
+    return None
+
+
+def extract_plan_type_from_claims(claims: Dict[str, Any]) -> Optional[str]:
+    auth = extract_auth_claims(claims)
+    raw = str(auth.get("chatgpt_plan_type", "") or "").strip().lower()
+    return raw or None
+
+
+def extract_token_exp(token: str) -> Optional[int]:
+    exp = decode_jwt_claims(token).get("exp")
+    return exp if isinstance(exp, int) else None
+
+
+def optional_string_any(sources: List[tuple]) -> Optional[str]:
+    for source, key in sources:
+        if not isinstance(source, dict):
+            continue
+        value = source.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                return value
+    return None
+
+
+def required_string_any(sources: List[tuple], label: str) -> str:
+    value = optional_string_any(sources)
+    if not value:
+        raise ValueError(f"缺少 {label}")
+    return value
+
+
+def parse_codex_auth_items(raw_text: str) -> List[Dict[str, Any]]:
+    value = json.loads(raw_text)
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        raise ValueError("Codex 授权内容必须是 JSON 对象或数组")
+
+    for key in ("items", "accounts"):
+        items = value.get(key)
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+        if isinstance(items, dict):
+            nested = [item for item in items.values() if isinstance(item, dict)]
+            if nested:
+                return nested
+    return [value]
+
+
+def extract_codex_token_payload(item: Dict[str, Any]) -> Dict[str, str]:
+    tokens = item.get("tokens")
+    if not isinstance(tokens, dict):
+        tokens = item
+    user = item.get("user") if isinstance(item.get("user"), dict) else {}
+
+    access_token = required_string_any(
+        [
+            (tokens, "access_token"),
+            (tokens, "accessToken"),
+            (item, "access_token"),
+            (item, "accessToken"),
+        ],
+        "access_token/accessToken",
+    )
+    return {
+        "access_token": access_token,
+        "id_token": optional_string_any(
+            [
+                (tokens, "id_token"),
+                (tokens, "idToken"),
+                (item, "id_token"),
+                (item, "idToken"),
+            ]
+        )
+        or "",
+        "refresh_token": optional_string_any(
+            [
+                (tokens, "refresh_token"),
+                (tokens, "refreshToken"),
+                (item, "refresh_token"),
+                (item, "refreshToken"),
+            ]
+        )
+        or "",
+        "account_id_hint": optional_string_any(
+            [
+                (tokens, "account_id"),
+                (tokens, "accountId"),
+                (item, "account_id"),
+                (item, "accountId"),
+            ]
+        )
+        or "",
+        "chatgpt_account_id_hint": optional_string_any(
+            [
+                (tokens, "chatgpt_account_id"),
+                (tokens, "chatgptAccountId"),
+                (item, "chatgpt_account_id"),
+                (item, "chatgptAccountId"),
+            ]
+        )
+        or "",
+        "workspace_id_hint": optional_string_any(
+            [
+                (tokens, "workspace_id"),
+                (tokens, "workspaceId"),
+                (item, "workspace_id"),
+                (item, "workspaceId"),
+            ]
+        )
+        or "",
+        "email": optional_string_any([(item, "email"), (user, "email")]) or "",
+    }
+
+
+def token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def build_codex_account_record(
+    payload: Dict[str, str], existing: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    access_token = payload["access_token"]
+    id_token = payload.get("id_token") or access_token
+    access_claims = decode_jwt_claims(access_token)
+    id_claims = decode_jwt_claims(id_token)
+    claims = id_claims or access_claims
+
+    subject = str(access_claims.get("sub") or claims.get("sub") or "").strip()
+    email = (
+        payload.get("email")
+        or str(claims.get("email") or "").strip()
+        or str(access_claims.get("email") or "").strip()
+    )
+    chatgpt_account_id = (
+        normalize_chatgpt_account_id(payload.get("chatgpt_account_id_hint"))
+        or extract_chatgpt_account_id_from_token(id_token)
+        or extract_chatgpt_account_id_from_token(access_token)
+    )
+    workspace_id = (
+        normalize_workspace_id(payload.get("workspace_id_hint"))
+        or extract_workspace_id_from_token(id_token)
+        or extract_workspace_id_from_token(access_token)
+        or chatgpt_account_id
+    )
+    plan_type = extract_plan_type_from_claims(access_claims) or extract_plan_type_from_claims(claims)
+
+    if chatgpt_account_id and workspace_id and chatgpt_account_id != workspace_id:
+        account_id = f"{chatgpt_account_id}::ws={workspace_id}"
+    else:
+        account_id = (
+            chatgpt_account_id
+            or workspace_id
+            or payload.get("account_id_hint")
+            or subject
+            or f"codex-{token_fingerprint(access_token)}"
+        )
+
+    now = now_iso()
+    previous = existing or {}
+    record = {
+        "id": previous.get("id") or account_id,
+        "label": email or chatgpt_account_id or workspace_id or account_id,
+        "email": email,
+        "subject": subject,
+        "chatgpt_account_id": chatgpt_account_id,
+        "workspace_id": workspace_id,
+        "chatgpt_plan_type": plan_type,
+        "account_id_hint": payload.get("account_id_hint") or "",
+        "token": {
+            "access_token": access_token,
+            "id_token": payload.get("id_token") or "",
+            "refresh_token": payload.get("refresh_token") or "",
+        },
+        "access_token_expires_at": extract_token_exp(access_token),
+        "subscription": previous.get("subscription"),
+        "usage": previous.get("usage"),
+        "status": "已导入",
+        "error": None,
+        "created_at": previous.get("created_at") or now,
+        "updated_at": now,
+        "last_refresh_at": previous.get("last_refresh_at"),
+    }
+    return record
+
+
+def normalize_codex_base_url(base_url: str) -> str:
+    base = base_url.strip().rstrip("/")
+    if not base:
+        base = "https://chatgpt.com"
+    is_chatgpt_host = base.startswith("https://chatgpt.com") or base.startswith(
+        "https://chat.openai.com"
+    )
+    if is_chatgpt_host and "/backend-api" not in base:
+        base += "/backend-api"
+    return base
+
+
+def codex_usage_endpoint() -> str:
+    base = normalize_codex_base_url(CODEX_USAGE_BASE_URL)
+    if "/backend-api" in base:
+        return f"{base}/wham/usage"
+    return f"{base}/api/codex/usage"
+
+
+def codex_accounts_check_endpoint() -> str:
+    return f"{normalize_codex_base_url(CODEX_USAGE_BASE_URL)}/accounts/check/v4-2023-04-27"
+
+
+def summarize_response_body(body: str) -> str:
+    text = body.strip()
+    if not text:
+        return ""
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            for key in ("message", "detail", "error", "code"):
+                found = value.get(key)
+                if isinstance(found, str) and found.strip():
+                    return found.strip()[:240]
+                if isinstance(found, dict):
+                    nested = found.get("message") or found.get("code")
+                    if isinstance(nested, str) and nested.strip():
+                        return nested.strip()[:240]
+    except Exception:
+        pass
+    return " ".join(text.split())[:240]
+
+
+def http_json(url: str, headers: Dict[str, str], data: Optional[bytes] = None) -> Dict[str, Any]:
+    method = "POST" if data is not None else "GET"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=CODEX_HTTP_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("Content-Type", "")
+            body = response.read().decode("utf-8", errors="replace")
+            if "text/html" in content_type.lower():
+                raise RuntimeError(f"上游返回 HTML: {summarize_response_body(body)}")
+            if not body.strip():
+                return {}
+            value = json.loads(body)
+            return value if isinstance(value, dict) else {"value": value}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        suffix = summarize_response_body(body)
+        detail = f" status {e.code} {e.reason}"
+        if suffix:
+            detail += f": {suffix}"
+        raise RuntimeError(detail) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(str(e.reason)) from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"JSON 解析失败: {e}") from e
+
+
+def parse_subscription_timestamp(value: Any) -> Optional[int]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return int(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return None
+
+
+def normalize_account_plan_value(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    aliases = {"education": "edu"}
+    return aliases.get(normalized, normalized)
+
+
+def build_subscription_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
+    account = entry.get("account") if isinstance(entry.get("account"), dict) else {}
+    entitlement = entry.get("entitlement") if isinstance(entry.get("entitlement"), dict) else {}
+
+    account_plan_type = normalize_account_plan_value(account.get("plan_type")) or normalize_account_plan_value(
+        entitlement.get("subscription_plan")
+    )
+    plan_type = normalize_account_plan_value(entitlement.get("subscription_plan")) or account_plan_type
+    expires_at = parse_subscription_timestamp(entitlement.get("expires_at"))
+    renews_at = (
+        parse_subscription_timestamp(entitlement.get("renews_at"))
+        or parse_subscription_timestamp(entitlement.get("next_renewal_at"))
+        or parse_subscription_timestamp(entitlement.get("next_credit_grant_update"))
+        or parse_subscription_timestamp(entitlement.get("renewal_date"))
+    )
+    if not renews_at and entitlement.get("will_renew") and expires_at:
+        renews_at = expires_at
+
+    has_subscription = entitlement.get("has_active_subscription")
+    if has_subscription is None:
+        has_subscription = (
+            account.get("has_subscription")
+            if account.get("has_subscription") is not None
+            else account.get("has_active_subscription")
+        )
+    if has_subscription is None:
+        has_subscription = account.get("is_paid_subscription_active")
+    if has_subscription is None:
+        has_subscription = bool(
+            (account_plan_type and account_plan_type != "free")
+            or (plan_type and plan_type != "free")
+            or expires_at
+            or renews_at
+        )
+
+    return {
+        "has_subscription": bool(has_subscription),
+        "account_plan_type": account_plan_type,
+        "plan_type": plan_type,
+        "expires_at": expires_at,
+        "renews_at": renews_at,
+    }
+
+
+def fetch_codex_subscription(access_token: str, account_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not account_id:
+        return None
+    value = http_json(
+        codex_accounts_check_endpoint(),
+        {
+            "Authorization": f"Bearer {access_token}",
+            "Origin": "https://chatgpt.com",
+            "Referer": "https://chatgpt.com/",
+            "Accept": "application/json",
+        },
+    )
+    accounts = value.get("accounts") if isinstance(value.get("accounts"), dict) else {}
+    if not accounts:
+        return {
+            "has_subscription": False,
+            "account_plan_type": None,
+            "plan_type": None,
+            "expires_at": None,
+            "renews_at": None,
+        }
+
+    matched = accounts.get(account_id)
+    if isinstance(matched, dict):
+        return build_subscription_snapshot(matched)
+
+    snapshots = []
+    default_snapshot = None
+    paid_snapshot = None
+    for entry in accounts.values():
+        if not isinstance(entry, dict):
+            continue
+        snapshot = build_subscription_snapshot(entry)
+        snapshots.append(snapshot)
+        account = entry.get("account") if isinstance(entry.get("account"), dict) else {}
+        if default_snapshot is None and account.get("is_default"):
+            default_snapshot = snapshot
+        if paid_snapshot is None and snapshot.get("account_plan_type") not in (None, "free"):
+            paid_snapshot = snapshot
+    return default_snapshot or paid_snapshot or (snapshots[0] if snapshots else None)
+
+
+def get_nested_number(value: Dict[str, Any], path: List[str]) -> Optional[float]:
+    current: Any = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, (int, float)):
+        return float(current)
+    return None
+
+
+def get_nested_int(value: Dict[str, Any], path: List[str]) -> Optional[int]:
+    found = get_nested_number(value, path)
+    return int(found) if found is not None else None
+
+
+def parse_usage_snapshot(value: Dict[str, Any]) -> Dict[str, Any]:
+    window_seconds = get_nested_int(value, ["rate_limit", "primary_window", "limit_window_seconds"])
+    secondary_window_seconds = get_nested_int(
+        value, ["rate_limit", "secondary_window", "limit_window_seconds"]
+    )
+    return {
+        "used_percent": get_nested_number(value, ["rate_limit", "primary_window", "used_percent"]),
+        "window_minutes": (window_seconds + 59) // 60 if window_seconds is not None else None,
+        "resets_at": get_nested_int(value, ["rate_limit", "primary_window", "reset_at"]),
+        "secondary_used_percent": get_nested_number(
+            value, ["rate_limit", "secondary_window", "used_percent"]
+        ),
+        "secondary_window_minutes": (
+            (secondary_window_seconds + 59) // 60
+            if secondary_window_seconds is not None
+            else None
+        ),
+        "secondary_resets_at": get_nested_int(
+            value, ["rate_limit", "secondary_window", "reset_at"]
+        ),
+        "credits": value.get("credits"),
+        "captured_at": now_ts(),
+    }
+
+
+def classify_usage_status(snapshot: Optional[Dict[str, Any]]) -> str:
+    if not snapshot:
+        return "unknown"
+    primary_present = snapshot.get("used_percent") is not None and snapshot.get("window_minutes") is not None
+    if not primary_present:
+        return "unknown"
+    if float(snapshot.get("used_percent") or 0) >= 100:
+        return "unavailable"
+    secondary_present = snapshot.get("secondary_used_percent") is not None or snapshot.get(
+        "secondary_window_minutes"
+    ) is not None
+    secondary_complete = snapshot.get("secondary_used_percent") is not None and snapshot.get(
+        "secondary_window_minutes"
+    ) is not None
+    if not secondary_present or not secondary_complete:
+        return "primary_window_available_only"
+    if float(snapshot.get("secondary_used_percent") or 0) >= 100:
+        return "unavailable"
+    return "available"
+
+
+def fetch_codex_usage(access_token: str, workspace_id: Optional[str]) -> Dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "codex_cli_rs/0.0.0",
+        "originator": "codex_cli_rs",
+    }
+    if workspace_id:
+        headers["ChatGPT-Account-ID"] = workspace_id
+    return parse_usage_snapshot(http_json(codex_usage_endpoint(), headers))
+
+
+def should_refresh_codex_token(error: str) -> bool:
+    return " status 401 " in error or "token" in error.lower()
+
+
+def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
+    token = record.get("token") if isinstance(record.get("token"), dict) else {}
+    refresh_token = str(token.get("refresh_token") or "").strip()
+    if not refresh_token:
+        return False
+
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "client_id": CODEX_CLIENT_ID,
+            "refresh_token": refresh_token,
+            "scope": "openid profile email",
+        }
+    ).encode("utf-8")
+    value = http_json(
+        CODEX_REFRESH_TOKEN_URL,
+        {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        data=data,
+    )
+    access_token = str(value.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("刷新 token 响应缺少 access_token")
+
+    token["access_token"] = access_token
+    if isinstance(value.get("refresh_token"), str) and value["refresh_token"].strip():
+        token["refresh_token"] = value["refresh_token"].strip()
+    if isinstance(value.get("id_token"), str) and value["id_token"].strip():
+        token["id_token"] = value["id_token"].strip()
+    record["token"] = token
+
+    refreshed_payload = {
+        "access_token": token["access_token"],
+        "id_token": token.get("id_token") or "",
+        "refresh_token": token.get("refresh_token") or "",
+        "account_id_hint": str(record.get("account_id_hint") or ""),
+        "chatgpt_account_id_hint": str(record.get("chatgpt_account_id") or ""),
+        "workspace_id_hint": str(record.get("workspace_id") or ""),
+        "email": str(record.get("email") or ""),
+    }
+    refreshed_record = build_codex_account_record(refreshed_payload, record)
+    record.update(refreshed_record)
+    record["status"] = "token 已刷新"
+    return True
+
+
+def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    updated = dict(record)
+    updated["token"] = dict(record.get("token") or {})
+    if not str(updated["token"].get("access_token") or "").strip():
+        raise ValueError("账号缺少 access_token")
+
+    errors: List[str] = []
+    refreshed_once = False
+    for attempt in range(2):
+        errors = []
+        access_token = str(updated["token"].get("access_token") or "").strip()
+        chatgpt_account_id = str(updated.get("chatgpt_account_id") or "").strip() or None
+        workspace_id = str(updated.get("workspace_id") or "").strip() or chatgpt_account_id
+
+        try:
+            subscription = fetch_codex_subscription(access_token, chatgpt_account_id)
+            if subscription is not None:
+                updated["subscription"] = subscription
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"订阅信息: {e}")
+
+        try:
+            usage = fetch_codex_usage(access_token, workspace_id)
+            updated["usage"] = usage
+            updated["usage_status"] = classify_usage_status(usage)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"额度信息: {e}")
+
+        if (
+            errors
+            and attempt == 0
+            and not refreshed_once
+            and any(should_refresh_codex_token(error) for error in errors)
+        ):
+            try:
+                refreshed_once = refresh_codex_access_token(updated)
+                if refreshed_once:
+                    continue
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"刷新 token: {e}")
+        break
+
+    updated["last_refresh_at"] = now_iso()
+    updated["updated_at"] = now_iso()
+    updated["access_token_expires_at"] = extract_token_exp(str(updated["token"].get("access_token") or ""))
+    updated["error"] = "; ".join(errors) if errors else None
+    if not errors:
+        updated["status"] = "已刷新"
+    elif updated.get("subscription") or updated.get("usage"):
+        updated["status"] = "部分刷新失败"
+    else:
+        updated["status"] = "刷新失败"
+    return updated
+
+
+def load_codex_accounts() -> None:
+    if not os.path.exists(CODEX_ACCOUNTS_FILE):
+        return
+    try:
+        with open(CODEX_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("items") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return
+        with CODEX_ACCOUNTS_LOCK:
+            CODEX_ACCOUNTS.clear()
+            for item in items:
+                if isinstance(item, dict) and item.get("id"):
+                    CODEX_ACCOUNTS[str(item["id"])] = item
+    except Exception as e:  # noqa: BLE001
+        print(f"Codex 账号信息加载失败：{e}")
+
+
+def save_codex_accounts() -> None:
+    with CODEX_ACCOUNTS_LOCK:
+        items = list(CODEX_ACCOUNTS.values())
+    with open(CODEX_ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"items": items}, f, ensure_ascii=False, indent=2)
+
+
+def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
+    token = record.get("token") if isinstance(record.get("token"), dict) else {}
+    return {
+        "id": record.get("id"),
+        "label": record.get("label"),
+        "email": record.get("email"),
+        "subject": record.get("subject"),
+        "chatgpt_account_id": record.get("chatgpt_account_id"),
+        "workspace_id": record.get("workspace_id"),
+        "chatgpt_plan_type": record.get("chatgpt_plan_type"),
+        "access_token_expires_at": record.get("access_token_expires_at"),
+        "has_refresh_token": bool(str(token.get("refresh_token") or "").strip()),
+        "subscription": record.get("subscription"),
+        "usage": record.get("usage"),
+        "usage_status": record.get("usage_status"),
+        "status": record.get("status"),
+        "error": record.get("error"),
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+        "last_refresh_at": record.get("last_refresh_at"),
+    }
+
+
+def import_codex_auth_json(raw_text: str) -> List[Dict[str, Any]]:
+    imported: List[Dict[str, Any]] = []
+    for item in parse_codex_auth_items(raw_text):
+        payload = extract_codex_token_payload(item)
+        candidate = build_codex_account_record(payload)
+        with CODEX_ACCOUNTS_LOCK:
+            existing = CODEX_ACCOUNTS.get(str(candidate.get("id") or ""))
+        record = build_codex_account_record(payload, existing)
+        try:
+            record = refresh_codex_account_record(record)
+        except Exception as e:  # noqa: BLE001
+            record["status"] = "已导入，刷新失败"
+            record["error"] = str(e)
+            record["updated_at"] = now_iso()
+        with CODEX_ACCOUNTS_LOCK:
+            CODEX_ACCOUNTS[str(record["id"])] = record
+        imported.append(sanitize_codex_account(record))
+    save_codex_accounts()
+    return imported
+
+
 def load_accounts() -> List[AccountConfig]:
     raw = os.getenv("GMAIL_ACCOUNTS")
     if not raw:
@@ -196,6 +900,7 @@ ACCOUNTS = load_accounts()
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
+CODEX_ACCOUNTS: Dict[str, Dict[str, Any]] = {}
 
 
 for cfg in ACCOUNTS:
@@ -621,6 +1326,7 @@ def start_watchers():
     source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
     load_histories()
+    load_codex_accounts()
     for cfg in ACCOUNTS:
         threading.Thread(target=watch_account, args=(cfg,), daemon=True).start()
 
@@ -637,6 +1343,84 @@ def get_codes():
     with STATE_LOCK:
         data = list(STATE.values())
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
+
+
+@app.get("/api/codex/accounts")
+def get_codex_accounts():
+    with CODEX_ACCOUNTS_LOCK:
+        items = [sanitize_codex_account(item) for item in CODEX_ACCOUNTS.values()]
+    items.sort(key=lambda item: str(item.get("label") or item.get("id") or ""))
+    return JSONResponse(content={"items": items, "updated_at": now_iso()})
+
+
+@app.post("/api/codex/accounts")
+async def import_codex_accounts(request: FastAPIRequest):
+    body = (await request.body()).decode("utf-8", errors="replace").strip()
+    if not body:
+        return JSONResponse(content={"detail": "请求内容为空"}, status_code=400)
+
+    raw_text = body
+    try:
+        payload = json.loads(body)
+        if isinstance(payload, dict):
+            raw_value = (
+                payload.get("auth_json")
+                or payload.get("session_json")
+                or payload.get("content")
+                or payload.get("data")
+            )
+            if isinstance(raw_value, str) and raw_value.strip():
+                raw_text = raw_value.strip()
+            else:
+                raw_text = json.dumps(payload)
+        elif isinstance(payload, str):
+            raw_text = payload.strip()
+    except Exception:
+        pass
+
+    try:
+        imported = import_codex_auth_json(raw_text)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(content={"detail": str(e)}, status_code=400)
+
+    return JSONResponse(content={"items": imported, "updated_at": now_iso()})
+
+
+@app.post("/api/codex/accounts/{account_id}/refresh")
+def refresh_codex_account(account_id: str):
+    with CODEX_ACCOUNTS_LOCK:
+        record = CODEX_ACCOUNTS.get(account_id)
+    if not record:
+        return JSONResponse(
+            content={"detail": f"未找到 Codex 账号：{account_id}"},
+            status_code=404,
+        )
+
+    try:
+        updated = refresh_codex_account_record(record)
+    except Exception as e:  # noqa: BLE001
+        updated = dict(record)
+        updated["status"] = "刷新失败"
+        updated["error"] = str(e)
+        updated["updated_at"] = now_iso()
+
+    with CODEX_ACCOUNTS_LOCK:
+        CODEX_ACCOUNTS[account_id] = updated
+    save_codex_accounts()
+    return JSONResponse(content={"item": sanitize_codex_account(updated), "updated_at": now_iso()})
+
+
+@app.delete("/api/codex/accounts/{account_id}")
+def delete_codex_account(account_id: str):
+    with CODEX_ACCOUNTS_LOCK:
+        existed = CODEX_ACCOUNTS.pop(account_id, None)
+    if not existed:
+        return JSONResponse(
+            content={"detail": f"未找到 Codex 账号：{account_id}"},
+            status_code=404,
+        )
+    save_codex_accounts()
+    return JSONResponse(content={"ok": True, "account": account_id})
 
 
 @app.get("/api/history/{account_name}")

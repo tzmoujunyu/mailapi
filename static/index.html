@@ -21,6 +21,7 @@
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
       }
       h1 { margin: 0 0 16px; font-size: 22px; }
+      h2 { margin: 28px 0 12px; font-size: 18px; }
       table { width: 100%; border-collapse: collapse; }
       th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; }
       th { background: #f9fafb; }
@@ -35,6 +36,39 @@
         cursor: pointer;
       }
       .small-btn:hover { background: #f8fafc; }
+      .small-btn.danger { color: #b91c1c; border-color: #fecaca; }
+      .codex-controls {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 8px;
+        align-items: stretch;
+        margin-bottom: 10px;
+      }
+      textarea {
+        min-height: 72px;
+        resize: vertical;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+      }
+      .codex-message { min-height: 20px; margin-bottom: 8px; }
+      .codex-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .pill {
+        display: inline-block;
+        border-radius: 999px;
+        background: #eef2ff;
+        color: #3730a3;
+        padding: 2px 8px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .error-text { color: #b91c1c; }
       .history-panel {
         margin-top: 12px;
         border: 1px solid #e5e7eb;
@@ -76,6 +110,7 @@
       }
       @media (max-width: 680px) {
         table, th, td { font-size: 14px; }
+        .codex-controls { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -99,10 +134,37 @@
       </table>
 
       <div id="history-panel" class="history-panel" hidden></div>
+
+      <h2>Codex账号信息</h2>
+      <div class="codex-controls">
+        <textarea id="codex-auth-json" placeholder="ChatGPT /api/auth/session JSON 或 Codex auth JSON"></textarea>
+        <button class="small-btn" onclick="importCodexAccount()">导入</button>
+        <button class="small-btn" onclick="renderCodexAccounts()">刷新</button>
+      </div>
+      <div id="codex-message" class="codex-message muted"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>账号</th>
+            <th>订阅</th>
+            <th>短周期</th>
+            <th>长周期</th>
+            <th>Token</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="codex-rows">
+          <tr><td colspan="7" class="muted">加载中...</td></tr>
+        </tbody>
+      </table>
     </div>
 
     <script>
       const historyPanel = document.getElementById('history-panel');
+      const codexRows = document.getElementById('codex-rows');
+      const codexMessage = document.getElementById('codex-message');
+      const codexAuthJson = document.getElementById('codex-auth-json');
       const HISTORY_REFRESH_MS = 3000;
       let historyTimer = null;
       let currentHistoryName = '';
@@ -132,6 +194,69 @@
         const mi = pad(d.getMinutes());
         const s = pad(d.getSeconds());
         return `${y}-${m}-${da} ${h}:${mi}:${s}`;
+      }
+
+      function formatTsSeconds(value) {
+        if (!value) {
+          return '-';
+        }
+        return formatDateTime(Number(value) * 1000);
+      }
+
+      function formatRemainPercent(usedPercent) {
+        if (usedPercent === null || usedPercent === undefined) {
+          return '-';
+        }
+        const used = Number(usedPercent);
+        if (Number.isNaN(used)) {
+          return '-';
+        }
+        return `${Math.max(0, 100 - used).toFixed(1)}%`;
+      }
+
+      function formatWindow(minutes) {
+        if (minutes === null || minutes === undefined) {
+          return '-';
+        }
+        const value = Number(minutes);
+        if (Number.isNaN(value)) {
+          return '-';
+        }
+        if (value >= 1440) {
+          return `${Math.round(value / 1440)}天`;
+        }
+        if (value >= 60) {
+          return `${Math.round(value / 60)}小时`;
+        }
+        return `${value}分钟`;
+      }
+
+      function subscriptionText(item) {
+        const sub = item.subscription || {};
+        const plan = sub.plan_type || sub.account_plan_type || item.chatgpt_plan_type || '-';
+        const state = sub.has_subscription === true ? '有效' : sub.has_subscription === false ? '无' : '-';
+        const renew = sub.renews_at ? `续：${formatTsSeconds(sub.renews_at)}` : '';
+        const expire = sub.expires_at ? `到：${formatTsSeconds(sub.expires_at)}` : '';
+        return `<span class="pill">${escapeHtml(plan)}</span><div class="muted">${escapeHtml(state)} ${escapeHtml(renew || expire)}</div>`;
+      }
+
+      function usageCell(usage, kind) {
+        if (!usage) {
+          return '-';
+        }
+        const used = kind === 'primary' ? usage.used_percent : usage.secondary_used_percent;
+        const minutes = kind === 'primary' ? usage.window_minutes : usage.secondary_window_minutes;
+        const resetsAt = kind === 'primary' ? usage.resets_at : usage.secondary_resets_at;
+        return `
+          <div><strong>${formatRemainPercent(used)}</strong></div>
+          <div class="muted">${escapeHtml(formatWindow(minutes))}</div>
+          <div class="muted">${escapeHtml(formatTsSeconds(resetsAt))}</div>
+        `;
+      }
+
+      function setCodexMessage(text, isError = false) {
+        codexMessage.textContent = text || '';
+        codexMessage.className = `codex-message ${isError ? 'error-text' : 'muted'}`;
       }
 
       async function loadHistory(name, email) {
@@ -187,6 +312,117 @@
         }, HISTORY_REFRESH_MS);
       }
 
+      async function renderCodexAccounts() {
+        try {
+          const res = await fetch('/api/codex/accounts', { cache: 'no-store' });
+          const data = await res.json();
+          const items = data.items || [];
+          codexRows.innerHTML = '';
+          if (!items.length) {
+            codexRows.innerHTML = '<tr><td colspan="7" class="muted">暂无 Codex 账号。</td></tr>';
+            return;
+          }
+
+          for (const item of items) {
+            const tr = document.createElement('tr');
+            const tokenText = item.access_token_expires_at
+              ? formatTsSeconds(item.access_token_expires_at)
+              : '-';
+            const status = item.error
+              ? `${item.status || '异常'}：${item.error}`
+              : item.status || '-';
+            tr.innerHTML = `
+              <td>
+                <div><strong>${escapeHtml(item.label || item.id || '-')}</strong></div>
+                <div class="muted">${escapeHtml(item.chatgpt_account_id || item.workspace_id || '-')}</div>
+              </td>
+              <td>${subscriptionText(item)}</td>
+              <td>${usageCell(item.usage, 'primary')}</td>
+              <td>${usageCell(item.usage, 'secondary')}</td>
+              <td>
+                <div>${escapeHtml(tokenText)}</div>
+                <div class="muted">${item.has_refresh_token ? '可刷新' : '仅当前'}</div>
+              </td>
+              <td class="${item.error ? 'error-text' : 'status'}">${escapeHtml(status)}</td>
+              <td class="codex-actions"></td>
+            `;
+            const actions = tr.querySelector('.codex-actions');
+            const refreshBtn = document.createElement('button');
+            refreshBtn.className = 'small-btn';
+            refreshBtn.textContent = '刷新';
+            refreshBtn.onclick = () => refreshCodexAccount(item.id);
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'small-btn danger';
+            deleteBtn.textContent = '删除';
+            deleteBtn.onclick = () => deleteCodexAccount(item.id);
+            actions.appendChild(refreshBtn);
+            actions.appendChild(deleteBtn);
+            codexRows.appendChild(tr);
+          }
+        } catch (e) {
+          codexRows.innerHTML = '<tr><td colspan="7">Codex 账号加载失败。</td></tr>';
+        }
+      }
+
+      async function importCodexAccount() {
+        const raw = codexAuthJson.value.trim();
+        if (!raw) {
+          setCodexMessage('请先粘贴授权 JSON。', true);
+          return;
+        }
+        setCodexMessage('导入中...');
+        try {
+          const res = await fetch('/api/codex/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auth_json: raw }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.detail || '导入失败');
+          }
+          codexAuthJson.value = '';
+          setCodexMessage(`已导入 ${data.items?.length || 0} 个账号。`);
+          renderCodexAccounts();
+        } catch (e) {
+          setCodexMessage(e.message || '导入失败', true);
+        }
+      }
+
+      async function refreshCodexAccount(id) {
+        setCodexMessage('刷新中...');
+        try {
+          const res = await fetch(`/api/codex/accounts/${encodeURIComponent(id)}/refresh`, {
+            method: 'POST',
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.detail || '刷新失败');
+          }
+          setCodexMessage('刷新完成。');
+          renderCodexAccounts();
+        } catch (e) {
+          setCodexMessage(e.message || '刷新失败', true);
+        }
+      }
+
+      async function deleteCodexAccount(id) {
+        setCodexMessage('删除中...');
+        try {
+          const res = await fetch(`/api/codex/accounts/${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.detail || '删除失败');
+          }
+          setCodexMessage('已删除。');
+          renderCodexAccounts();
+        } catch (e) {
+          setCodexMessage(e.message || '删除失败', true);
+        }
+      }
+
       async function render() {
         try {
           const res = await fetch('/api/codes', { cache: 'no-store' });
@@ -214,7 +450,9 @@
       }
 
       render();
+      renderCodexAccounts();
       setInterval(render, 3000);
+      setInterval(renderCodexAccounts, 10000);
     </script>
   </body>
 </html>

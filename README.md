@@ -33,3 +33,9 @@ export AUTH_REMINDER_EVERY=10
 export GMAIL_AUTH_FALLBACK=console
 python3 code-receive.py
 ```
+
+## Codex 账号信息
+
+页面下方的“Codex账号信息”可以导入 ChatGPT/Codex 授权后的 JSON，例如浏览器中 `https://chatgpt.com/api/auth/session` 返回的内容，或包含 `access_token` / `accessToken` 的 Codex auth JSON。
+
+导入后程序会提取账号邮箱、ChatGPT Account ID、workspace、订阅计划和 Codex 额度窗口。账号 token 只保存在 `runtime/codex_accounts.json`，该目录已被 git 忽略。
