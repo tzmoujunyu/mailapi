@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ChatGPT验证码</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f5f7fa;
+        color: #1f2937;
+        margin: 0;
+        padding: 20px;
+      }
+      .container {
+        max-width: 960px;
+        margin: 0 auto;
+        background: #fff;
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+      }
+      h1 { margin: 0 0 16px; font-size: 22px; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; }
+      th { background: #f9fafb; }
+      .code { font-weight: 700; color: #0ea5e9; }
+      .muted { color: #6b7280; }
+      .status { font-weight: 600; }
+      .small-btn {
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #fff;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .small-btn:hover { background: #f8fafc; }
+      .history-panel {
+        margin-top: 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #f9fafb;
+        padding: 10px;
+      }
+      .history-item {
+        margin-bottom: 8px;
+        border-bottom: 1px dashed #e5e7eb;
+        padding-bottom: 6px;
+      }
+      .history-item:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
+      .history-code {
+        display: inline-block;
+        margin-left: 4px;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: #fef08a;
+        color: #b45309;
+        font-weight: 700;
+        letter-spacing: 2px;
+      }
+      .history-time {
+        margin-left: 4px;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: #dcfce7;
+        color: #166534;
+        font-weight: 700;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      pre {
+        margin: 0;
+        background: #f3f4f6;
+        border-radius: 8px;
+        padding: 8px;
+        overflow: auto;
+      }
+      @media (max-width: 680px) {
+        table, th, td { font-size: 14px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>ChatGPT验证码</h1>
+      <table>
+        <thead>
+          <tr>
+            <th>邮箱</th>
+            <th>最新验证码</th>
+            <th>主题</th>
+            <th>更新时间</th>
+            <th>状态</th>
+            <th>历史记录</th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          <tr><td colspan="6" class="muted">加载中...</td></tr>
+        </tbody>
+      </table>
+
+      <div id="history-panel" class="history-panel" hidden></div>
+    </div>
+
+    <script>
+      const historyPanel = document.getElementById('history-panel');
+      const HISTORY_REFRESH_MS = 3000;
+      let historyTimer = null;
+      let currentHistoryName = '';
+      let currentHistoryEmail = '';
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text || '';
+        return div.innerHTML;
+      }
+
+      function formatDateTime(value) {
+        if (!value) {
+          return '-';
+        }
+
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) {
+          return escapeHtml(value);
+        }
+
+        const pad = (n) => String(n).padStart(2, '0');
+        const y = d.getFullYear();
+        const m = pad(d.getMonth() + 1);
+        const da = pad(d.getDate());
+        const h = pad(d.getHours());
+        const mi = pad(d.getMinutes());
+        const s = pad(d.getSeconds());
+        return `${y}-${m}-${da} ${h}:${mi}:${s}`;
+      }
+
+      async function loadHistory(name, email) {
+        try {
+          const res = await fetch(`/api/history/${encodeURIComponent(name)}`, { cache: 'no-store' });
+          const data = await res.json();
+          const items = data.items || [];
+          let html = `<h3>${escapeHtml(name)} 历史验证码</h3>`;
+          html += `<div class="muted">邮箱：${escapeHtml(email || '-')}</div>`;
+          if (!items.length) {
+            html += '<p class="muted">暂无历史验证码记录。</p>';
+          } else {
+            for (const item of items) {
+              html += '<div class="history-item">';
+              html += `<div><strong>验证码：</strong><span class="history-code">${escapeHtml(item.code || '')}</span></div>`;
+              html += `<div><strong>时间：</strong><span class="history-time">${escapeHtml(formatDateTime(item.created_at || ''))}</span></div>`;
+              html += `<div><strong>主题：</strong>${escapeHtml(item.subject || '')}</div>`;
+              html += '</div>';
+            }
+          }
+          historyPanel.innerHTML = html;
+          historyPanel.hidden = false;
+        } catch (e) {
+          historyPanel.innerHTML = '<p class="muted">历史记录加载失败。</p>';
+          historyPanel.hidden = false;
+        }
+      }
+
+      function onHistoryClick(name, email) {
+        startHistoryAutoRefresh(name, email);
+      }
+
+      function startHistoryAutoRefresh(name, email) {
+        if (!name) {
+          return;
+        }
+
+        currentHistoryName = name;
+        currentHistoryEmail = email || '';
+        if (historyPanel.hidden) {
+          historyPanel.hidden = false;
+        }
+        loadHistory(currentHistoryName, currentHistoryEmail);
+
+        if (historyTimer) {
+          clearInterval(historyTimer);
+        }
+        historyTimer = setInterval(() => {
+          if (historyPanel.hidden) {
+            return;
+          }
+          loadHistory(currentHistoryName, currentHistoryEmail);
+        }, HISTORY_REFRESH_MS);
+      }
+
+      async function render() {
+        try {
+          const res = await fetch('/api/codes', { cache: 'no-store' });
+          const data = await res.json();
+          const rows = document.getElementById('rows');
+          rows.innerHTML = '';
+          for (const item of data.items) {
+            const tr = document.createElement('tr');
+            const name = item.name || '-';
+            const email = item.email || '-';
+            tr.innerHTML = `
+              <td>${email}</td>
+              <td class="code">${item.last_code || '（暂无）'}</td>
+              <td><pre>${item.subject || '-'}</pre></td>
+              <td class="muted">${item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}</td>
+              <td class="status">${item.status || '-'}</td>
+              <td><button class="small-btn" onclick="onHistoryClick('${name}', '${email}')">查看历史</button></td>
+            `;
+            rows.appendChild(tr);
+          }
+        } catch (e) {
+          const rows = document.getElementById('rows');
+          rows.innerHTML = '<tr><td colspan="6">加载失败，请检查服务是否正常启动。</td></tr>';
+        }
+      }
+
+      render();
+      setInterval(render, 3000);
+    </script>
+  </body>
+</html>
