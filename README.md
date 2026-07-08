@@ -49,7 +49,7 @@ export SSL_CERT_FILE='/path/to/ca-bundle.pem'
 
 授权结果会按账号保存在 `runtime/codex_auth/`，同时同步最新一次授权到 `runtime/codex_auth.json` 兼容旧路径。账号快照保存在 `runtime/codex_accounts.json`，这些运行时文件已被 git 忽略。如果授权失效，点击“刷新”重新授权，会覆盖对应账号 auth 文件并重新导入账号。
 
-Codex 额度默认每 1 分钟后台刷新一次，网页上的账号额度显示也每 1 分钟同步一次。可通过 `CODEX_REFRESH_INTERVAL_SECONDS` 调整后台刷新间隔。
+Codex 额度默认每 1 分钟后台刷新一次，网页上的账号额度显示也每 1 分钟同步一次。订阅信息默认每 1 小时刷新一次，账号栏会显示“无订阅”或订阅到期时间。可通过 `CODEX_REFRESH_INTERVAL_SECONDS` 调整额度刷新间隔，通过 `CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS` 调整订阅刷新间隔。
 
 默认 Codex 授权回调地址与 Codex CLI/Codex-Manager 保持一致，使用独立本地端口：
 

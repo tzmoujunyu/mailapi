@@ -338,12 +338,16 @@
 
       function accountCell(item) {
         const sub = item.subscription || {};
-        const state = item.subscription_error
-          ? '订阅信息未刷新'
-          : sub.has_subscription === true ? '有效' : sub.has_subscription === false ? '无' : '-';
-        const renew = sub.renews_at ? `续：${formatTsSeconds(sub.renews_at)}` : '';
-        const expire = sub.expires_at ? `到：${formatTsSeconds(sub.expires_at)}` : '';
-        const detail = `${state} ${renew || expire}`.trim();
+        const plan = planValue(item);
+        let detail = '订阅信息未刷新';
+        if (sub.has_subscription === false || plan === 'free' || plan === '-') {
+          detail = '无订阅';
+        } else if (sub.has_subscription === true) {
+          const expiresAt = sub.expires_at || sub.renews_at;
+          detail = expiresAt ? `订阅到期：${formatTsSeconds(expiresAt)}` : '订阅有效';
+        } else if (!item.subscription_error) {
+          detail = '-';
+        }
         return `
           <div class="account-main">
             <span class="account-email">${escapeHtml(accountTitle(item))}</span>

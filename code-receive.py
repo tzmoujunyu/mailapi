@@ -56,6 +56,9 @@ CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oaut
 CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
 CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
 CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "60"))
+CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS = int(
+    os.getenv("CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS", "3600")
+)
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 CODEX_EXHAUSTED_USED_PERCENT = 99.9
 AUTH_LOCK = threading.Lock()
@@ -697,10 +700,11 @@ def build_codex_account_record(
         },
         "access_token_expires_at": extract_token_exp(access_token),
         "subscription": previous.get("subscription"),
+        "subscription_last_refresh_at": previous.get("subscription_last_refresh_at"),
         "usage": previous.get("usage"),
         "status": "已导入",
-        "error": None,
-        "subscription_error": None,
+        "error": previous.get("error"),
+        "subscription_error": previous.get("subscription_error"),
         "usage_error": None,
         "created_at": previous.get("created_at") or now,
         "updated_at": now,
@@ -903,6 +907,25 @@ def fetch_codex_subscription(access_token: str, account_id: Optional[str]) -> Op
     return default_snapshot or paid_snapshot or (snapshots[0] if snapshots else None)
 
 
+def parse_iso_timestamp(value: Any) -> Optional[int]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return int(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return None
+
+
+def should_refresh_codex_subscription(record: Dict[str, Any]) -> bool:
+    refreshed_at = parse_iso_timestamp(record.get("subscription_last_refresh_at"))
+    if refreshed_at is None:
+        return True
+    return now_ts() - refreshed_at >= max(60, CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS)
+
+
 def get_nested_number(value: Dict[str, Any], path: List[str]) -> Optional[float]:
     current: Any = value
     for key in path:
@@ -1093,7 +1116,9 @@ def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
     return True
 
 
-def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
+def refresh_codex_account_record(
+    record: Dict[str, Any], force_subscription: bool = False
+) -> Dict[str, Any]:
     updated = dict(record)
     updated["token"] = dict(record.get("token") or {})
     if not str(updated["token"].get("access_token") or "").strip():
@@ -1102,6 +1127,7 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
     errors: List[str] = []
     subscription_errors: List[str] = []
     usage_errors: List[str] = []
+    subscription_refresh_attempted = False
     refreshed_once = False
     for attempt in range(2):
         errors = []
@@ -1111,14 +1137,17 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
         chatgpt_account_id = str(updated.get("chatgpt_account_id") or "").strip() or None
         workspace_id = str(updated.get("workspace_id") or "").strip() or chatgpt_account_id
 
-        try:
-            subscription = fetch_codex_subscription(access_token, chatgpt_account_id)
-            if subscription is not None:
-                updated["subscription"] = subscription
-        except Exception as e:  # noqa: BLE001
-            message = f"订阅信息: {e}"
-            subscription_errors.append(message)
-            errors.append(message)
+        refresh_subscription = force_subscription or should_refresh_codex_subscription(updated)
+        if refresh_subscription:
+            subscription_refresh_attempted = True
+            try:
+                subscription = fetch_codex_subscription(access_token, chatgpt_account_id)
+                if subscription is not None:
+                    updated["subscription"] = subscription
+            except Exception as e:  # noqa: BLE001
+                message = f"订阅信息: {e}"
+                subscription_errors.append(message)
+                errors.append(message)
 
         try:
             usage = fetch_codex_usage(access_token, workspace_id)
@@ -1147,7 +1176,12 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
     updated["last_refresh_at"] = now_iso()
     updated["updated_at"] = now_iso()
     updated["access_token_expires_at"] = extract_token_exp(str(updated["token"].get("access_token") or ""))
-    updated["subscription_error"] = "; ".join(subscription_errors) if subscription_errors else None
+    if subscription_refresh_attempted:
+        updated["subscription_last_refresh_at"] = now_iso()
+        updated["subscription_error"] = "; ".join(subscription_errors) if subscription_errors else None
+    else:
+        updated["subscription_last_refresh_at"] = record.get("subscription_last_refresh_at")
+        updated["subscription_error"] = record.get("subscription_error")
     updated["usage_error"] = "; ".join(usage_errors) if usage_errors else None
     updated["error"] = updated["usage_error"]
     if usage_errors:
@@ -1220,6 +1254,7 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "access_token_expires_at": record.get("access_token_expires_at"),
         "has_refresh_token": bool(str(token.get("refresh_token") or "").strip()),
         "subscription": record.get("subscription"),
+        "subscription_last_refresh_at": record.get("subscription_last_refresh_at"),
         "usage": usage,
         "usage_status": usage_status,
         "status_reason": status_reason,
@@ -1243,7 +1278,7 @@ def import_codex_auth_json(raw_text: str, refresh_snapshot: bool = True) -> List
         record = build_codex_account_record(payload, existing)
         if refresh_snapshot:
             try:
-                record = refresh_codex_account_record(record)
+                record = refresh_codex_account_record(record, force_subscription=True)
             except Exception as e:  # noqa: BLE001
                 record["status"] = "已导入，刷新失败"
                 record["error"] = str(e)
