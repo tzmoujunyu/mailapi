@@ -36,29 +36,13 @@
         cursor: pointer;
       }
       .small-btn:hover { background: #f8fafc; }
-      .small-btn.danger { color: #b91c1c; border-color: #fecaca; }
       .codex-controls {
-        display: grid;
-        grid-template-columns: 1fr auto auto;
+        display: flex;
         gap: 8px;
-        align-items: stretch;
+        align-items: center;
         margin-bottom: 10px;
       }
-      textarea {
-        min-height: 72px;
-        resize: vertical;
-        border: 1px solid #cbd5e1;
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 13px;
-      }
       .codex-message { min-height: 20px; margin-bottom: 8px; }
-      .codex-actions {
-        display: flex;
-        gap: 6px;
-        flex-wrap: wrap;
-      }
       .pill {
         display: inline-block;
         border-radius: 999px;
@@ -110,7 +94,7 @@
       }
       @media (max-width: 680px) {
         table, th, td { font-size: 14px; }
-        .codex-controls { grid-template-columns: 1fr; }
+        .codex-controls { flex-wrap: wrap; }
       }
     </style>
   </head>
@@ -137,9 +121,8 @@
 
       <h2>Codex账号信息</h2>
       <div class="codex-controls">
-        <textarea id="codex-auth-json" placeholder="ChatGPT /api/auth/session JSON 或 Codex auth JSON"></textarea>
         <button class="small-btn" onclick="importCodexAccount()">导入</button>
-        <button class="small-btn" onclick="renderCodexAccounts()">刷新</button>
+        <button class="small-btn" onclick="refreshCodexAuth()">刷新</button>
       </div>
       <div id="codex-message" class="codex-message muted"></div>
       <table>
@@ -151,11 +134,10 @@
             <th>长周期</th>
             <th>Token</th>
             <th>状态</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody id="codex-rows">
-          <tr><td colspan="7" class="muted">加载中...</td></tr>
+          <tr><td colspan="6" class="muted">加载中...</td></tr>
         </tbody>
       </table>
     </div>
@@ -164,7 +146,6 @@
       const historyPanel = document.getElementById('history-panel');
       const codexRows = document.getElementById('codex-rows');
       const codexMessage = document.getElementById('codex-message');
-      const codexAuthJson = document.getElementById('codex-auth-json');
       const HISTORY_REFRESH_MS = 3000;
       let historyTimer = null;
       let currentHistoryName = '';
@@ -319,7 +300,7 @@
           const items = data.items || [];
           codexRows.innerHTML = '';
           if (!items.length) {
-            codexRows.innerHTML = '<tr><td colspan="7" class="muted">暂无 Codex 账号。</td></tr>';
+            codexRows.innerHTML = '<tr><td colspan="6" class="muted">暂无 Codex 账号。</td></tr>';
             return;
           }
 
@@ -344,83 +325,22 @@
                 <div class="muted">${item.has_refresh_token ? '可刷新' : '仅当前'}</div>
               </td>
               <td class="${item.error ? 'error-text' : 'status'}">${escapeHtml(status)}</td>
-              <td class="codex-actions"></td>
             `;
-            const actions = tr.querySelector('.codex-actions');
-            const refreshBtn = document.createElement('button');
-            refreshBtn.className = 'small-btn';
-            refreshBtn.textContent = '刷新';
-            refreshBtn.onclick = () => refreshCodexAccount(item.id);
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'small-btn danger';
-            deleteBtn.textContent = '删除';
-            deleteBtn.onclick = () => deleteCodexAccount(item.id);
-            actions.appendChild(refreshBtn);
-            actions.appendChild(deleteBtn);
             codexRows.appendChild(tr);
           }
         } catch (e) {
-          codexRows.innerHTML = '<tr><td colspan="7">Codex 账号加载失败。</td></tr>';
+          codexRows.innerHTML = '<tr><td colspan="6">Codex 账号加载失败。</td></tr>';
         }
       }
 
-      async function importCodexAccount() {
-        const raw = codexAuthJson.value.trim();
-        if (!raw) {
-          setCodexMessage('请先粘贴授权 JSON。', true);
-          return;
-        }
-        setCodexMessage('导入中...');
-        try {
-          const res = await fetch('/api/codex/accounts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ auth_json: raw }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(data.detail || '导入失败');
-          }
-          codexAuthJson.value = '';
-          setCodexMessage(`已导入 ${data.items?.length || 0} 个账号。`);
-          renderCodexAccounts();
-        } catch (e) {
-          setCodexMessage(e.message || '导入失败', true);
-        }
+      function importCodexAccount() {
+        setCodexMessage('正在打开 Codex 授权页面...');
+        window.location.href = '/api/codex/auth/start?reason=import';
       }
 
-      async function refreshCodexAccount(id) {
-        setCodexMessage('刷新中...');
-        try {
-          const res = await fetch(`/api/codex/accounts/${encodeURIComponent(id)}/refresh`, {
-            method: 'POST',
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(data.detail || '刷新失败');
-          }
-          setCodexMessage('刷新完成。');
-          renderCodexAccounts();
-        } catch (e) {
-          setCodexMessage(e.message || '刷新失败', true);
-        }
-      }
-
-      async function deleteCodexAccount(id) {
-        setCodexMessage('删除中...');
-        try {
-          const res = await fetch(`/api/codex/accounts/${encodeURIComponent(id)}`, {
-            method: 'DELETE',
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(data.detail || '删除失败');
-          }
-          setCodexMessage('已删除。');
-          renderCodexAccounts();
-        } catch (e) {
-          setCodexMessage(e.message || '删除失败', true);
-        }
+      function refreshCodexAuth() {
+        setCodexMessage('正在重新打开 Codex 授权页面...');
+        window.location.href = '/api/codex/auth/start?reason=refresh';
       }
 
       async function render() {

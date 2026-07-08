@@ -37,18 +37,23 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 DATA_DIR = "runtime"
 HISTORY_DIR = os.path.join(DATA_DIR, "history")
 HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
+CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_AUTH_FALLBACK = os.getenv("GMAIL_AUTH_FALLBACK", "auto").strip().lower()
 GMAIL_OAUTH_REDIRECT_BASE = os.getenv("GMAIL_OAUTH_REDIRECT_BASE", "http://localhost:8000").rstrip("/")
+CODEX_ISSUER = os.getenv("CODEX_ISSUER", "https://auth.openai.com").rstrip("/")
+CODEX_OAUTH_REDIRECT_BASE = os.getenv("CODEX_OAUTH_REDIRECT_BASE", GMAIL_OAUTH_REDIRECT_BASE).rstrip("/")
 CODEX_USAGE_BASE_URL = os.getenv("CODEX_USAGE_BASE_URL", "https://chatgpt.com").rstrip("/")
 CODEX_CLIENT_ID = os.getenv("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann").strip()
-CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", "https://auth.openai.com/oauth/token").strip()
+CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oauth/token").strip()
+CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
 CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 AUTH_LOCK = threading.Lock()
 HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
 CODEX_ACCOUNTS_LOCK = threading.Lock()
+CODEX_AUTH_SESSION_LOCK = threading.Lock()
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
 ACCESS_COOKIE_NAME = "chatgpt_code_access"
@@ -185,6 +190,143 @@ def now_iso() -> str:
 
 def now_ts() -> int:
     return int(time.time())
+
+
+def base64_url_no_pad(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def generate_codex_pkce() -> Dict[str, str]:
+    verifier = base64_url_no_pad(secrets.token_bytes(64))
+    challenge = base64_url_no_pad(hashlib.sha256(verifier.encode("utf-8")).digest())
+    return {"code_verifier": verifier, "code_challenge": challenge}
+
+
+def generate_codex_state() -> str:
+    return base64_url_no_pad(secrets.token_bytes(32))
+
+
+def codex_oauth_callback_url() -> str:
+    return f"{CODEX_OAUTH_REDIRECT_BASE}/auth/callback"
+
+
+def build_codex_authorize_url(code_challenge: str, state: str) -> str:
+    query = {
+        "response_type": "code",
+        "client_id": CODEX_CLIENT_ID,
+        "redirect_uri": codex_oauth_callback_url(),
+        "scope": "openid profile email offline_access api.connectors.read api.connectors.invoke",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
+        "state": state,
+        "originator": "codex_cli_rs",
+    }
+    return f"{CODEX_ISSUER}/oauth/authorize?{urllib.parse.urlencode(query)}"
+
+
+def create_codex_auth_session(reason: str) -> Dict[str, Any]:
+    pkce = generate_codex_pkce()
+    state = generate_codex_state()
+    session = {
+        "state": state,
+        "code_verifier": pkce["code_verifier"],
+        "auth_url": build_codex_authorize_url(pkce["code_challenge"], state),
+        "reason": reason,
+        "created_at": now_iso(),
+    }
+    with CODEX_AUTH_SESSION_LOCK:
+        CODEX_AUTH_SESSIONS[state] = session
+    return session
+
+
+def exchange_codex_code_for_tokens(code: str, code_verifier: str) -> Dict[str, str]:
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": codex_oauth_callback_url(),
+            "client_id": CODEX_CLIENT_ID,
+            "code_verifier": code_verifier,
+        }
+    ).encode("utf-8")
+    value = http_json(
+        CODEX_OAUTH_TOKEN_URL,
+        {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        data=data,
+    )
+    access_token = str(value.get("access_token") or "").strip()
+    id_token = str(value.get("id_token") or "").strip()
+    refresh_token = str(value.get("refresh_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("token 响应缺少 access_token")
+    return {
+        "access_token": access_token,
+        "id_token": id_token,
+        "refresh_token": refresh_token,
+    }
+
+
+def codex_auth_payload_from_tokens(tokens: Dict[str, str]) -> Dict[str, Any]:
+    payload = {
+        "tokens": {
+            "access_token": tokens.get("access_token", ""),
+            "id_token": tokens.get("id_token", ""),
+            "refresh_token": tokens.get("refresh_token", ""),
+        },
+        "source": "oauth",
+        "updated_at": now_iso(),
+    }
+    record = build_codex_account_record(extract_codex_token_payload(payload))
+    payload.update(
+        {
+            "account_id": record.get("id"),
+            "email": record.get("email"),
+            "subject": record.get("subject"),
+            "chatgpt_account_id": record.get("chatgpt_account_id"),
+            "workspace_id": record.get("workspace_id"),
+            "chatgpt_plan_type": record.get("chatgpt_plan_type"),
+            "access_token_expires_at": record.get("access_token_expires_at"),
+        }
+    )
+    return payload
+
+
+def save_codex_auth_file(payload: Dict[str, Any]) -> None:
+    with open(CODEX_AUTH_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def load_codex_auth_file() -> Optional[Dict[str, Any]]:
+    if not os.path.exists(CODEX_AUTH_FILE):
+        return None
+    try:
+        with open(CODEX_AUTH_FILE, "r", encoding="utf-8") as f:
+            value = json.load(f)
+        return value if isinstance(value, dict) else None
+    except Exception as e:  # noqa: BLE001
+        print(f"Codex auth 文件加载失败：{e}")
+        return None
+
+
+def import_codex_auth_file(refresh_snapshot: bool = False) -> List[Dict[str, Any]]:
+    payload = load_codex_auth_file()
+    if not payload:
+        return []
+    return import_codex_auth_json(json.dumps(payload), refresh_snapshot=refresh_snapshot)
+
+
+def complete_codex_oauth_callback(code: str, state: str) -> List[Dict[str, Any]]:
+    with CODEX_AUTH_SESSION_LOCK:
+        session = CODEX_AUTH_SESSIONS.pop(state, None)
+    if not session:
+        raise RuntimeError("Codex 授权会话不存在或已过期，请重新点击导入/刷新")
+
+    tokens = exchange_codex_code_for_tokens(code, str(session["code_verifier"]))
+    payload = codex_auth_payload_from_tokens(tokens)
+    save_codex_auth_file(payload)
+    return import_codex_auth_json(json.dumps(payload), refresh_snapshot=True)
 
 
 def decode_jwt_claims(token: str) -> Dict[str, Any]:
@@ -856,7 +998,7 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def import_codex_auth_json(raw_text: str) -> List[Dict[str, Any]]:
+def import_codex_auth_json(raw_text: str, refresh_snapshot: bool = True) -> List[Dict[str, Any]]:
     imported: List[Dict[str, Any]] = []
     for item in parse_codex_auth_items(raw_text):
         payload = extract_codex_token_payload(item)
@@ -864,12 +1006,13 @@ def import_codex_auth_json(raw_text: str) -> List[Dict[str, Any]]:
         with CODEX_ACCOUNTS_LOCK:
             existing = CODEX_ACCOUNTS.get(str(candidate.get("id") or ""))
         record = build_codex_account_record(payload, existing)
-        try:
-            record = refresh_codex_account_record(record)
-        except Exception as e:  # noqa: BLE001
-            record["status"] = "已导入，刷新失败"
-            record["error"] = str(e)
-            record["updated_at"] = now_iso()
+        if refresh_snapshot:
+            try:
+                record = refresh_codex_account_record(record)
+            except Exception as e:  # noqa: BLE001
+                record["status"] = "已导入，刷新失败"
+                record["error"] = str(e)
+                record["updated_at"] = now_iso()
         with CODEX_ACCOUNTS_LOCK:
             CODEX_ACCOUNTS[str(record["id"])] = record
         imported.append(sanitize_codex_account(record))
@@ -901,6 +1044,7 @@ STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 CODEX_ACCOUNTS: Dict[str, Dict[str, Any]] = {}
+CODEX_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 
 for cfg in ACCOUNTS:
@@ -986,7 +1130,7 @@ async def access_guard(request: FastAPIRequest, call_next):
         return await call_next(request)
 
     path = request.url.path
-    if path in {"/login", "/login.html"} or path.startswith("/oauth2callback/"):
+    if path in {"/login", "/login.html", "/auth/callback"} or path.startswith("/oauth2callback/"):
         return await call_next(request)
     if path == "/" and request.query_params.get("code") and request.query_params.get("state"):
         return await call_next(request)
@@ -1327,6 +1471,7 @@ def start_watchers():
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
     load_histories()
     load_codex_accounts()
+    import_codex_auth_file(refresh_snapshot=False)
     for cfg in ACCOUNTS:
         threading.Thread(target=watch_account, args=(cfg,), daemon=True).start()
 
@@ -1343,6 +1488,72 @@ def get_codes():
     with STATE_LOCK:
         data = list(STATE.values())
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
+
+
+@app.get("/api/codex/auth/start")
+def start_codex_auth(request: FastAPIRequest):
+    reason = request.query_params.get("reason", "import").strip() or "import"
+    session = create_codex_auth_session(reason)
+    return RedirectResponse(url=str(session["auth_url"]), status_code=302)
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+def codex_auth_callback(request: FastAPIRequest):
+    error_code = request.query_params.get("error", "").strip()
+    error_description = request.query_params.get("error_description", "").strip()
+    if error_code:
+        detail = error_description or error_code
+        return codex_callback_page(False, f"Codex 授权失败：{detail}", status_code=400)
+
+    code = request.query_params.get("code", "").strip()
+    state = request.query_params.get("state", "").strip()
+    if not code or not state:
+        return codex_callback_page(False, "Codex 授权回调缺少 code 或 state", status_code=400)
+
+    try:
+        imported = complete_codex_oauth_callback(code, state)
+    except Exception as e:  # noqa: BLE001
+        return codex_callback_page(False, f"Codex 授权导入失败：{e}", status_code=500)
+
+    label = imported[0].get("label") if imported else "Codex 账号"
+    return codex_callback_page(True, f"{label} 已导入，auth 文件已保存到 runtime/codex_auth.json")
+
+
+def codex_callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLResponse:
+    title = "Codex 授权完成" if ok else "Codex 授权失败"
+    color = "#166534" if ok else "#b91c1c"
+    escaped_message = html.escape(message)
+    redirect_script = (
+        "<script>setTimeout(() => { window.location.href = '/'; }, 1200);</script>" if ok else ""
+    )
+    return HTMLResponse(
+        f"""
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>{title}</title>
+          <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #1f2937; margin: 0; padding: 32px; }}
+            .card {{ max-width: 560px; margin: 60px auto; background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08); }}
+            h1 {{ color: {color}; margin: 0 0 12px; font-size: 22px; }}
+            p {{ line-height: 1.6; }}
+            a {{ color: #0ea5e9; }}
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>{title}</h1>
+            <p>{escaped_message}</p>
+            <p><a href="/">返回验证码页面</a></p>
+          </div>
+          {redirect_script}
+        </body>
+        </html>
+        """,
+        status_code=status_code,
+    )
 
 
 @app.get("/api/codex/accounts")

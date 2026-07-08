@@ -36,6 +36,18 @@ python3 code-receive.py
 
 ## Codex 账号信息
 
-页面下方的“Codex账号信息”可以导入 ChatGPT/Codex 授权后的 JSON，例如浏览器中 `https://chatgpt.com/api/auth/session` 返回的内容，或包含 `access_token` / `accessToken` 的 Codex auth JSON。
+页面下方的“Codex账号信息”点击“导入”会通过当前 Web 端口打开 Codex/OpenAI 授权页面。选择账号并授权后，回调会自动保存 auth 文件并刷新账号订阅和额度信息。
 
-导入后程序会提取账号邮箱、ChatGPT Account ID、workspace、订阅计划和 Codex 额度窗口。账号 token 只保存在 `runtime/codex_accounts.json`，该目录已被 git 忽略。
+授权结果保存在 `runtime/codex_auth.json`，账号快照保存在 `runtime/codex_accounts.json`，该目录已被 git 忽略。如果授权失效，点击“刷新”重新授权，会覆盖原 auth 文件并重新导入账号。
+
+默认 Codex 授权回调地址复用当前网站端口：
+
+```text
+http://localhost:8000/auth/callback
+```
+
+如果你的转发端口或访问域名不同，可以设置：
+
+```bash
+export CODEX_OAUTH_REDIRECT_BASE='http://localhost:8000'
+```
