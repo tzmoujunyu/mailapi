@@ -80,6 +80,34 @@
         margin-bottom: 10px;
       }
       .codex-message { min-height: 20px; margin-bottom: 8px; }
+      .quota-cell {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .quota-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .quota-title { color: #6b7280; }
+      .quota-value { font-weight: 800; }
+      .quota-track {
+        width: 100%;
+        height: 5px;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .quota-fill {
+        height: 100%;
+        border-radius: inherit;
+      }
+      .quota-5h .quota-track { background: #bbf7d0; }
+      .quota-5h .quota-fill { background: #22c55e; }
+      .quota-week .quota-track { background: #bfdbfe; }
+      .quota-week .quota-fill { background: #3b82f6; }
+      .quota-empty .quota-fill { background: #ef4444; }
       .account-main {
         display: flex;
         align-items: center;
@@ -190,8 +218,8 @@
           <thead>
             <tr>
               <th>账号</th>
-              <th>短周期</th>
-              <th>长周期</th>
+              <th>5小时额度</th>
+              <th>周额度</th>
               <th>Token</th>
               <th>状态</th>
             </tr>
@@ -205,6 +233,7 @@
 
     <script>
       const historyPanel = document.getElementById('history-panel');
+      const codeRows = document.getElementById('rows');
       const codexRows = document.getElementById('codex-rows');
       const codexMessage = document.getElementById('codex-message');
       const HISTORY_REFRESH_MS = 3000;
@@ -218,8 +247,12 @@
         return div.innerHTML;
       }
 
-      function jsString(value) {
-        return JSON.stringify(String(value || ''));
+      function escapeAttr(text) {
+        return String(text || '')
+          .replace(/&/g, '&amp;')
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
       }
 
       function formatDateTime(value) {
@@ -249,32 +282,33 @@
         return formatDateTime(Number(value) * 1000);
       }
 
-      function formatRemainPercent(usedPercent) {
+      function remainPercentNumber(usedPercent) {
         if (usedPercent === null || usedPercent === undefined) {
-          return '-';
+          return null;
         }
         const used = Number(usedPercent);
         if (Number.isNaN(used)) {
-          return '-';
+          return null;
         }
-        return `${Math.max(0, 100 - used).toFixed(1)}%`;
+        return Math.max(0, Math.min(100, Math.round(100 - used)));
       }
 
-      function formatWindow(minutes) {
-        if (minutes === null || minutes === undefined) {
-          return '-';
+      function formatResetRemain(tsSeconds) {
+        if (!tsSeconds) {
+          return '未知';
         }
-        const value = Number(minutes);
-        if (Number.isNaN(value)) {
-          return '-';
+        const diff = Math.max(0, Number(tsSeconds) - Math.floor(Date.now() / 1000));
+        const totalMinutes = Math.ceil(diff / 60);
+        const days = Math.floor(totalMinutes / 1440);
+        const hours = Math.floor((totalMinutes % 1440) / 60);
+        const minutes = totalMinutes % 60;
+        if (days > 0) {
+          return `${days}d${hours}h${String(minutes).padStart(2, '0')}min`;
         }
-        if (value >= 1440) {
-          return `${Math.round(value / 1440)}天`;
+        if (hours > 0) {
+          return `${hours}h${String(minutes).padStart(2, '0')}min`;
         }
-        if (value >= 60) {
-          return `${Math.round(value / 60)}小时`;
-        }
-        return `${value}分钟`;
+        return `${minutes}min`;
       }
 
       function planValue(item) {
@@ -321,11 +355,17 @@
         if (item.error) {
           return { text: item.status ? `${item.status}：${item.error}` : item.error, cls: 'status-bad' };
         }
+        const usage = item.usage || {};
+        const primaryExhausted = Number(usage.used_percent || 0) >= 99.9;
+        const secondaryExhausted = Number(usage.secondary_used_percent || 0) >= 99.9;
+        if (primaryExhausted || secondaryExhausted) {
+          return { text: '限流', cls: 'status-bad' };
+        }
         if (item.usage_status === 'available') {
           return { text: '可用', cls: 'status-good' };
         }
         if (item.usage_status === 'unavailable') {
-          return { text: '限流', cls: 'status-bad' };
+          return { text: primaryExhausted || secondaryExhausted ? '限流' : '不可用', cls: 'status-bad' };
         }
         if (item.usage_status === 'primary_window_available_only') {
           return { text: '部分可用', cls: 'status-warn' };
@@ -341,12 +381,23 @@
           return '-';
         }
         const used = kind === 'primary' ? usage.used_percent : usage.secondary_used_percent;
-        const minutes = kind === 'primary' ? usage.window_minutes : usage.secondary_window_minutes;
         const resetsAt = kind === 'primary' ? usage.resets_at : usage.secondary_resets_at;
+        const remain = remainPercentNumber(used);
+        const label = kind === 'primary' ? '5小时' : '7天';
+        const cls = kind === 'primary' ? 'quota-5h' : 'quota-week';
+        if (remain === null) {
+          return '<span class="muted">未提供</span>';
+        }
         return `
-          <div><strong>${formatRemainPercent(used)}</strong></div>
-          <div class="muted">${escapeHtml(formatWindow(minutes))}</div>
-          <div class="muted">${escapeHtml(formatTsSeconds(resetsAt))}</div>
+          <div class="quota-cell ${cls} ${remain <= 0 ? 'quota-empty' : ''}">
+            <div class="quota-head">
+              <span class="quota-title">${label}</span>
+              <span class="quota-value">${remain}%</span>
+            </div>
+            <div class="quota-track"><div class="quota-fill" style="width:${remain}%"></div></div>
+            <div class="muted">${escapeHtml(formatTsSeconds(resetsAt))}</div>
+            <div class="muted">${escapeHtml(formatResetRemain(resetsAt))}后刷新</div>
+          </div>
         `;
       }
 
@@ -384,6 +435,17 @@
       function onHistoryClick(name, email) {
         startHistoryAutoRefresh(name, email);
       }
+
+      codeRows.addEventListener('click', (event) => {
+        if (!(event.target instanceof Element)) {
+          return;
+        }
+        const button = event.target.closest('[data-history-name]');
+        if (!button) {
+          return;
+        }
+        onHistoryClick(button.dataset.historyName || '', button.dataset.historyEmail || '');
+      });
 
       function startHistoryAutoRefresh(name, email) {
         if (!name) {
@@ -456,8 +518,7 @@
         try {
           const res = await fetch('/api/codes', { cache: 'no-store' });
           const data = await res.json();
-          const rows = document.getElementById('rows');
-          rows.innerHTML = '';
+          codeRows.innerHTML = '';
           for (const item of data.items) {
             const tr = document.createElement('tr');
             const name = item.name || '-';
@@ -468,13 +529,12 @@
               <td><pre>${item.subject || '-'}</pre></td>
               <td class="muted">${item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}</td>
               <td class="status">${item.status || '-'}</td>
-              <td><button class="small-btn" onclick="onHistoryClick(${jsString(name)}, ${jsString(email)})">查看历史</button></td>
+              <td><button class="small-btn" data-history-name="${escapeAttr(name)}" data-history-email="${escapeAttr(email)}">查看历史</button></td>
             `;
-            rows.appendChild(tr);
+            codeRows.appendChild(tr);
           }
         } catch (e) {
-          const rows = document.getElementById('rows');
-          rows.innerHTML = '<tr><td colspan="6">加载失败，请检查服务是否正常启动。</td></tr>';
+          codeRows.innerHTML = '<tr><td colspan="6">加载失败，请检查服务是否正常启动。</td></tr>';
         }
       }
 

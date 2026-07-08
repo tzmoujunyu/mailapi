@@ -55,7 +55,9 @@ CODEX_CLIENT_ID = os.getenv("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann").s
 CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oauth/token").strip()
 CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
 CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
+CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "60"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
+CODEX_EXHAUSTED_USED_PERCENT = 99.9
 AUTH_LOCK = threading.Lock()
 HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
@@ -928,8 +930,8 @@ def classify_usage_status(snapshot: Optional[Dict[str, Any]]) -> str:
         return "unknown"
     primary_present = snapshot.get("used_percent") is not None and snapshot.get("window_minutes") is not None
     if not primary_present:
-        return "unknown"
-    if float(snapshot.get("used_percent") or 0) >= 100:
+        return "unavailable"
+    if float(snapshot.get("used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
         return "unavailable"
     secondary_present = snapshot.get("secondary_used_percent") is not None or snapshot.get(
         "secondary_window_minutes"
@@ -937,9 +939,14 @@ def classify_usage_status(snapshot: Optional[Dict[str, Any]]) -> str:
     secondary_complete = snapshot.get("secondary_used_percent") is not None and snapshot.get(
         "secondary_window_minutes"
     ) is not None
-    if not secondary_present or not secondary_complete:
+    if not secondary_present:
         return "primary_window_available_only"
-    if float(snapshot.get("secondary_used_percent") or 0) >= 100:
+    if not secondary_complete:
+        return "unavailable"
+    if float(snapshot.get("secondary_used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
+        return "unavailable"
+    credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
+    if credits.get("overage_limit_reached") is True:
         return "unavailable"
     return "available"
 
@@ -1087,6 +1094,8 @@ def save_codex_accounts() -> None:
 
 def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     token = record.get("token") if isinstance(record.get("token"), dict) else {}
+    usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
+    usage_status = record.get("usage_status") or classify_usage_status(usage)
     return {
         "id": record.get("id"),
         "label": record.get("label"),
@@ -1098,8 +1107,8 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "access_token_expires_at": record.get("access_token_expires_at"),
         "has_refresh_token": bool(str(token.get("refresh_token") or "").strip()),
         "subscription": record.get("subscription"),
-        "usage": record.get("usage"),
-        "usage_status": record.get("usage_status"),
+        "usage": usage,
+        "usage_status": usage_status,
         "status": record.get("status"),
         "error": record.get("error"),
         "created_at": record.get("created_at"),
@@ -1128,6 +1137,43 @@ def import_codex_auth_json(raw_text: str, refresh_snapshot: bool = True) -> List
         imported.append(sanitize_codex_account(record))
     save_codex_accounts()
     return imported
+
+
+def refresh_all_codex_accounts_once() -> None:
+    with CODEX_ACCOUNTS_LOCK:
+        records = list(CODEX_ACCOUNTS.values())
+
+    if not records:
+        return
+
+    changed = False
+    for record in records:
+        account_id = str(record.get("id") or "")
+        if not account_id:
+            continue
+        try:
+            updated = refresh_codex_account_record(record)
+        except Exception as e:  # noqa: BLE001
+            updated = dict(record)
+            updated["status"] = "刷新失败"
+            updated["error"] = str(e)
+            updated["updated_at"] = now_iso()
+
+        with CODEX_ACCOUNTS_LOCK:
+            CODEX_ACCOUNTS[account_id] = updated
+        changed = True
+
+    if changed:
+        save_codex_accounts()
+
+
+def codex_refresh_loop() -> None:
+    while True:
+        try:
+            refresh_all_codex_accounts_once()
+        except Exception as e:  # noqa: BLE001
+            print(f"Codex 账号额度刷新失败：{e}")
+        time.sleep(max(10, CODEX_REFRESH_INTERVAL_SECONDS))
 
 
 def load_accounts() -> List[AccountConfig]:
@@ -1586,6 +1632,7 @@ def start_watchers():
     load_histories()
     load_codex_accounts()
     import_codex_auth_file(refresh_snapshot=False)
+    threading.Thread(target=codex_refresh_loop, daemon=True).start()
     for cfg in ACCOUNTS:
         threading.Thread(target=watch_account, args=(cfg,), daemon=True).start()
 
@@ -1819,6 +1866,9 @@ def delete_codex_account(account_id: str):
 def get_history(account_name: str):
     with HISTORY_LOCK:
         records = CODE_HISTORY.get(account_name, [])
+        if not records:
+            records = load_code_history(account_name)
+            CODE_HISTORY[account_name] = records
     return JSONResponse(
         content={
             "account": account_name,
