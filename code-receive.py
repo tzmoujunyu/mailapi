@@ -1017,7 +1017,10 @@ def fetch_codex_usage(access_token: str, workspace_id: Optional[str]) -> Dict[st
 
 
 def should_refresh_codex_token(error: str) -> bool:
-    return " status 401 " in error or "token" in error.lower()
+    detail = error.lower()
+    if "unsupported_country_region_territory" in detail:
+        return False
+    return " status 401 " in detail or " status 403 " in detail or "token" in detail
 
 
 def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
