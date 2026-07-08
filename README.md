@@ -34,7 +34,7 @@ export GMAIL_AUTH_FALLBACK=console
 python3 code-receive.py
 ```
 
-如果 `runtime/token_account*.json` 过期或刷新失败，可以在页面对应邮箱账号行点击“重新授权”。程序会先把旧 token 文件备份成 `*.bak.YYYYMMDDHHMMSS`，再打开 Google 授权，成功后写回新的 token 文件。
+如果 `runtime/token_account*.json` 过期或刷新失败，程序启动时会自动把旧 token 文件备份成 `*.bak.YYYYMMDDHHMMSS`，并在终端输出新的 Google 授权链接。打开链接完成授权后会写回新的 token 文件。
 
 如果报 `CERTIFICATE_VERIFY_FAILED` 或 `self-signed certificate`，说明 Python 请求 Google token 接口时不信任当前网络代理/网关的根证书。先把该根证书加入系统或 Python 信任链，或设置：
 

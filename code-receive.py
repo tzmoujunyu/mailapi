@@ -171,15 +171,50 @@ def request_gmail_credentials(cfg: AccountConfig, flow: InstalledAppFlow) -> Cre
     return flow.run_console()
 
 
+def request_gmail_browser_auth(cfg: AccountConfig) -> Credentials:
+    print(f"[{cfg['name']}] 开始浏览器授权：{cfg['email']}（token: {cfg['token_file']}）")
+    if should_use_console_auth():
+        flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
+        return request_gmail_credentials(cfg, flow)
+
+    session = create_auth_session(cfg)
+    try:
+        return wait_for_auth_session(cfg, session)
+    finally:
+        with AUTH_SESSION_LOCK:
+            AUTH_SESSIONS.pop(cfg["name"], None)
+            AUTH_SESSIONS.pop(str(session.get("state", "")), None)
+
+
+def is_google_cert_error(detail: str) -> bool:
+    return "CERTIFICATE_VERIFY_FAILED" in detail or "self-signed certificate" in detail
+
+
 def format_google_auth_error(error: Exception) -> str:
     detail = str(error)
-    if "CERTIFICATE_VERIFY_FAILED" in detail or "self-signed certificate" in detail:
+    if is_google_cert_error(detail):
         return (
             "HTTPS 证书校验失败。通常是代理、抓包工具或网络网关使用了 Python 不信任的"
             "自签根证书。请先把该根证书加入系统/Python 信任链，或设置 REQUESTS_CA_BUNDLE/"
-            f"SSL_CERT_FILE 指向 CA 证书文件，然后在页面点击重新授权。原始错误: {detail}"
+            f"SSL_CERT_FILE 指向 CA 证书文件，然后重启程序重新授权。原始错误: {detail}"
         )
     return detail
+
+
+def should_reauth_after_google_refresh_error(error: Exception) -> bool:
+    detail = str(error).lower()
+    return any(
+        marker in detail
+        for marker in (
+            "invalid_grant",
+            "refresh token",
+            "token has been expired",
+            "revoked",
+            "unauthorized",
+            "certificate_verify_failed",
+            "self-signed certificate",
+        )
+    )
 
 
 init_access_password()
@@ -1298,46 +1333,29 @@ def get_gmail_service(cfg: AccountConfig):
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
 
     if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(GoogleRequest())
-            except Exception as e:  # noqa: BLE001
-                raise RuntimeError(format_google_auth_error(e)) from e
-        else:
-            if not os.path.exists(cfg["credential_file"]):
-                raise FileNotFoundError(
-                    f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"
-                )
-            with AUTH_LOCK:
-                if os.path.exists(token_file):
-                    creds = Credentials.from_authorized_user_file(token_file, SCOPES)
-                    if creds and creds.expired and creds.refresh_token:
-                        try:
-                            creds.refresh(GoogleRequest())
-                        except Exception as e:  # noqa: BLE001
+        with AUTH_LOCK:
+            if os.path.exists(token_file):
+                creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+                if creds and creds.expired and creds.refresh_token:
+                    try:
+                        creds.refresh(GoogleRequest())
+                    except Exception as e:  # noqa: BLE001
+                        if not should_reauth_after_google_refresh_error(e):
                             raise RuntimeError(format_google_auth_error(e)) from e
-                if not creds or not creds.valid:
-                    print(f"[{cfg['name']}] 开始浏览器授权：{cfg['email']}（token: {token_file}）")
-                    if should_use_console_auth():
-                        flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
-                        creds = request_gmail_credentials(cfg, flow)
-                    else:
-                        session = create_auth_session(cfg)
-                        creds = wait_for_auth_session(cfg, session)
-                        with AUTH_SESSION_LOCK:
-                            AUTH_SESSIONS.pop(cfg["name"], None)
-                            AUTH_SESSIONS.pop(str(session.get("state", "")), None)
+                        backup_path = backup_token_file(token_file)
+                        suffix = f"，旧 token 已备份到 {backup_path}" if backup_path else ""
+                        print(f"[{cfg['name']}] token 刷新失败，将重新授权{suffix}：{format_google_auth_error(e)}")
+                        creds = None
+            if not creds or not creds.valid:
+                if not os.path.exists(cfg["credential_file"]):
+                    raise FileNotFoundError(
+                        f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"
+                    )
+                creds = request_gmail_browser_auth(cfg)
         with open(token_file, "w", encoding="utf-8") as token:
             token.write(creds.to_json())
 
     return build("gmail", "v1", credentials=creds)
-
-
-def find_account_config(account_name: str) -> Optional[AccountConfig]:
-    for cfg in ACCOUNTS:
-        if cfg["name"] == account_name:
-            return cfg
-    return None
 
 
 def backup_token_file(token_file: str) -> Optional[str]:
@@ -1346,25 +1364,6 @@ def backup_token_file(token_file: str) -> Optional[str]:
     backup_path = f"{token_file}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
     os.replace(token_file, backup_path)
     return backup_path
-
-
-def complete_gmail_reauth(cfg: AccountConfig, session: Dict[str, object]) -> None:
-    name = cfg["name"]
-    try:
-        creds = wait_for_auth_session(cfg, session)
-        token_dir = os.path.dirname(cfg["token_file"])
-        if token_dir:
-            os.makedirs(token_dir, exist_ok=True)
-        with open(cfg["token_file"], "w", encoding="utf-8") as token:
-            token.write(creds.to_json())
-        save_state(name, {"status": "Google 授权已刷新，重新启动监听"})
-        threading.Thread(target=watch_account, args=(cfg,), daemon=True).start()
-    except Exception as e:  # noqa: BLE001
-        save_state(name, {"status": f"重新授权失败: {format_google_auth_error(e)}"})
-    finally:
-        with AUTH_SESSION_LOCK:
-            AUTH_SESSIONS.pop(name, None)
-            AUTH_SESSIONS.pop(str(session.get("state", "")), None)
 
 
 def decode_body(data: Optional[str]) -> str:
@@ -1603,34 +1602,6 @@ def get_codes():
     with STATE_LOCK:
         data = list(STATE.values())
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
-
-
-@app.post("/api/gmail/accounts/{account_name}/reauth")
-def reauth_gmail_account(account_name: str):
-    cfg = find_account_config(account_name)
-    if not cfg:
-        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
-    if not os.path.exists(cfg["credential_file"]):
-        return JSONResponse(
-            content={"detail": f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"},
-            status_code=400,
-        )
-
-    try:
-        session = create_auth_session(cfg)
-        backup_path = backup_token_file(cfg["token_file"])
-        save_state(cfg["name"], {"status": "等待 Google 重新授权"})
-        threading.Thread(target=complete_gmail_reauth, args=(cfg, session), daemon=True).start()
-    except Exception as e:  # noqa: BLE001
-        return JSONResponse(content={"detail": format_google_auth_error(e)}, status_code=500)
-
-    return JSONResponse(
-        content={
-            "auth_url": session["auth_url"],
-            "backup_path": backup_path,
-            "updated_at": now_iso(),
-        }
-    )
 
 
 def parse_codex_login_addr() -> tuple:

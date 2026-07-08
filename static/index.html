@@ -5,29 +5,66 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>ChatGPT验证码</title>
     <style>
+      * { box-sizing: border-box; }
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         background: #f5f7fa;
         color: #1f2937;
         margin: 0;
-        padding: 20px;
+        padding: 12px;
       }
       .container {
-        max-width: 960px;
+        width: 100%;
+        max-width: none;
+        min-height: calc(100vh - 24px);
         margin: 0 auto;
         background: #fff;
-        border-radius: 12px;
-        padding: 20px;
+        border-radius: 8px;
+        padding: 16px;
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
       }
       h1 { margin: 0 0 16px; font-size: 22px; }
       h2 { margin: 28px 0 12px; font-size: 18px; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; }
+      .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+      .email-table { min-width: 980px; }
+      .codex-table { min-width: 900px; }
+      th, td {
+        border-bottom: 1px solid #e5e7eb;
+        padding: 10px;
+        text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+      tbody tr:last-child td { border-bottom: 0; }
       th { background: #f9fafb; }
+      .email-table th:nth-child(1) { width: 18%; }
+      .email-table th:nth-child(2) { width: 10%; }
+      .email-table th:nth-child(3) { width: 34%; }
+      .email-table th:nth-child(4) { width: 16%; }
+      .email-table th:nth-child(5) { width: 14%; }
+      .email-table th:nth-child(6) { width: 8%; }
+      .codex-table th:nth-child(1) { width: 28%; }
+      .codex-table th:nth-child(2) { width: 18%; }
+      .codex-table th:nth-child(3) { width: 18%; }
+      .codex-table th:nth-child(4) { width: 18%; }
+      .codex-table th:nth-child(5) { width: 18%; }
       .code { font-weight: 700; color: #0ea5e9; }
       .muted { color: #6b7280; }
       .status { font-weight: 600; }
+      .status-good { color: #15803d; font-weight: 700; }
+      .status-warn { color: #b45309; font-weight: 700; }
+      .status-bad { color: #b91c1c; font-weight: 700; }
+      .status-neutral { color: #6b7280; font-weight: 700; }
       .small-btn {
         border: 1px solid #cbd5e1;
         border-radius: 6px;
@@ -43,15 +80,32 @@
         margin-bottom: 10px;
       }
       .codex-message { min-height: 20px; margin-bottom: 8px; }
-      .pill {
-        display: inline-block;
-        border-radius: 999px;
-        background: #eef2ff;
-        color: #3730a3;
-        padding: 2px 8px;
-        font-size: 12px;
-        font-weight: 700;
+      .account-main {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
       }
+      .account-email {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .plan-pill {
+        display: inline-block;
+        flex: 0 0 auto;
+        border-radius: 6px;
+        padding: 2px 7px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1.4;
+      }
+      .plan-pro { background: #fee2e2; color: #991b1b; }
+      .plan-plus { background: #dbeafe; color: #1d4ed8; }
+      .plan-go { background: #dcfce7; color: #166534; }
+      .plan-free { background: #f3f4f6; color: #374151; }
+      .plan-other { background: #fef3c7; color: #92400e; }
       .error-text { color: #b91c1c; }
       .history-panel {
         margin-top: 12px;
@@ -91,32 +145,37 @@
         border-radius: 8px;
         padding: 8px;
         overflow: auto;
+        max-height: 64px;
+        white-space: pre-wrap;
       }
       @media (max-width: 680px) {
         table, th, td { font-size: 14px; }
         .codex-controls { flex-wrap: wrap; }
+        body { padding: 8px; }
+        .container { min-height: calc(100vh - 16px); padding: 10px; }
       }
     </style>
   </head>
   <body>
     <div class="container">
       <h1>ChatGPT验证码</h1>
-      <table>
-        <thead>
-          <tr>
-            <th>邮箱</th>
-            <th>最新验证码</th>
-            <th>主题</th>
-            <th>更新时间</th>
-            <th>状态</th>
-            <th>历史记录</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody id="rows">
-          <tr><td colspan="7" class="muted">加载中...</td></tr>
-        </tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="email-table">
+          <thead>
+            <tr>
+              <th>邮箱</th>
+              <th>最新验证码</th>
+              <th>主题</th>
+              <th>更新时间</th>
+              <th>状态</th>
+              <th>历史记录</th>
+            </tr>
+          </thead>
+          <tbody id="rows">
+            <tr><td colspan="6" class="muted">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
 
       <div id="history-panel" class="history-panel" hidden></div>
 
@@ -126,21 +185,22 @@
         <button class="small-btn" onclick="refreshCodexAuth()">刷新</button>
       </div>
       <div id="codex-message" class="codex-message muted"></div>
-      <table>
-        <thead>
-          <tr>
-            <th>账号</th>
-            <th>订阅</th>
-            <th>短周期</th>
-            <th>长周期</th>
-            <th>Token</th>
-            <th>状态</th>
-          </tr>
-        </thead>
-        <tbody id="codex-rows">
-          <tr><td colspan="6" class="muted">加载中...</td></tr>
-        </tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="codex-table">
+          <thead>
+            <tr>
+              <th>账号</th>
+              <th>短周期</th>
+              <th>长周期</th>
+              <th>Token</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="codex-rows">
+            <tr><td colspan="5" class="muted">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <script>
@@ -217,13 +277,63 @@
         return `${value}分钟`;
       }
 
-      function subscriptionText(item) {
+      function planValue(item) {
         const sub = item.subscription || {};
         const plan = sub.plan_type || sub.account_plan_type || item.chatgpt_plan_type || '-';
+        return String(plan || '-').toLowerCase();
+      }
+
+      function planBadge(item) {
+        const plan = planValue(item);
+        const label = plan && plan !== '-' ? plan.toUpperCase() : 'FREE';
+        let cls = 'plan-other';
+        if (plan.includes('pro')) cls = 'plan-pro';
+        else if (plan.includes('plus')) cls = 'plan-plus';
+        else if (plan.includes('go')) cls = 'plan-go';
+        else if (plan.includes('free') || plan === '-') cls = 'plan-free';
+        return `<span class="plan-pill ${cls}">${escapeHtml(label)}</span>`;
+      }
+
+      function accountTitle(item) {
+        const label = String(item.label || '');
+        if (item.email) return item.email;
+        if (label.includes('@')) return label;
+        if (item.subject) return item.subject;
+        return 'Codex账号';
+      }
+
+      function accountCell(item) {
+        const sub = item.subscription || {};
         const state = sub.has_subscription === true ? '有效' : sub.has_subscription === false ? '无' : '-';
         const renew = sub.renews_at ? `续：${formatTsSeconds(sub.renews_at)}` : '';
         const expire = sub.expires_at ? `到：${formatTsSeconds(sub.expires_at)}` : '';
-        return `<span class="pill">${escapeHtml(plan)}</span><div class="muted">${escapeHtml(state)} ${escapeHtml(renew || expire)}</div>`;
+        const detail = `${state} ${renew || expire}`.trim();
+        return `
+          <div class="account-main">
+            <span class="account-email">${escapeHtml(accountTitle(item))}</span>
+            ${planBadge(item)}
+          </div>
+          <div class="muted">${escapeHtml(detail || '-')}</div>
+        `;
+      }
+
+      function codexStatus(item) {
+        if (item.error) {
+          return { text: item.status ? `${item.status}：${item.error}` : item.error, cls: 'status-bad' };
+        }
+        if (item.usage_status === 'available') {
+          return { text: '可用', cls: 'status-good' };
+        }
+        if (item.usage_status === 'unavailable') {
+          return { text: '限流', cls: 'status-bad' };
+        }
+        if (item.usage_status === 'primary_window_available_only') {
+          return { text: '部分可用', cls: 'status-warn' };
+        }
+        if (item.status === '已刷新' || item.status === '已导入') {
+          return { text: '可用', cls: 'status-good' };
+        }
+        return { text: item.status || '未知', cls: 'status-neutral' };
       }
 
       function usageCell(usage, kind) {
@@ -305,7 +415,7 @@
           const items = data.items || [];
           codexRows.innerHTML = '';
           if (!items.length) {
-            codexRows.innerHTML = '<tr><td colspan="6" class="muted">暂无 Codex 账号。</td></tr>';
+            codexRows.innerHTML = '<tr><td colspan="5" class="muted">暂无 Codex 账号。</td></tr>';
             return;
           }
 
@@ -314,27 +424,21 @@
             const tokenText = item.access_token_expires_at
               ? formatTsSeconds(item.access_token_expires_at)
               : '-';
-            const status = item.error
-              ? `${item.status || '异常'}：${item.error}`
-              : item.status || '-';
+            const status = codexStatus(item);
             tr.innerHTML = `
-              <td>
-                <div><strong>${escapeHtml(item.label || item.id || '-')}</strong></div>
-                <div class="muted">${escapeHtml(item.chatgpt_account_id || item.workspace_id || '-')}</div>
-              </td>
-              <td>${subscriptionText(item)}</td>
+              <td>${accountCell(item)}</td>
               <td>${usageCell(item.usage, 'primary')}</td>
               <td>${usageCell(item.usage, 'secondary')}</td>
               <td>
                 <div>${escapeHtml(tokenText)}</div>
                 <div class="muted">${item.has_refresh_token ? '可刷新' : '仅当前'}</div>
               </td>
-              <td class="${item.error ? 'error-text' : 'status'}">${escapeHtml(status)}</td>
+              <td class="${status.cls}">${escapeHtml(status.text)}</td>
             `;
             codexRows.appendChild(tr);
           }
         } catch (e) {
-          codexRows.innerHTML = '<tr><td colspan="6">Codex 账号加载失败。</td></tr>';
+          codexRows.innerHTML = '<tr><td colspan="5">Codex 账号加载失败。</td></tr>';
         }
       }
 
@@ -346,21 +450,6 @@
       function refreshCodexAuth() {
         setCodexMessage('正在重新打开 Codex 授权页面...');
         window.location.href = '/api/codex/auth/start?reason=refresh';
-      }
-
-      async function reauthGmailAccount(name) {
-        try {
-          const res = await fetch(`/api/gmail/accounts/${encodeURIComponent(name)}/reauth`, {
-            method: 'POST',
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(data.detail || '重新授权失败');
-          }
-          window.location.href = data.auth_url;
-        } catch (e) {
-          alert(e.message || '重新授权失败');
-        }
       }
 
       async function render() {
@@ -380,13 +469,12 @@
               <td class="muted">${item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}</td>
               <td class="status">${item.status || '-'}</td>
               <td><button class="small-btn" onclick="onHistoryClick(${jsString(name)}, ${jsString(email)})">查看历史</button></td>
-              <td><button class="small-btn" onclick="reauthGmailAccount(${jsString(name)})">重新授权</button></td>
             `;
             rows.appendChild(tr);
           }
         } catch (e) {
           const rows = document.getElementById('rows');
-          rows.innerHTML = '<tr><td colspan="7">加载失败，请检查服务是否正常启动。</td></tr>';
+          rows.innerHTML = '<tr><td colspan="6">加载失败，请检查服务是否正常启动。</td></tr>';
         }
       }
 
