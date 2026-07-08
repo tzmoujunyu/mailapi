@@ -43,6 +43,8 @@ export REQUESTS_CA_BUNDLE='/path/to/ca-bundle.pem'
 export SSL_CERT_FILE='/path/to/ca-bundle.pem'
 ```
 
+也可以把同样的配置写入项目根目录 `.env`，程序启动时会自动读取。
+
 ## Codex 账号信息
 
 页面下方的“Codex账号信息”点击“导入”会打开 Codex/OpenAI 授权页面。选择账号并授权后，回调会自动保存 auth 文件并刷新账号订阅和额度信息。

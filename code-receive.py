@@ -31,6 +31,34 @@ from fastapi.staticfiles import StaticFiles
 
 from typing import TypedDict
 
+
+def load_dotenv_file(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
+    except Exception as e:  # noqa: BLE001
+        print(f".env 加载失败：{e}")
+
+
+load_dotenv_file()
+
 CHECK_INTERVAL_SECONDS = 3
 MAX_POLL_RESULTS = 100
 MAX_HISTORY_RECORDS = 30
@@ -201,7 +229,7 @@ def format_google_auth_error(error: Exception) -> str:
         return (
             "HTTPS 证书校验失败。通常是代理、抓包工具或网络网关使用了 Python 不信任的"
             "自签根证书。请先把该根证书加入系统/Python 信任链，或设置 REQUESTS_CA_BUNDLE/"
-            f"SSL_CERT_FILE 指向 CA 证书文件，然后重启程序重新授权。原始错误: {detail}"
+            f"SSL_CERT_FILE 指向 CA 证书文件（可写入 .env），然后重启程序重新授权。原始错误: {detail}"
         )
     return detail
 
