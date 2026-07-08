@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import html
+import http.server
 import json
 import os
 import secrets
@@ -38,11 +39,17 @@ DATA_DIR = "runtime"
 HISTORY_DIR = os.path.join(DATA_DIR, "history")
 HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
 CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
+CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_AUTH_FALLBACK = os.getenv("GMAIL_AUTH_FALLBACK", "auto").strip().lower()
 GMAIL_OAUTH_REDIRECT_BASE = os.getenv("GMAIL_OAUTH_REDIRECT_BASE", "http://localhost:8000").rstrip("/")
+APP_BASE_URL = os.getenv("APP_BASE_URL", GMAIL_OAUTH_REDIRECT_BASE).rstrip("/")
 CODEX_ISSUER = os.getenv("CODEX_ISSUER", "https://auth.openai.com").rstrip("/")
-CODEX_OAUTH_REDIRECT_BASE = os.getenv("CODEX_OAUTH_REDIRECT_BASE", GMAIL_OAUTH_REDIRECT_BASE).rstrip("/")
+CODEX_OAUTH_REDIRECT_BASE = os.getenv("CODEX_OAUTH_REDIRECT_BASE", "http://localhost:1455").rstrip("/")
+CODEX_LOGIN_ADDR = os.getenv(
+    "CODEX_LOGIN_ADDR",
+    urllib.parse.urlparse(CODEX_OAUTH_REDIRECT_BASE).netloc or "localhost:1455",
+).strip()
 CODEX_USAGE_BASE_URL = os.getenv("CODEX_USAGE_BASE_URL", "https://chatgpt.com").rstrip("/")
 CODEX_CLIENT_ID = os.getenv("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann").strip()
 CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oauth/token").strip()
@@ -54,6 +61,8 @@ HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
 CODEX_ACCOUNTS_LOCK = threading.Lock()
 CODEX_AUTH_SESSION_LOCK = threading.Lock()
+CODEX_LOGIN_SERVER_LOCK = threading.Lock()
+CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
 ACCESS_COOKIE_NAME = "chatgpt_code_access"
@@ -162,6 +171,17 @@ def request_gmail_credentials(cfg: AccountConfig, flow: InstalledAppFlow) -> Cre
     return flow.run_console()
 
 
+def format_google_auth_error(error: Exception) -> str:
+    detail = str(error)
+    if "CERTIFICATE_VERIFY_FAILED" in detail or "self-signed certificate" in detail:
+        return (
+            "HTTPS 证书校验失败。通常是代理、抓包工具或网络网关使用了 Python 不信任的"
+            "自签根证书。请先把该根证书加入系统/Python 信任链，或设置 REQUESTS_CA_BUNDLE/"
+            f"SSL_CERT_FILE 指向 CA 证书文件，然后在页面点击重新授权。原始错误: {detail}"
+        )
+    return detail
+
+
 init_access_password()
 
 
@@ -182,6 +202,7 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
 
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(HISTORY_ID_DIR, exist_ok=True)
+os.makedirs(CODEX_AUTH_DIR, exist_ok=True)
 
 
 def now_iso() -> str:
@@ -293,8 +314,34 @@ def codex_auth_payload_from_tokens(tokens: Dict[str, str]) -> Dict[str, Any]:
     return payload
 
 
+def codex_auth_identity(payload: Dict[str, Any]) -> str:
+    tokens = payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {}
+    access_token = str(tokens.get("access_token") or payload.get("access_token") or "").strip()
+    identity = (
+        str(payload.get("account_id") or "").strip()
+        or str(payload.get("chatgpt_account_id") or "").strip()
+        or str(payload.get("workspace_id") or "").strip()
+        or str(payload.get("email") or "").strip()
+        or str(payload.get("subject") or "").strip()
+    )
+    if identity:
+        return identity
+    if access_token:
+        return f"token-{hashlib.sha256(access_token.encode('utf-8')).hexdigest()[:12]}"
+    return "codex_auth"
+
+
+def safe_codex_auth_filename(payload: Dict[str, Any]) -> str:
+    identity = codex_auth_identity(payload)
+    name = re.sub(r"[^A-Za-z0-9_.=-]+", "_", identity).strip("._")
+    return f"{(name or 'codex_auth')[:160]}.json"
+
+
 def save_codex_auth_file(payload: Dict[str, Any]) -> None:
     with open(CODEX_AUTH_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
@@ -310,11 +357,39 @@ def load_codex_auth_file() -> Optional[Dict[str, Any]]:
         return None
 
 
+def load_codex_auth_files() -> List[Dict[str, Any]]:
+    entries = []
+    paths = []
+    if os.path.exists(CODEX_AUTH_FILE):
+        paths.append(CODEX_AUTH_FILE)
+    if os.path.isdir(CODEX_AUTH_DIR):
+        for filename in sorted(os.listdir(CODEX_AUTH_DIR)):
+            if filename.endswith(".json"):
+                paths.append(os.path.join(CODEX_AUTH_DIR, filename))
+
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                value = json.load(f)
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if isinstance(item, dict):
+                    entries.append((os.path.getmtime(path), path, item))
+        except Exception as e:  # noqa: BLE001
+            print(f"Codex auth 文件加载失败：{path}: {e}")
+
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for _, path, payload in sorted(entries, key=lambda item: item[0]):
+        key = codex_auth_identity(payload) or path
+        deduped[key] = payload
+    return list(deduped.values())
+
+
 def import_codex_auth_file(refresh_snapshot: bool = False) -> List[Dict[str, Any]]:
-    payload = load_codex_auth_file()
-    if not payload:
-        return []
-    return import_codex_auth_json(json.dumps(payload), refresh_snapshot=refresh_snapshot)
+    imported: List[Dict[str, Any]] = []
+    for payload in load_codex_auth_files():
+        imported.extend(import_codex_auth_json(json.dumps(payload), refresh_snapshot=refresh_snapshot))
+    return imported
 
 
 def complete_codex_oauth_callback(code: str, state: str) -> List[Dict[str, Any]]:
@@ -1205,10 +1280,10 @@ def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
             event.set()
         return HTMLResponse("Google 授权完成，token 已返回服务器。可以关闭此页面并回到终端。")
     except Exception as e:  # noqa: BLE001
-        session["error"] = str(e)
+        session["error"] = format_google_auth_error(e)
         if hasattr(event, "set"):
             event.set()
-        return HTMLResponse(f"Google 授权失败：{html.escape(str(e))}", status_code=400)
+        return HTMLResponse(f"Google 授权失败：{html.escape(session['error'])}", status_code=400)
 
 
 @app.get("/oauth2callback/{account_name}", response_class=HTMLResponse)
@@ -1224,7 +1299,10 @@ def get_gmail_service(cfg: AccountConfig):
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(GoogleRequest())
+            try:
+                creds.refresh(GoogleRequest())
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(format_google_auth_error(e)) from e
         else:
             if not os.path.exists(cfg["credential_file"]):
                 raise FileNotFoundError(
@@ -1234,7 +1312,10 @@ def get_gmail_service(cfg: AccountConfig):
                 if os.path.exists(token_file):
                     creds = Credentials.from_authorized_user_file(token_file, SCOPES)
                     if creds and creds.expired and creds.refresh_token:
-                        creds.refresh(GoogleRequest())
+                        try:
+                            creds.refresh(GoogleRequest())
+                        except Exception as e:  # noqa: BLE001
+                            raise RuntimeError(format_google_auth_error(e)) from e
                 if not creds or not creds.valid:
                     print(f"[{cfg['name']}] 开始浏览器授权：{cfg['email']}（token: {token_file}）")
                     if should_use_console_auth():
@@ -1250,6 +1331,40 @@ def get_gmail_service(cfg: AccountConfig):
             token.write(creds.to_json())
 
     return build("gmail", "v1", credentials=creds)
+
+
+def find_account_config(account_name: str) -> Optional[AccountConfig]:
+    for cfg in ACCOUNTS:
+        if cfg["name"] == account_name:
+            return cfg
+    return None
+
+
+def backup_token_file(token_file: str) -> Optional[str]:
+    if not os.path.exists(token_file):
+        return None
+    backup_path = f"{token_file}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    os.replace(token_file, backup_path)
+    return backup_path
+
+
+def complete_gmail_reauth(cfg: AccountConfig, session: Dict[str, object]) -> None:
+    name = cfg["name"]
+    try:
+        creds = wait_for_auth_session(cfg, session)
+        token_dir = os.path.dirname(cfg["token_file"])
+        if token_dir:
+            os.makedirs(token_dir, exist_ok=True)
+        with open(cfg["token_file"], "w", encoding="utf-8") as token:
+            token.write(creds.to_json())
+        save_state(name, {"status": "Google 授权已刷新，重新启动监听"})
+        threading.Thread(target=watch_account, args=(cfg,), daemon=True).start()
+    except Exception as e:  # noqa: BLE001
+        save_state(name, {"status": f"重新授权失败: {format_google_auth_error(e)}"})
+    finally:
+        with AUTH_SESSION_LOCK:
+            AUTH_SESSIONS.pop(name, None)
+            AUTH_SESSIONS.pop(str(session.get("state", "")), None)
 
 
 def decode_body(data: Optional[str]) -> str:
@@ -1490,44 +1605,137 @@ def get_codes():
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
 
 
+@app.post("/api/gmail/accounts/{account_name}/reauth")
+def reauth_gmail_account(account_name: str):
+    cfg = find_account_config(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    if not os.path.exists(cfg["credential_file"]):
+        return JSONResponse(
+            content={"detail": f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"},
+            status_code=400,
+        )
+
+    try:
+        session = create_auth_session(cfg)
+        backup_path = backup_token_file(cfg["token_file"])
+        save_state(cfg["name"], {"status": "等待 Google 重新授权"})
+        threading.Thread(target=complete_gmail_reauth, args=(cfg, session), daemon=True).start()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(content={"detail": format_google_auth_error(e)}, status_code=500)
+
+    return JSONResponse(
+        content={
+            "auth_url": session["auth_url"],
+            "backup_path": backup_path,
+            "updated_at": now_iso(),
+        }
+    )
+
+
+def parse_codex_login_addr() -> tuple:
+    raw = CODEX_LOGIN_ADDR or urllib.parse.urlparse(CODEX_OAUTH_REDIRECT_BASE).netloc
+    if "://" in raw:
+        parsed = urllib.parse.urlparse(raw)
+        raw = parsed.netloc
+    host, sep, port_text = raw.rpartition(":")
+    if not sep:
+        return raw or "localhost", 1455
+    return host or "localhost", int(port_text)
+
+
+def codex_callback_result(params: Dict[str, str]) -> tuple:
+    error_code = params.get("error", "").strip()
+    error_description = params.get("error_description", "").strip()
+    if error_code:
+        detail = error_description or error_code
+        return False, f"Codex 授权失败：{detail}", 400
+
+    code = params.get("code", "").strip()
+    state = params.get("state", "").strip()
+    if not code or not state:
+        return False, "Codex 授权回调缺少 code 或 state", 400
+
+    try:
+        imported = complete_codex_oauth_callback(code, state)
+    except Exception as e:  # noqa: BLE001
+        return False, f"Codex 授权导入失败：{e}", 500
+
+    label = imported[0].get("label") if imported else "Codex 账号"
+    return True, f"{label} 已导入，auth 文件已保存到 runtime/codex_auth/ 并同步最新文件", 200
+
+
+class CodexLoginHTTPServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+class CodexLoginCallbackHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/auth/callback":
+            self.send_error(404)
+            return
+
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+        ok, message, status_code = codex_callback_result(params)
+        body = codex_callback_html(ok, message, redirect_url=APP_BASE_URL if ok else None)
+        data = body.encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def ensure_codex_login_server() -> None:
+    global CODEX_LOGIN_SERVER
+    with CODEX_LOGIN_SERVER_LOCK:
+        if CODEX_LOGIN_SERVER is not None:
+            return
+        host, port = parse_codex_login_addr()
+        try:
+            server = CodexLoginHTTPServer((host, port), CodexLoginCallbackHandler)
+        except OSError as e:
+            raise RuntimeError(
+                f"Codex 登录回调端口 {host}:{port} 无法监听：{e}。"
+                "请确认没有其他程序占用，或设置 CODEX_LOGIN_ADDR/CODEX_OAUTH_REDIRECT_BASE。"
+            ) from e
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        CODEX_LOGIN_SERVER = server
+        print(f"Codex 授权回调监听中：http://{host}:{port}/auth/callback")
+
+
 @app.get("/api/codex/auth/start")
 def start_codex_auth(request: FastAPIRequest):
     reason = request.query_params.get("reason", "import").strip() or "import"
+    try:
+        ensure_codex_login_server()
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
     session = create_codex_auth_session(reason)
     return RedirectResponse(url=str(session["auth_url"]), status_code=302)
 
 
 @app.get("/auth/callback", response_class=HTMLResponse)
 def codex_auth_callback(request: FastAPIRequest):
-    error_code = request.query_params.get("error", "").strip()
-    error_description = request.query_params.get("error_description", "").strip()
-    if error_code:
-        detail = error_description or error_code
-        return codex_callback_page(False, f"Codex 授权失败：{detail}", status_code=400)
-
-    code = request.query_params.get("code", "").strip()
-    state = request.query_params.get("state", "").strip()
-    if not code or not state:
-        return codex_callback_page(False, "Codex 授权回调缺少 code 或 state", status_code=400)
-
-    try:
-        imported = complete_codex_oauth_callback(code, state)
-    except Exception as e:  # noqa: BLE001
-        return codex_callback_page(False, f"Codex 授权导入失败：{e}", status_code=500)
-
-    label = imported[0].get("label") if imported else "Codex 账号"
-    return codex_callback_page(True, f"{label} 已导入，auth 文件已保存到 runtime/codex_auth.json")
+    ok, message, status_code = codex_callback_result(dict(request.query_params))
+    return codex_callback_page(ok, message, status_code=status_code)
 
 
-def codex_callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLResponse:
+def codex_callback_html(ok: bool, message: str, redirect_url: Optional[str] = "/") -> str:
     title = "Codex 授权完成" if ok else "Codex 授权失败"
     color = "#166534" if ok else "#b91c1c"
     escaped_message = html.escape(message)
     redirect_script = (
-        "<script>setTimeout(() => { window.location.href = '/'; }, 1200);</script>" if ok else ""
+        f"<script>setTimeout(() => {{ window.location.href = {json.dumps(redirect_url)}; }}, 1200);</script>"
+        if ok and redirect_url
+        else ""
     )
-    return HTMLResponse(
-        f"""
+    return f"""
         <!doctype html>
         <html lang="zh-CN">
         <head>
@@ -1551,9 +1759,11 @@ def codex_callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLR
           {redirect_script}
         </body>
         </html>
-        """,
-        status_code=status_code,
-    )
+        """
+
+
+def codex_callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLResponse:
+    return HTMLResponse(codex_callback_html(ok, message), status_code=status_code)
 
 
 @app.get("/api/codex/accounts")

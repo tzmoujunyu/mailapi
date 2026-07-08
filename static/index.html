@@ -110,10 +110,11 @@
             <th>更新时间</th>
             <th>状态</th>
             <th>历史记录</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody id="rows">
-          <tr><td colspan="6" class="muted">加载中...</td></tr>
+          <tr><td colspan="7" class="muted">加载中...</td></tr>
         </tbody>
       </table>
 
@@ -155,6 +156,10 @@
         const div = document.createElement('div');
         div.textContent = text || '';
         return div.innerHTML;
+      }
+
+      function jsString(value) {
+        return JSON.stringify(String(value || ''));
       }
 
       function formatDateTime(value) {
@@ -343,6 +348,21 @@
         window.location.href = '/api/codex/auth/start?reason=refresh';
       }
 
+      async function reauthGmailAccount(name) {
+        try {
+          const res = await fetch(`/api/gmail/accounts/${encodeURIComponent(name)}/reauth`, {
+            method: 'POST',
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.detail || '重新授权失败');
+          }
+          window.location.href = data.auth_url;
+        } catch (e) {
+          alert(e.message || '重新授权失败');
+        }
+      }
+
       async function render() {
         try {
           const res = await fetch('/api/codes', { cache: 'no-store' });
@@ -359,13 +379,14 @@
               <td><pre>${item.subject || '-'}</pre></td>
               <td class="muted">${item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}</td>
               <td class="status">${item.status || '-'}</td>
-              <td><button class="small-btn" onclick="onHistoryClick('${name}', '${email}')">查看历史</button></td>
+              <td><button class="small-btn" onclick="onHistoryClick(${jsString(name)}, ${jsString(email)})">查看历史</button></td>
+              <td><button class="small-btn" onclick="reauthGmailAccount(${jsString(name)})">重新授权</button></td>
             `;
             rows.appendChild(tr);
           }
         } catch (e) {
           const rows = document.getElementById('rows');
-          rows.innerHTML = '<tr><td colspan="6">加载失败，请检查服务是否正常启动。</td></tr>';
+          rows.innerHTML = '<tr><td colspan="7">加载失败，请检查服务是否正常启动。</td></tr>';
         }
       }
 
