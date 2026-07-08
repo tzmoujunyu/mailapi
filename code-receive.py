@@ -700,6 +700,8 @@ def build_codex_account_record(
         "usage": previous.get("usage"),
         "status": "已导入",
         "error": None,
+        "subscription_error": None,
+        "usage_error": None,
         "created_at": previous.get("created_at") or now,
         "updated_at": now,
         "last_refresh_at": previous.get("last_refresh_at"),
@@ -750,6 +752,23 @@ def summarize_response_body(body: str) -> str:
     return " ".join(text.split())[:240]
 
 
+def response_error_details(headers: Any) -> str:
+    details = []
+    content_type = headers.get("Content-Type", "")
+    if "html" in str(content_type).lower():
+        details.append("kind=html")
+    for name, label in (
+        ("x-request-id", "request_id"),
+        ("x-oai-request-id", "request_id"),
+        ("cf-ray", "cf_ray"),
+        ("x-openai-authorization-error", "auth_error"),
+    ):
+        value = headers.get(name)
+        if value:
+            details.append(f"{label}={value}")
+    return f" [{', '.join(details)}]" if details else ""
+
+
 def http_json(url: str, headers: Dict[str, str], data: Optional[bytes] = None) -> Dict[str, Any]:
     method = "POST" if data is not None else "GET"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -766,7 +785,7 @@ def http_json(url: str, headers: Dict[str, str], data: Optional[bytes] = None) -
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         suffix = summarize_response_body(body)
-        detail = f" status {e.code} {e.reason}"
+        detail = f" status {e.code} {e.reason}{response_error_details(e.headers)}"
         if suffix:
             detail += f": {suffix}"
         raise RuntimeError(detail) from e
@@ -953,6 +972,12 @@ def classify_usage_status(snapshot: Optional[Dict[str, Any]]) -> str:
 
 def codex_error_status_reason(error: str) -> str:
     normalized = error.lower()
+    if "订阅信息" in normalized:
+        if "401" in normalized:
+            return "subscription_http_401"
+        if "403" in normalized:
+            return "subscription_http_403"
+        return "subscription_refresh_failed"
     if "401" in normalized:
         return "usage_http_401"
     if "403" in normalized:
@@ -1075,9 +1100,13 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("账号缺少 access_token")
 
     errors: List[str] = []
+    subscription_errors: List[str] = []
+    usage_errors: List[str] = []
     refreshed_once = False
     for attempt in range(2):
         errors = []
+        subscription_errors = []
+        usage_errors = []
         access_token = str(updated["token"].get("access_token") or "").strip()
         chatgpt_account_id = str(updated.get("chatgpt_account_id") or "").strip() or None
         workspace_id = str(updated.get("workspace_id") or "").strip() or chatgpt_account_id
@@ -1087,7 +1116,9 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
             if subscription is not None:
                 updated["subscription"] = subscription
         except Exception as e:  # noqa: BLE001
-            errors.append(f"订阅信息: {e}")
+            message = f"订阅信息: {e}"
+            subscription_errors.append(message)
+            errors.append(message)
 
         try:
             usage = fetch_codex_usage(access_token, workspace_id)
@@ -1095,7 +1126,9 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
             updated["usage_status"] = classify_usage_status(usage)
             updated["status_reason"] = codex_usage_status_reason(usage)
         except Exception as e:  # noqa: BLE001
-            errors.append(f"额度信息: {e}")
+            message = f"额度信息: {e}"
+            usage_errors.append(message)
+            errors.append(message)
 
         if (
             errors
@@ -1114,17 +1147,19 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
     updated["last_refresh_at"] = now_iso()
     updated["updated_at"] = now_iso()
     updated["access_token_expires_at"] = extract_token_exp(str(updated["token"].get("access_token") or ""))
-    updated["error"] = "; ".join(errors) if errors else None
-    if errors:
+    updated["subscription_error"] = "; ".join(subscription_errors) if subscription_errors else None
+    updated["usage_error"] = "; ".join(usage_errors) if usage_errors else None
+    updated["error"] = updated["usage_error"]
+    if usage_errors:
         updated["status_reason"] = codex_usage_status_reason(
             updated.get("usage") if isinstance(updated.get("usage"), dict) else None,
-            updated["error"],
+            updated["usage_error"],
         )
     else:
         updated["status_reason"] = codex_usage_status_reason(
             updated.get("usage") if isinstance(updated.get("usage"), dict) else None
         )
-    if not errors:
+    if not usage_errors:
         updated["status"] = "已刷新"
     elif updated.get("subscription") or updated.get("usage"):
         updated["status"] = "部分刷新失败"
@@ -1163,10 +1198,17 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
     usage_status = record.get("usage_status") or classify_usage_status(usage)
     error = record.get("error")
+    subscription_error = record.get("subscription_error")
+    usage_error = record.get("usage_error")
+    if error and str(error).startswith("订阅信息") and not usage_error:
+        subscription_error = subscription_error or error
+        error = None
     status_reason = (
         record.get("status_reason")
         or codex_usage_status_reason(usage, str(error) if error else None)
     )
+    if not error and status_reason in {"subscription_http_401", "subscription_http_403", "subscription_refresh_failed"}:
+        status_reason = codex_usage_status_reason(usage)
     return {
         "id": record.get("id"),
         "label": record.get("label"),
@@ -1183,6 +1225,8 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "status_reason": status_reason,
         "status": record.get("status"),
         "error": error,
+        "subscription_error": subscription_error,
+        "usage_error": usage_error,
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
         "last_refresh_at": record.get("last_refresh_at"),

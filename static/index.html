@@ -338,7 +338,9 @@
 
       function accountCell(item) {
         const sub = item.subscription || {};
-        const state = sub.has_subscription === true ? '有效' : sub.has_subscription === false ? '无' : '-';
+        const state = item.subscription_error
+          ? '订阅信息未刷新'
+          : sub.has_subscription === true ? '有效' : sub.has_subscription === false ? '无' : '-';
         const renew = sub.renews_at ? `续：${formatTsSeconds(sub.renews_at)}` : '';
         const expire = sub.expires_at ? `到：${formatTsSeconds(sub.expires_at)}` : '';
         const detail = `${state} ${renew || expire}`.trim();
@@ -367,6 +369,9 @@
           usage_refresh_failed: '用量刷新失败，请查看后台日志',
           usage_http_401: '用量接口返回 401，账号授权失效',
           usage_http_403: '用量接口返回 403，账号权限不足或被限制',
+          subscription_refresh_failed: '订阅信息刷新失败',
+          subscription_http_401: '订阅接口返回 401，账号授权失效',
+          subscription_http_403: '订阅接口返回 403，可能被网络或 Cloudflare 拦截',
           account_deactivated: '账号已停用',
           workspace_deactivated: '工作区已停用',
           deactivated_workspace: '工作区已停用',
@@ -379,6 +384,10 @@
         const httpMatch = normalized.match(/^usage_http_(\d{3})$/);
         if (httpMatch) {
           return `用量接口返回 HTTP ${httpMatch[1]}`;
+        }
+        const subscriptionHttpMatch = normalized.match(/^subscription_http_(\d{3})$/);
+        if (subscriptionHttpMatch) {
+          return `订阅接口返回 HTTP ${subscriptionHttpMatch[1]}`;
         }
         return labels[normalized] || reason;
       }
