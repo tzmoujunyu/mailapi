@@ -55,7 +55,7 @@ CODEX_CLIENT_ID = os.getenv("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann").s
 CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oauth/token").strip()
 CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
 CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
-CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "60"))
+CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "20"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 CODEX_EXHAUSTED_USED_PERCENT = 99.9
 AUTH_LOCK = threading.Lock()
@@ -951,6 +951,59 @@ def classify_usage_status(snapshot: Optional[Dict[str, Any]]) -> str:
     return "available"
 
 
+def codex_error_status_reason(error: str) -> str:
+    normalized = error.lower()
+    if "401" in normalized:
+        return "usage_http_401"
+    if "403" in normalized:
+        return "usage_http_403"
+    if "timeout" in normalized or "timed out" in normalized:
+        return "usage_refresh_timeout"
+    if "name or service" in normalized or "dns" in normalized:
+        return "usage_refresh_dns"
+    if "connection" in normalized or "连接" in normalized:
+        return "usage_refresh_connection"
+    if "refresh token" in normalized or "invalid_grant" in normalized:
+        return "refresh_token_invalid"
+    return "usage_refresh_failed"
+
+
+def codex_usage_status_reason(
+    snapshot: Optional[Dict[str, Any]], error: Optional[str] = None
+) -> str:
+    if error:
+        return codex_error_status_reason(error)
+    if not snapshot:
+        return "usage_unknown"
+
+    primary_present = snapshot.get("used_percent") is not None and snapshot.get("window_minutes") is not None
+    if not primary_present:
+        return "usage_missing_primary"
+    if float(snapshot.get("used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
+        return "usage_limit_exhausted"
+
+    secondary_present = snapshot.get("secondary_used_percent") is not None or snapshot.get(
+        "secondary_window_minutes"
+    ) is not None
+    secondary_complete = snapshot.get("secondary_used_percent") is not None and snapshot.get(
+        "secondary_window_minutes"
+    ) is not None
+    if secondary_present and not secondary_complete:
+        return "usage_missing_secondary"
+    if (
+        secondary_complete
+        and float(snapshot.get("secondary_used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT
+    ):
+        return "usage_limit_exhausted"
+
+    credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
+    if credits.get("overage_limit_reached") is True:
+        return "usage_limit_exhausted"
+    if not secondary_present:
+        return "secondary_window_missing"
+    return "usage_ok"
+
+
 def fetch_codex_usage(access_token: str, workspace_id: Optional[str]) -> Dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -1037,6 +1090,7 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
             usage = fetch_codex_usage(access_token, workspace_id)
             updated["usage"] = usage
             updated["usage_status"] = classify_usage_status(usage)
+            updated["status_reason"] = codex_usage_status_reason(usage)
         except Exception as e:  # noqa: BLE001
             errors.append(f"额度信息: {e}")
 
@@ -1058,6 +1112,15 @@ def refresh_codex_account_record(record: Dict[str, Any]) -> Dict[str, Any]:
     updated["updated_at"] = now_iso()
     updated["access_token_expires_at"] = extract_token_exp(str(updated["token"].get("access_token") or ""))
     updated["error"] = "; ".join(errors) if errors else None
+    if errors:
+        updated["status_reason"] = codex_usage_status_reason(
+            updated.get("usage") if isinstance(updated.get("usage"), dict) else None,
+            updated["error"],
+        )
+    else:
+        updated["status_reason"] = codex_usage_status_reason(
+            updated.get("usage") if isinstance(updated.get("usage"), dict) else None
+        )
     if not errors:
         updated["status"] = "已刷新"
     elif updated.get("subscription") or updated.get("usage"):
@@ -1096,6 +1159,11 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     token = record.get("token") if isinstance(record.get("token"), dict) else {}
     usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
     usage_status = record.get("usage_status") or classify_usage_status(usage)
+    error = record.get("error")
+    status_reason = (
+        record.get("status_reason")
+        or codex_usage_status_reason(usage, str(error) if error else None)
+    )
     return {
         "id": record.get("id"),
         "label": record.get("label"),
@@ -1109,8 +1177,9 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "subscription": record.get("subscription"),
         "usage": usage,
         "usage_status": usage_status,
+        "status_reason": status_reason,
         "status": record.get("status"),
-        "error": record.get("error"),
+        "error": error,
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
         "last_refresh_at": record.get("last_refresh_at"),
@@ -1131,6 +1200,10 @@ def import_codex_auth_json(raw_text: str, refresh_snapshot: bool = True) -> List
             except Exception as e:  # noqa: BLE001
                 record["status"] = "已导入，刷新失败"
                 record["error"] = str(e)
+                record["status_reason"] = codex_usage_status_reason(
+                    record.get("usage") if isinstance(record.get("usage"), dict) else None,
+                    str(e),
+                )
                 record["updated_at"] = now_iso()
         with CODEX_ACCOUNTS_LOCK:
             CODEX_ACCOUNTS[str(record["id"])] = record
@@ -1157,6 +1230,10 @@ def refresh_all_codex_accounts_once() -> None:
             updated = dict(record)
             updated["status"] = "刷新失败"
             updated["error"] = str(e)
+            updated["status_reason"] = codex_usage_status_reason(
+                updated.get("usage") if isinstance(updated.get("usage"), dict) else None,
+                str(e),
+            )
             updated["updated_at"] = now_iso()
 
         with CODEX_ACCOUNTS_LOCK:

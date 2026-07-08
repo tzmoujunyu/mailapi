@@ -220,7 +220,7 @@
               <th>账号</th>
               <th>5小时额度</th>
               <th>周额度</th>
-              <th>Token</th>
+              <th>auth_token</th>
               <th>状态</th>
             </tr>
           </thead>
@@ -351,29 +351,66 @@
         `;
       }
 
+      function statusReasonText(reason) {
+        const normalized = String(reason || '').trim().toLowerCase();
+        if (!normalized || normalized === 'usage_ok') {
+          return '';
+        }
+        if (normalized.startsWith('refresh_token_invalid')) {
+          return 'Refresh Token 失效，需要重新登录';
+        }
+        const labels = {
+          refresh_token_region_blocked: '代理地区不受支持，已暂停账号刷新',
+          usage_refresh_timeout: '用量刷新超时，请检查网络或代理',
+          usage_refresh_connection: '用量刷新连接失败，请检查网络或代理',
+          usage_refresh_dns: '用量刷新 DNS 解析失败，请检查网络或代理',
+          usage_refresh_failed: '用量刷新失败，请查看后台日志',
+          usage_http_401: '用量接口返回 401，账号授权失效',
+          usage_http_403: '用量接口返回 403，账号权限不足或被限制',
+          account_deactivated: '账号已停用',
+          workspace_deactivated: '工作区已停用',
+          deactivated_workspace: '工作区已停用',
+          usage_limit_exhausted: '额度已耗尽',
+          usage_missing_primary: '5小时额度缺失',
+          usage_missing_secondary: '周额度缺失',
+          secondary_window_missing: '周额度未提供',
+          usage_unknown: '用量未知',
+        };
+        const httpMatch = normalized.match(/^usage_http_(\d{3})$/);
+        if (httpMatch) {
+          return `用量接口返回 HTTP ${httpMatch[1]}`;
+        }
+        return labels[normalized] || reason;
+      }
+
       function codexStatus(item) {
+        const reasonText = statusReasonText(item.status_reason);
         if (item.error) {
-          return { text: item.status ? `${item.status}：${item.error}` : item.error, cls: 'status-bad' };
+          return {
+            text: item.status ? `${item.status}` : '异常',
+            detail: reasonText || item.error,
+            cls: 'status-bad',
+          };
         }
         const usage = item.usage || {};
         const primaryExhausted = Number(usage.used_percent || 0) >= 99.9;
         const secondaryExhausted = Number(usage.secondary_used_percent || 0) >= 99.9;
         if (primaryExhausted || secondaryExhausted) {
-          return { text: '限流', cls: 'status-bad' };
+          return { text: '限流', detail: reasonText || '额度已耗尽', cls: 'status-bad' };
         }
         if (item.usage_status === 'available') {
-          return { text: '可用', cls: 'status-good' };
+          return { text: '可用', detail: reasonText, cls: 'status-good' };
         }
         if (item.usage_status === 'unavailable') {
-          return { text: primaryExhausted || secondaryExhausted ? '限流' : '不可用', cls: 'status-bad' };
+          return { text: '不可用', detail: reasonText, cls: 'status-bad' };
         }
         if (item.usage_status === 'primary_window_available_only') {
-          return { text: '部分可用', cls: 'status-warn' };
+          return { text: '部分可用', detail: reasonText, cls: 'status-warn' };
         }
         if (item.status === '已刷新' || item.status === '已导入') {
-          return { text: '可用', cls: 'status-good' };
+          return { text: '可用', detail: reasonText, cls: 'status-good' };
         }
-        return { text: item.status || '未知', cls: 'status-neutral' };
+        return { text: item.status || '未知', detail: reasonText, cls: 'status-neutral' };
       }
 
       function usageCell(usage, kind) {
@@ -406,6 +443,14 @@
         codexMessage.className = `codex-message ${isError ? 'error-text' : 'muted'}`;
       }
 
+      function syncHistoryButtons() {
+        const buttons = codeRows.querySelectorAll('[data-history-name]');
+        for (const button of buttons) {
+          const isActive = !historyPanel.hidden && button.dataset.historyName === currentHistoryName;
+          button.textContent = isActive ? '收起' : '查看历史';
+        }
+      }
+
       async function loadHistory(name, email) {
         try {
           const res = await fetch(`/api/history/${encodeURIComponent(name)}`, { cache: 'no-store' });
@@ -426,13 +471,26 @@
           }
           historyPanel.innerHTML = html;
           historyPanel.hidden = false;
+          syncHistoryButtons();
         } catch (e) {
           historyPanel.innerHTML = '<p class="muted">历史记录加载失败。</p>';
           historyPanel.hidden = false;
+          syncHistoryButtons();
         }
       }
 
       function onHistoryClick(name, email) {
+        if (!historyPanel.hidden && currentHistoryName === name) {
+          historyPanel.hidden = true;
+          currentHistoryName = '';
+          currentHistoryEmail = '';
+          if (historyTimer) {
+            clearInterval(historyTimer);
+            historyTimer = null;
+          }
+          syncHistoryButtons();
+          return;
+        }
         startHistoryAutoRefresh(name, email);
       }
 
@@ -468,6 +526,7 @@
           }
           loadHistory(currentHistoryName, currentHistoryEmail);
         }, HISTORY_REFRESH_MS);
+        syncHistoryButtons();
       }
 
       async function renderCodexAccounts() {
@@ -495,7 +554,10 @@
                 <div>${escapeHtml(tokenText)}</div>
                 <div class="muted">${item.has_refresh_token ? '可刷新' : '仅当前'}</div>
               </td>
-              <td class="${status.cls}">${escapeHtml(status.text)}</td>
+              <td class="${status.cls}">
+                <div>${escapeHtml(status.text)}</div>
+                ${status.detail ? `<div class="muted">${escapeHtml(status.detail)}</div>` : ''}
+              </td>
             `;
             codexRows.appendChild(tr);
           }
@@ -533,6 +595,7 @@
             `;
             codeRows.appendChild(tr);
           }
+          syncHistoryButtons();
         } catch (e) {
           codeRows.innerHTML = '<tr><td colspan="6">加载失败，请检查服务是否正常启动。</td></tr>';
         }
