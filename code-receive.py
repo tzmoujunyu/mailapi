@@ -970,12 +970,35 @@ def get_nested_int(value: Dict[str, Any], path: List[str]) -> Optional[int]:
     return int(found) if found is not None else None
 
 
+def normalize_weekly_usage_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    windows = [
+        (
+            snapshot.get("used_percent"),
+            snapshot.get("window_minutes"),
+            snapshot.get("resets_at"),
+        ),
+        (
+            snapshot.get("secondary_used_percent"),
+            snapshot.get("secondary_window_minutes"),
+            snapshot.get("secondary_resets_at"),
+        ),
+    ]
+    available = [window for window in windows if window[0] is not None or window[1] is not None]
+    weekly = max(available, key=lambda window: window[1] or 0) if available else (None, None, None)
+    normalized = dict(snapshot)
+    normalized["used_percent"], normalized["window_minutes"], normalized["resets_at"] = weekly
+    normalized.pop("secondary_used_percent", None)
+    normalized.pop("secondary_window_minutes", None)
+    normalized.pop("secondary_resets_at", None)
+    return normalized
+
+
 def parse_usage_snapshot(value: Dict[str, Any]) -> Dict[str, Any]:
     window_seconds = get_nested_int(value, ["rate_limit", "primary_window", "limit_window_seconds"])
     secondary_window_seconds = get_nested_int(
         value, ["rate_limit", "secondary_window", "limit_window_seconds"]
     )
-    return {
+    return normalize_weekly_usage_snapshot({
         "used_percent": get_nested_number(value, ["rate_limit", "primary_window", "used_percent"]),
         "window_minutes": (window_seconds + 59) // 60 if window_seconds is not None else None,
         "resets_at": get_nested_int(value, ["rate_limit", "primary_window", "reset_at"]),
@@ -992,28 +1015,17 @@ def parse_usage_snapshot(value: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "credits": value.get("credits"),
         "captured_at": now_ts(),
-    }
+    })
 
 
 def classify_usage_status(snapshot: Optional[Dict[str, Any]]) -> str:
     if not snapshot:
         return "unknown"
+    snapshot = normalize_weekly_usage_snapshot(snapshot)
     primary_present = snapshot.get("used_percent") is not None and snapshot.get("window_minutes") is not None
     if not primary_present:
         return "unavailable"
     if float(snapshot.get("used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
-        return "unavailable"
-    secondary_present = snapshot.get("secondary_used_percent") is not None or snapshot.get(
-        "secondary_window_minutes"
-    ) is not None
-    secondary_complete = snapshot.get("secondary_used_percent") is not None and snapshot.get(
-        "secondary_window_minutes"
-    ) is not None
-    if not secondary_present:
-        return "primary_window_available_only"
-    if not secondary_complete:
-        return "unavailable"
-    if float(snapshot.get("secondary_used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
         return "unavailable"
     credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
     if credits.get("overage_limit_reached") is True:
@@ -1052,31 +1064,16 @@ def codex_usage_status_reason(
     if not snapshot:
         return "usage_unknown"
 
+    snapshot = normalize_weekly_usage_snapshot(snapshot)
     primary_present = snapshot.get("used_percent") is not None and snapshot.get("window_minutes") is not None
     if not primary_present:
-        return "usage_missing_primary"
+        return "usage_missing_weekly"
     if float(snapshot.get("used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
-        return "usage_limit_exhausted"
-
-    secondary_present = snapshot.get("secondary_used_percent") is not None or snapshot.get(
-        "secondary_window_minutes"
-    ) is not None
-    secondary_complete = snapshot.get("secondary_used_percent") is not None and snapshot.get(
-        "secondary_window_minutes"
-    ) is not None
-    if secondary_present and not secondary_complete:
-        return "usage_missing_secondary"
-    if (
-        secondary_complete
-        and float(snapshot.get("secondary_used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT
-    ):
         return "usage_limit_exhausted"
 
     credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
     if credits.get("overage_limit_reached") is True:
         return "usage_limit_exhausted"
-    if not secondary_present:
-        return "secondary_window_missing"
     return "usage_ok"
 
 
@@ -1257,18 +1254,16 @@ def save_codex_accounts() -> None:
 
 def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     token = record.get("token") if isinstance(record.get("token"), dict) else {}
-    usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
-    usage_status = record.get("usage_status") or classify_usage_status(usage)
+    raw_usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
+    usage = normalize_weekly_usage_snapshot(raw_usage) if raw_usage else None
+    usage_status = classify_usage_status(usage)
     error = record.get("error")
     subscription_error = record.get("subscription_error")
     usage_error = record.get("usage_error")
     if error and str(error).startswith("订阅信息") and not usage_error:
         subscription_error = subscription_error or error
         error = None
-    status_reason = (
-        record.get("status_reason")
-        or codex_usage_status_reason(usage, str(error) if error else None)
-    )
+    status_reason = codex_usage_status_reason(usage, str(error) if error else None)
     if not error and status_reason in {"subscription_http_401", "subscription_http_403", "subscription_refresh_failed"}:
         status_reason = codex_usage_status_reason(usage)
     return {

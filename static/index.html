@@ -103,8 +103,6 @@
         height: 100%;
         border-radius: inherit;
       }
-      .quota-5h .quota-track { background: #bbf7d0; }
-      .quota-5h .quota-fill { background: #22c55e; }
       .quota-week .quota-track { background: #bfdbfe; }
       .quota-week .quota-fill { background: #3b82f6; }
       .quota-empty .quota-fill { background: #ef4444; }
@@ -218,14 +216,13 @@
           <thead>
             <tr>
               <th>账号</th>
-              <th>5小时额度</th>
               <th>周额度</th>
               <th>auth_token</th>
               <th>状态</th>
             </tr>
           </thead>
           <tbody id="codex-rows">
-            <tr><td colspan="5" class="muted">加载中...</td></tr>
+            <tr><td colspan="4" class="muted">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -380,9 +377,7 @@
           workspace_deactivated: '工作区已停用',
           deactivated_workspace: '工作区已停用',
           usage_limit_exhausted: '额度已耗尽',
-          usage_missing_primary: '5小时额度缺失',
-          usage_missing_secondary: '周额度缺失',
-          secondary_window_missing: '周额度未提供',
+          usage_missing_weekly: '周额度缺失',
           usage_unknown: '用量未知',
         };
         const httpMatch = normalized.match(/^usage_http_(\d{3})$/);
@@ -407,8 +402,7 @@
         }
         const usage = item.usage || {};
         const primaryExhausted = Number(usage.used_percent || 0) >= 99.9;
-        const secondaryExhausted = Number(usage.secondary_used_percent || 0) >= 99.9;
-        if (primaryExhausted || secondaryExhausted) {
+        if (primaryExhausted) {
           return { text: '限流', detail: reasonText || '额度已耗尽', cls: 'status-bad' };
         }
         if (item.usage_status === 'available') {
@@ -417,31 +411,26 @@
         if (item.usage_status === 'unavailable') {
           return { text: '不可用', detail: reasonText, cls: 'status-bad' };
         }
-        if (item.usage_status === 'primary_window_available_only') {
-          return { text: '部分可用', detail: reasonText, cls: 'status-warn' };
-        }
         if (item.status === '已刷新' || item.status === '已导入') {
           return { text: '可用', detail: reasonText, cls: 'status-good' };
         }
         return { text: item.status || '未知', detail: reasonText, cls: 'status-neutral' };
       }
 
-      function usageCell(usage, kind) {
+      function usageCell(usage) {
         if (!usage) {
           return '-';
         }
-        const used = kind === 'primary' ? usage.used_percent : usage.secondary_used_percent;
-        const resetsAt = kind === 'primary' ? usage.resets_at : usage.secondary_resets_at;
+        const used = usage.used_percent;
+        const resetsAt = usage.resets_at;
         const remain = remainPercentNumber(used);
-        const label = kind === 'primary' ? '5小时' : '7天';
-        const cls = kind === 'primary' ? 'quota-5h' : 'quota-week';
         if (remain === null) {
           return '<span class="muted">未提供</span>';
         }
         return `
-          <div class="quota-cell ${cls} ${remain <= 0 ? 'quota-empty' : ''}">
+          <div class="quota-cell quota-week ${remain <= 0 ? 'quota-empty' : ''}">
             <div class="quota-head">
-              <span class="quota-title">${label}</span>
+              <span class="quota-title">7天</span>
               <span class="quota-value">${remain}%</span>
             </div>
             <div class="quota-track"><div class="quota-fill" style="width:${remain}%"></div></div>
@@ -549,7 +538,7 @@
           const items = data.items || [];
           codexRows.innerHTML = '';
           if (!items.length) {
-            codexRows.innerHTML = '<tr><td colspan="5" class="muted">暂无 Codex 账号。</td></tr>';
+            codexRows.innerHTML = '<tr><td colspan="4" class="muted">暂无 Codex 账号。</td></tr>';
             return;
           }
 
@@ -561,8 +550,7 @@
             const status = codexStatus(item);
             tr.innerHTML = `
               <td>${accountCell(item)}</td>
-              <td>${usageCell(item.usage, 'primary')}</td>
-              <td>${usageCell(item.usage, 'secondary')}</td>
+              <td>${usageCell(item.usage)}</td>
               <td>
                 <div>${escapeHtml(tokenText)}</div>
                 <div class="muted">${item.has_refresh_token ? '可续期' : '不可续期'}</div>
@@ -575,7 +563,7 @@
             codexRows.appendChild(tr);
           }
         } catch (e) {
-          codexRows.innerHTML = '<tr><td colspan="5">Codex 账号加载失败。</td></tr>';
+          codexRows.innerHTML = '<tr><td colspan="4">Codex 账号加载失败。</td></tr>';
         }
       }
 
