@@ -2513,5 +2513,5 @@ def clear_history(account_name: str):
 if __name__ == "__main__":
     import uvicorn
 
-    print("启动 Gmail 双邮箱验证码监听 Web 服务（http://127.0.0.1:8000）")
+    print("启动 Gmail 多邮箱验证码监听 Web 服务（http://127.0.0.1:8000）")
     uvicorn.run(app, host="0.0.0.0", port=8000)
