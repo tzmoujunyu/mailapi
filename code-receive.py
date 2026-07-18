@@ -325,6 +325,12 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
     },
 ]
 
+GPT_PASSWORD_ENV_BY_EMAIL = {
+    "santeekyan0162@gmail.com": "ACCOUNT_PASSWORD_1",
+    "janymil722@gmail.com": "ACCOUNT_PASSWORD_2",
+    "ssstevenclark@gmail.com": "ACCOUNT_PASSWORD_3",
+}
+
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(HISTORY_ID_DIR, exist_ok=True)
 os.makedirs(CODEX_AUTH_DIR, exist_ok=True)
@@ -2180,6 +2186,14 @@ def sanitize_gmail_account(cfg: AccountConfig) -> Dict[str, Any]:
     }
 
 
+def gpt_password_for_account(cfg: AccountConfig) -> Optional[str]:
+    env_name = GPT_PASSWORD_ENV_BY_EMAIL.get(cfg["email"].strip().lower())
+    if not env_name:
+        return None
+    password = os.getenv(env_name, "")
+    return password if password else None
+
+
 @app.on_event("startup")
 def start_watchers():
     source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
@@ -2208,10 +2222,30 @@ def admin_page():
 @app.get("/api/codes")
 def get_codes():
     with GMAIL_ACCOUNTS_LOCK:
-        names = [item["name"] for item in ACCOUNTS]
+        accounts = {item["name"]: item for item in ACCOUNTS}
     with STATE_LOCK:
-        data = [dict(STATE[name]) for name in names if name in STATE]
+        data = []
+        for name, cfg in accounts.items():
+            if name not in STATE:
+                continue
+            item = dict(STATE[name])
+            item["has_gpt_password"] = gpt_password_for_account(cfg) is not None
+            data.append(item)
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
+
+
+@app.post("/api/gmail/accounts/{account_name}/gpt-password")
+def get_gpt_password(account_name: str):
+    cfg = find_gmail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+    password = gpt_password_for_account(cfg)
+    if password is None:
+        return JSONResponse(content={"detail": "该账号未配置 GPT 密码"}, status_code=404)
+    return JSONResponse(
+        content={"password": password},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/api/admin/gmail/accounts")

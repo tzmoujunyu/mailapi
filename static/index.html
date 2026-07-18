@@ -43,7 +43,7 @@
         border-collapse: collapse;
         table-layout: fixed;
       }
-      .email-table { min-width: 980px; }
+      .email-table { min-width: 1060px; }
       .codex-table { min-width: 900px; }
       th, td {
         border-bottom: 1px solid #e5e7eb;
@@ -54,12 +54,13 @@
       }
       tbody tr:last-child td { border-bottom: 0; }
       th { background: #f9fafb; }
-      .email-table th:nth-child(1) { width: 18%; }
-      .email-table th:nth-child(2) { width: 10%; }
-      .email-table th:nth-child(3) { width: 34%; }
-      .email-table th:nth-child(4) { width: 16%; }
+      .email-table th:nth-child(1) { width: 16%; }
+      .email-table th:nth-child(2) { width: 9%; }
+      .email-table th:nth-child(3) { width: 9%; }
+      .email-table th:nth-child(4) { width: 31%; }
       .email-table th:nth-child(5) { width: 14%; }
-      .email-table th:nth-child(6) { width: 8%; }
+      .email-table th:nth-child(6) { width: 13%; }
+      .email-table th:nth-child(7) { width: 8%; }
       .codex-table th:nth-child(1) { width: 28%; }
       .codex-table th:nth-child(2) { width: 18%; }
       .codex-table th:nth-child(3) { width: 18%; }
@@ -193,6 +194,7 @@
           <thead>
             <tr>
               <th>邮箱</th>
+              <th>GPT密码</th>
               <th>最新验证码</th>
               <th>主题</th>
               <th>更新时间</th>
@@ -201,7 +203,7 @@
             </tr>
           </thead>
           <tbody id="rows">
-            <tr><td colspan="6" class="muted">加载中...</td></tr>
+            <tr><td colspan="7" class="muted">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -502,12 +504,61 @@
         if (!(event.target instanceof Element)) {
           return;
         }
+        const passwordButton = event.target.closest('[data-password-name]');
+        if (passwordButton) {
+          copyGptPassword(passwordButton);
+          return;
+        }
         const button = event.target.closest('[data-history-name]');
         if (!button) {
           return;
         }
         onHistoryClick(button.dataset.historyName || '', button.dataset.historyEmail || '');
       });
+
+      async function writeClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const input = document.createElement('textarea');
+        input.value = text;
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.appendChild(input);
+        input.focus();
+        input.select();
+        const copied = document.execCommand('copy');
+        input.remove();
+        if (!copied) {
+          throw new Error('浏览器拒绝访问剪贴板');
+        }
+      }
+
+      async function copyGptPassword(button) {
+        const originalText = button.textContent;
+        button.disabled = true;
+        try {
+          const name = button.dataset.passwordName || '';
+          const res = await fetch(
+            `/api/gmail/accounts/${encodeURIComponent(name)}/gpt-password`,
+            { method: 'POST', cache: 'no-store' },
+          );
+          const data = await res.json();
+          if (!res.ok || !data.password) {
+            throw new Error(data.detail || '密码读取失败');
+          }
+          await writeClipboard(data.password);
+          button.textContent = '已复制';
+        } catch (error) {
+          button.textContent = '复制失败';
+        } finally {
+          setTimeout(() => {
+            button.textContent = originalText;
+            button.disabled = false;
+          }, 1500);
+        }
+      }
 
       function startHistoryAutoRefresh(name, email) {
         if (!name) {
@@ -580,6 +631,9 @@
             const email = item.email || '-';
             tr.innerHTML = `
               <td>${email}</td>
+              <td>${item.has_gpt_password
+                ? `<button class="small-btn" data-password-name="${escapeAttr(name)}">复制</button>`
+                : '<span class="muted">无</span>'}</td>
               <td class="code">${item.last_code || '（暂无）'}</td>
               <td><pre>${item.subject || '-'}</pre></td>
               <td class="muted">${item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}</td>
@@ -590,7 +644,7 @@
           }
           syncHistoryButtons();
         } catch (e) {
-          codeRows.innerHTML = '<tr><td colspan="6">加载失败，请检查服务是否正常启动。</td></tr>';
+          codeRows.innerHTML = '<tr><td colspan="7">加载失败，请检查服务是否正常启动。</td></tr>';
         }
       }
 

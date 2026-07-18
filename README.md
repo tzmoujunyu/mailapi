@@ -55,6 +55,16 @@ export SSL_CERT_FILE='/path/to/ca-bundle.pem'
 OPENAI_CODE_SENDERS=noreply@tm.openai.com,noreply@tm1.openai.com
 ```
 
+验证码页面可按邮箱显示并复制对应的 GPT 密码。密码变量按邮箱固定映射，未配置时页面显示“无”：
+
+```bash
+ACCOUNT_PASSWORD_1=第一个邮箱的GPT密码
+ACCOUNT_PASSWORD_2=janymil722@gmail.com的GPT密码
+ACCOUNT_PASSWORD_3=ssstevenclark@gmail.com的GPT密码
+```
+
+账号列表接口只返回是否配置密码；实际密码仅在登录后的页面点击“复制”时按需读取，并禁止响应缓存。
+
 ## Codex 账号信息
 
 打开 `/admin` 账号控制台，点击 Codex 区域的“导入账号”或“重新授权”会打开 Codex/OpenAI 授权页面。选择账号并授权后，回调会自动保存 auth 文件并刷新账号订阅和额度信息。主页面只负责显示账号状态，不再提供修改操作。
