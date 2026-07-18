@@ -92,6 +92,7 @@ CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS = int(
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 CODEX_EXHAUSTED_USED_PERCENT = 99.9
 AUTH_LOCK = threading.Lock()
+GOOGLE_OAUTH_TRANSPORT_LOCK = threading.Lock()
 HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
 CODEX_ACCOUNTS_LOCK = threading.Lock()
@@ -261,6 +262,31 @@ def format_google_auth_error(error: Exception) -> str:
             f"SSL_CERT_FILE 指向 CA 证书文件（可写入 .env），然后重启程序重新授权。原始错误: {detail}"
         )
     return detail
+
+
+def fetch_google_oauth_token(flow: InstalledAppFlow, request: FastAPIRequest) -> None:
+    redirect_uri = str(flow.redirect_uri or "").strip()
+    parsed = urllib.parse.urlparse(redirect_uri)
+    authorization_response = urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, str(request.url.query), "")
+    )
+    if parsed.scheme.lower() != "http":
+        flow.fetch_token(authorization_response=authorization_response)
+        return
+
+    if (parsed.hostname or "").lower() not in {"localhost", "127.0.0.1", "::1"}:
+        raise RuntimeError("Google OAuth 的非本地回调必须使用 HTTPS")
+
+    with GOOGLE_OAUTH_TRANSPORT_LOCK:
+        previous = os.environ.get("OAUTHLIB_INSECURE_TRANSPORT")
+        os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+        try:
+            flow.fetch_token(authorization_response=authorization_response)
+        finally:
+            if previous is None:
+                os.environ.pop("OAUTHLIB_INSECURE_TRANSPORT", None)
+            else:
+                os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = previous
 
 
 def should_reauth_after_google_refresh_error(error: Exception) -> bool:
@@ -1745,7 +1771,7 @@ def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
         flow = session["flow"]
         if not isinstance(flow, InstalledAppFlow):
             raise RuntimeError("授权会话数据异常")
-        flow.fetch_token(authorization_response=str(request.url))
+        fetch_google_oauth_token(flow, request)
         session["credentials"] = flow.credentials
         session["error"] = None
         if session.get("managed"):
