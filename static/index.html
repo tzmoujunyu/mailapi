@@ -23,7 +23,14 @@
         padding: 16px;
         box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
       }
-      h1 { margin: 0 0 16px; font-size: 22px; }
+      h1 { margin: 0; font-size: 22px; }
+      .page-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
       h2 { margin: 28px 0 12px; font-size: 18px; }
       .table-wrap {
         width: 100%;
@@ -73,13 +80,6 @@
         cursor: pointer;
       }
       .small-btn:hover { background: #f8fafc; }
-      .codex-controls {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        margin-bottom: 10px;
-      }
-      .codex-message { min-height: 20px; margin-bottom: 8px; }
       .quota-cell {
         display: flex;
         flex-direction: column;
@@ -176,7 +176,7 @@
       }
       @media (max-width: 680px) {
         table, th, td { font-size: 14px; }
-        .codex-controls { flex-wrap: wrap; }
+        .page-head { align-items: flex-start; }
         body { padding: 8px; }
         .container { min-height: calc(100vh - 16px); padding: 10px; }
       }
@@ -184,7 +184,10 @@
   </head>
   <body>
     <div class="container">
-      <h1>ChatGPT验证码</h1>
+      <div class="page-head">
+        <h1>ChatGPT验证码</h1>
+        <a class="small-btn" href="/admin">账号控制台</a>
+      </div>
       <div class="table-wrap">
         <table class="email-table">
           <thead>
@@ -206,11 +209,6 @@
       <div id="history-panel" class="history-panel" hidden></div>
 
       <h2>Codex账号信息</h2>
-      <div class="codex-controls">
-        <button class="small-btn" onclick="importCodexAccount()">导入</button>
-        <button class="small-btn" onclick="refreshCodexAuth()">刷新</button>
-      </div>
-      <div id="codex-message" class="codex-message muted"></div>
       <div class="table-wrap">
         <table class="codex-table">
           <thead>
@@ -232,7 +230,6 @@
       const historyPanel = document.getElementById('history-panel');
       const codeRows = document.getElementById('rows');
       const codexRows = document.getElementById('codex-rows');
-      const codexMessage = document.getElementById('codex-message');
       const HISTORY_REFRESH_MS = 3000;
       let historyTimer = null;
       let currentHistoryName = '';
@@ -310,18 +307,21 @@
 
       function planValue(item) {
         const sub = item.subscription || {};
-        const plan = sub.plan_type || sub.account_plan_type || item.chatgpt_plan_type || '-';
+        if (item.reauth_required && !sub.plan_type && !sub.account_plan_type) {
+          return 'unknown';
+        }
+        const plan = item.chatgpt_plan_type || sub.account_plan_type || sub.plan_type || '-';
         return String(plan || '-').toLowerCase();
       }
 
       function planBadge(item) {
         const plan = planValue(item);
-        const label = plan && plan !== '-' ? plan.toUpperCase() : 'FREE';
+        const label = plan === 'unknown' ? '待确认' : (plan && plan !== '-' ? plan.toUpperCase() : 'FREE');
         let cls = 'plan-other';
         if (plan.includes('pro')) cls = 'plan-pro';
         else if (plan.includes('plus')) cls = 'plan-plus';
         else if (plan.includes('go')) cls = 'plan-go';
-        else if (plan.includes('free') || plan === '-') cls = 'plan-free';
+        else if (plan.includes('free') || plan === '-' || plan === 'unknown') cls = 'plan-free';
         return `<span class="plan-pill ${cls}">${escapeHtml(label)}</span>`;
       }
 
@@ -337,7 +337,11 @@
         const sub = item.subscription || {};
         const plan = planValue(item);
         let detail = '订阅信息未刷新';
-        if (sub.has_subscription === false || plan === 'free' || plan === '-') {
+        if (item.reauth_required) {
+          detail = '重新授权后更新订阅';
+        } else if (item.subscription_error) {
+          detail = '订阅信息暂不可用';
+        } else if (sub.has_subscription === false || plan === 'free' || plan === '-') {
           detail = '无订阅';
         } else if (sub.has_subscription === true) {
           const expiresAt = sub.expires_at || sub.renews_at;
@@ -393,6 +397,9 @@
 
       function codexStatus(item) {
         const reasonText = statusReasonText(item.status_reason);
+        if (item.reauth_required) {
+          return { text: '需重新授权', detail: reasonText, cls: 'status-bad' };
+        }
         if (item.error) {
           return {
             text: item.status ? `${item.status}` : '异常',
@@ -438,11 +445,6 @@
             <div class="muted">${escapeHtml(formatResetRemain(resetsAt))}后刷新</div>
           </div>
         `;
-      }
-
-      function setCodexMessage(text, isError = false) {
-        codexMessage.textContent = text || '';
-        codexMessage.className = `codex-message ${isError ? 'error-text' : 'muted'}`;
       }
 
       function syncHistoryButtons() {
@@ -565,16 +567,6 @@
         } catch (e) {
           codexRows.innerHTML = '<tr><td colspan="4">Codex 账号加载失败。</td></tr>';
         }
-      }
-
-      function importCodexAccount() {
-        setCodexMessage('正在打开 Codex 授权页面...');
-        window.location.href = '/api/codex/auth/start?reason=import';
-      }
-
-      function refreshCodexAuth() {
-        setCodexMessage('正在重新打开 Codex 授权页面...');
-        window.location.href = '/api/codex/auth/start?reason=refresh';
       }
 
       async function render() {

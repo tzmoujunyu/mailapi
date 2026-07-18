@@ -69,6 +69,8 @@ HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
 CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
 CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
+GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
+GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
 GMAIL_AUTH_FALLBACK = os.getenv("GMAIL_AUTH_FALLBACK", "auto").strip().lower()
 GMAIL_OAUTH_REDIRECT_BASE = os.getenv("GMAIL_OAUTH_REDIRECT_BASE", "http://localhost:8000").rstrip("/")
 APP_BASE_URL = os.getenv("APP_BASE_URL", GMAIL_OAUTH_REDIRECT_BASE).rstrip("/")
@@ -95,18 +97,42 @@ AUTH_SESSION_LOCK = threading.Lock()
 CODEX_ACCOUNTS_LOCK = threading.Lock()
 CODEX_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER_LOCK = threading.Lock()
+GMAIL_ACCOUNTS_LOCK = threading.Lock()
+GMAIL_WATCHERS_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
 ACCESS_COOKIE_NAME = "chatgpt_code_access"
+OPENAI_CODE_SENDERS = {
+    item.strip().lower()
+    for item in os.getenv(
+        "OPENAI_CODE_SENDERS",
+        "noreply@tm.openai.com,noreply@tm1.openai.com",
+    ).split(",")
+    if item.strip()
+}
+GMAIL_SENDER_QUERY = " OR ".join(sorted(OPENAI_CODE_SENDERS))
 SEARCH_QUERY = (
-    'is:unread from:(noreply@tm.openai.com OR noreply@tm1.openai.com) '
-    '(subject:(chatgpt OR ChatGPT OR 验证码 OR "verification code" OR "security code" OR "two-factor" OR verification) OR '
-    '\"ChatGPT\" OR "OpenAI")'
+    f"is:unread from:({GMAIL_SENDER_QUERY}) "
+    '(subject:(ChatGPT OR OpenAI OR temporary OR login OR 验证码 OR 登录代码 OR "verification code") '
+    'OR "ChatGPT" OR "OpenAI")'
 )
 
-CODE_PATTERNS = [
-    re.compile(r"(?i)(?:验证(?:码|代码)|verification code|verification|otp|one[- ]?time|code)[^\d]{0,30}?(\d{4,8})"),
+VERIFICATION_TERMS = (
+    r"temporary|login|sign[ -]?in|verification|security|otp|one[ -]?time|"
+    r"临时|登录|验证(?:码|代码)|动态码"
+)
+STRONG_SUBJECT_PATTERN = re.compile(
+    rf"(?is)^(?=.*(?:chatgpt|openai))(?=.*(?:{VERIFICATION_TERMS})).*$"
+)
+STRONG_BODY_PATTERN = re.compile(
+    rf"(?is)(?=.*(?:chatgpt|openai))(?=.*(?:{VERIFICATION_TERMS})).*"
+)
+CONTEXT_CODE_PATTERNS = [
+    re.compile(rf"(?is)(?:{VERIFICATION_TERMS}|code)[^\d]{{0,80}}?(\d{{4,8}})"),
+    re.compile(rf"(?is)(?<!\d)(\d{{4,8}})(?!\d).{{0,80}}?(?:{VERIFICATION_TERMS}|code)"),
+]
+BARE_CODE_PATTERNS = [
     re.compile(r"(?<!\d)(\d{6})(?!\d)"),
     re.compile(r"(?<!\d)(\d{4,5})(?!\d)"),
     re.compile(r"(?<!\d)(\d{7,8})(?!\d)"),
@@ -118,6 +144,7 @@ class AccountConfig(TypedDict):
     email: str
     token_file: str
     credential_file: str
+    enabled: bool
 
 
 app = FastAPI()
@@ -151,13 +178,13 @@ def oauth_callback_url(account_name: str) -> str:
     return f"{GMAIL_OAUTH_REDIRECT_BASE}/"
 
 
-def create_auth_session(cfg: AccountConfig) -> Dict[str, object]:
+def create_auth_session(cfg: AccountConfig, managed: bool = False) -> Dict[str, object]:
     flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
     flow.redirect_uri = oauth_callback_url(cfg["name"])
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
-        prompt="consent",
+        prompt="select_account consent",
     )
     session = {
         "account_name": cfg["name"],
@@ -167,6 +194,8 @@ def create_auth_session(cfg: AccountConfig) -> Dict[str, object]:
         "state": state,
         "credentials": None,
         "error": None,
+        "managed": managed,
+        "cfg": dict(cfg),
     }
     with AUTH_SESSION_LOCK:
         AUTH_SESSIONS[cfg["name"]] = session
@@ -259,18 +288,21 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
         "email": "santeekyan0162@gmail.com",
         "token_file": os.path.join(DATA_DIR, "token_account1.json"),
         "credential_file": "credentials.json",
+        "enabled": True,
     },
     {
         "name": "account-2",
         "email": "janymil722@gmail.com",
         "token_file": os.path.join(DATA_DIR, "token_account2.json"),
         "credential_file": "credentials.json",
+        "enabled": True,
     },
 ]
 
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(HISTORY_ID_DIR, exist_ok=True)
 os.makedirs(CODEX_AUTH_DIR, exist_ok=True)
+os.makedirs(GMAIL_TOKEN_DIR, exist_ok=True)
 
 
 def now_iso() -> str:
@@ -446,6 +478,37 @@ def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
     }
     path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
     write_json_atomic(path, payload)
+
+
+def delete_codex_record_auth_files(record: Dict[str, Any]) -> None:
+    paths = [CODEX_AUTH_FILE]
+    if os.path.isdir(CODEX_AUTH_DIR):
+        paths.extend(
+            os.path.join(CODEX_AUTH_DIR, name)
+            for name in os.listdir(CODEX_AUTH_DIR)
+            if name.endswith(".json")
+        )
+    record_id = str(record.get("id") or "")
+    record_email = str(record.get("email") or "")
+    record_workspace = str(record.get("workspace_id") or "")
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                continue
+            same_id = str(payload.get("account_id") or "") == record_id
+            same_account = (
+                record_email
+                and str(payload.get("email") or "") == record_email
+                and str(payload.get("workspace_id") or "") == record_workspace
+            )
+            if same_id or same_account:
+                os.remove(path)
+        except FileNotFoundError:
+            continue
+        except Exception as e:  # noqa: BLE001
+            print(f"Codex auth 文件删除失败：{path}: {e}")
 
 
 def load_codex_auth_file() -> Optional[Dict[str, Any]]:
@@ -1233,6 +1296,9 @@ def refresh_codex_account_record(
                 subscription = fetch_codex_subscription(access_token, chatgpt_account_id)
                 if subscription is not None:
                     updated["subscription"] = subscription
+                    plan_type = subscription.get("account_plan_type") or subscription.get("plan_type")
+                    if plan_type:
+                        updated["chatgpt_plan_type"] = plan_type
             except Exception as e:  # noqa: BLE001
                 message = f"订阅信息: {e}"
                 subscription_errors.append(message)
@@ -1447,22 +1513,69 @@ def codex_refresh_loop() -> None:
 
 
 def load_accounts() -> List[AccountConfig]:
-    raw = os.getenv("GMAIL_ACCOUNTS")
-    if not raw:
-        return DEFAULT_ACCOUNTS
+    cfgs: Any = None
+    if os.path.exists(GMAIL_ACCOUNTS_FILE):
+        try:
+            with open(GMAIL_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                value = json.load(f)
+            cfgs = value.get("items") if isinstance(value, dict) else value
+        except Exception as e:  # noqa: BLE001
+            print(f"Gmail 账号配置加载失败：{e}")
 
-    cfgs = json.loads(raw)
-    normalized = []
-    for item in cfgs:
+    if not isinstance(cfgs, list):
+        raw = os.getenv("GMAIL_ACCOUNTS")
+        if raw:
+            cfgs = json.loads(raw)
+        else:
+            cfgs = DEFAULT_ACCOUNTS
+
+    normalized: List[AccountConfig] = []
+    used_names = set()
+    for index, item in enumerate(cfgs, start=1):
+        if not isinstance(item, dict):
+            continue
+        fallback_name = f"account-{index}"
+        name = re.sub(r"[^A-Za-z0-9_-]+", "-", str(item.get("name") or fallback_name)).strip("-")
+        if not name or name in used_names:
+            name = fallback_name
+        used_names.add(name)
         normalized.append(
             {
-                "name": item.get("name", "account"),
-                "email": item.get("email", "未配置"),
-                "token_file": item.get("token_file", "token.json"),
-                "credential_file": item.get("credential_file", "credentials.json"),
+                "name": name,
+                "email": str(item.get("email") or "未配置"),
+                "token_file": str(item.get("token_file") or os.path.join(GMAIL_TOKEN_DIR, f"{name}.json")),
+                "credential_file": str(item.get("credential_file") or "credentials.json"),
+                "enabled": item.get("enabled") is not False,
             }
         )
-    return normalized[:2]
+    return normalized
+
+
+def save_gmail_accounts() -> None:
+    with GMAIL_ACCOUNTS_LOCK:
+        items = [dict(item) for item in ACCOUNTS]
+    write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
+
+
+def find_gmail_account(name: str) -> Optional[AccountConfig]:
+    with GMAIL_ACCOUNTS_LOCK:
+        return next((item for item in ACCOUNTS if item["name"] == name), None)
+
+
+def next_gmail_account_config() -> AccountConfig:
+    with GMAIL_ACCOUNTS_LOCK:
+        used = {item["name"] for item in ACCOUNTS}
+    index = 1
+    while f"account-{index}" in used:
+        index += 1
+    name = f"account-{index}"
+    return {
+        "name": name,
+        "email": "等待授权",
+        "token_file": os.path.join(GMAIL_TOKEN_DIR, f"{name}.json"),
+        "credential_file": "credentials.json",
+        "enabled": True,
+    }
 
 
 ACCOUNTS = load_accounts()
@@ -1471,19 +1584,27 @@ STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 CODEX_ACCOUNTS: Dict[str, Dict[str, Any]] = {}
 CODEX_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
+GMAIL_WATCHERS: Dict[str, Dict[str, Any]] = {}
+
+
+def ensure_gmail_state(cfg: AccountConfig) -> None:
+    with STATE_LOCK:
+        existing = STATE.get(cfg["name"], {})
+        STATE[cfg["name"]] = {
+            "name": cfg["name"],
+            "email": cfg["email"],
+            "last_code": existing.get("last_code"),
+            "message_id": existing.get("message_id"),
+            "subject": existing.get("subject"),
+            "updated_at": existing.get("updated_at"),
+            "status": existing.get("status") or ("待启动" if cfg["enabled"] else "已停用"),
+        }
+    with HISTORY_LOCK:
+        CODE_HISTORY.setdefault(cfg["name"], [])
 
 
 for cfg in ACCOUNTS:
-    STATE[cfg["name"]] = {
-        "name": cfg["name"],
-        "email": cfg["email"],
-        "last_code": None,
-        "message_id": None,
-        "subject": None,
-        "updated_at": None,
-        "status": "待启动",
-    }
-    CODE_HISTORY[cfg["name"]] = []
+    ensure_gmail_state(cfg)
 
 
 def history_file_path(name: str) -> str:
@@ -1627,6 +1748,16 @@ def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
         flow.fetch_token(authorization_response=str(request.url))
         session["credentials"] = flow.credentials
         session["error"] = None
+        if session.get("managed"):
+            cfg = complete_managed_gmail_auth(session, flow.credentials)
+            with AUTH_SESSION_LOCK:
+                AUTH_SESSIONS.pop(str(session.get("account_name") or ""), None)
+                AUTH_SESSIONS.pop(state, None)
+            return HTMLResponse(
+                "Google 授权完成，账号已开始监听。"
+                f'<script>setTimeout(() => window.location.href = "/admin", 800);</script>'
+                f'<p><a href="/admin">返回账号控制台：{html.escape(cfg["email"])}</a></p>'
+            )
         if hasattr(event, "set"):
             event.set()
         return HTMLResponse("Google 授权完成，token 已返回服务器。可以关闭此页面并回到终端。")
@@ -1634,6 +1765,10 @@ def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
         session["error"] = format_google_auth_error(e)
         if hasattr(event, "set"):
             event.set()
+        if session.get("managed"):
+            with AUTH_SESSION_LOCK:
+                AUTH_SESSIONS.pop(str(session.get("account_name") or ""), None)
+                AUTH_SESSIONS.pop(state, None)
         return HTMLResponse(f"Google 授权失败：{html.escape(session['error'])}", status_code=400)
 
 
@@ -1712,31 +1847,50 @@ def collect_text_from_payload(payload: Dict) -> List[str]:
     return texts
 
 
+def message_header(message: Dict, name: str) -> str:
+    expected = name.lower()
+    for header in message.get("payload", {}).get("headers", []):
+        if str(header.get("name") or "").lower() == expected:
+            return str(header.get("value") or "")
+    return ""
+
+
+def sender_email(message: Dict) -> str:
+    raw = message_header(message, "From").lower()
+    match = re.search(r"<([^<>\s]+@[^<>\s]+)>", raw)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b[^\s<>]+@[^\s<>]+\b", raw)
+    return match.group(0).strip(".,;\"") if match else ""
+
+
 def extract_verification_code(message: Dict) -> Optional[str]:
-    headers = message.get("payload", {}).get("headers", [])
     snippet = message.get("snippet", "")
-    subject = ""
-    for h in headers:
-        if h.get("name", "").lower() == "subject":
-            subject = h.get("value", "")
-            break
-
+    subject = message_header(message, "Subject")
     payload_texts = collect_text_from_payload(message.get("payload", {}))
-    candidate_text = "\n".join([snippet, subject] + payload_texts)
+    body_text = "\n".join([snippet] + payload_texts)
+    strong_subject = bool(STRONG_SUBJECT_PATTERN.search(subject))
+    strong_body = bool(STRONG_BODY_PATTERN.search(body_text))
+    if sender_email(message) not in OPENAI_CODE_SENDERS or not (strong_subject or strong_body):
+        return None
 
-    for pattern in CODE_PATTERNS:
+    candidate_text = "\n".join([subject, body_text])
+    for pattern in CONTEXT_CODE_PATTERNS:
         m = pattern.search(candidate_text)
         if m:
             return m.group(1)
+
+    if strong_subject:
+        for pattern in BARE_CODE_PATTERNS:
+            m = pattern.search(candidate_text)
+            if m:
+                return m.group(1)
 
     return None
 
 
 def parse_subject(message: Dict) -> str:
-    for header in message.get("payload", {}).get("headers", []):
-        if header.get("name") == "Subject":
-            return header.get("value", "")
-    return "（无主题）"
+    return message_header(message, "Subject") or "（无主题）"
 
 
 def mark_as_read(service, message_id: str):
@@ -1764,7 +1918,8 @@ def write_history_id(cfg: AccountConfig, history_id: int):
 
 def save_state(name: str, patch: Dict[str, Optional[str]]):
     with STATE_LOCK:
-        STATE[name].update(patch)
+        if name in STATE:
+            STATE[name].update(patch)
 
 
 def process_message(service, cfg: AccountConfig, message_id: str) -> Optional[Dict[str, str]]:
@@ -1820,7 +1975,8 @@ def scan_unread_once(service, cfg: AccountConfig):
         )
 
 
-def watch_account(cfg: AccountConfig):
+def watch_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = None):
+    stop_event = stop_event or threading.Event()
     name = cfg["name"]
     save_state(name, {"status": "启动中"})
 
@@ -1832,7 +1988,7 @@ def watch_account(cfg: AccountConfig):
         # 首次启动，先补扫一次未读验证码邮件，防止历史遗漏
         scan_unread_once(service, cfg)
 
-        while True:
+        while not stop_event.is_set():
             try:
                 response = service.users().history().list(
                     userId="me",
@@ -1890,21 +2046,125 @@ def watch_account(cfg: AccountConfig):
             except Exception as e:  # noqa: BLE001
                 save_state(name, {"status": f"运行错误: {e}"})
 
-            time.sleep(CHECK_INTERVAL_SECONDS)
+            stop_event.wait(CHECK_INTERVAL_SECONDS)
     except Exception as e:  # noqa: BLE001
         save_state(name, {"status": f"启动失败: {e}"})
+    finally:
+        with GMAIL_WATCHERS_LOCK:
+            current = GMAIL_WATCHERS.get(name)
+            if current and current.get("thread") is threading.current_thread():
+                GMAIL_WATCHERS.pop(name, None)
+
+
+def start_gmail_watcher(cfg: AccountConfig) -> bool:
+    if not cfg.get("enabled", True):
+        save_state(cfg["name"], {"status": "已停用"})
+        return False
+    ensure_gmail_state(cfg)
+    with GMAIL_WATCHERS_LOCK:
+        current = GMAIL_WATCHERS.get(cfg["name"])
+        if current and current.get("thread") and current["thread"].is_alive():
+            return False
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=watch_account,
+            args=(cfg, stop_event),
+            daemon=True,
+            name=f"gmail-{cfg['name']}",
+        )
+        GMAIL_WATCHERS[cfg["name"]] = {"thread": thread, "stop_event": stop_event}
+        thread.start()
+    return True
+
+
+def stop_gmail_watcher(name: str, cancel_auth: bool = True) -> None:
+    with GMAIL_WATCHERS_LOCK:
+        current = GMAIL_WATCHERS.pop(name, None)
+    if current:
+        current["stop_event"].set()
+        thread = current.get("thread")
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=CHECK_INTERVAL_SECONDS + 2)
+
+    if cancel_auth:
+        with AUTH_SESSION_LOCK:
+            session = AUTH_SESSIONS.get(name)
+            if session:
+                session["error"] = "账号监听已停止"
+                event = session.get("event")
+                if hasattr(event, "set"):
+                    event.set()
+
+
+def complete_managed_gmail_auth(
+    session: Dict[str, object], credentials: Credentials
+) -> AccountConfig:
+    raw_cfg = session.get("cfg")
+    if not isinstance(raw_cfg, dict):
+        raise RuntimeError("Gmail 授权会话缺少账号配置")
+    cfg = dict(raw_cfg)
+    service = build("gmail", "v1", credentials=credentials)
+    profile = service.users().getProfile(userId="me").execute()
+    email = str(profile.get("emailAddress") or "").strip()
+    if not email:
+        raise RuntimeError("Google 授权成功，但无法读取 Gmail 地址")
+
+    if session.get("managed_action") == "reauth" and cfg.get("email") not in {email, "未配置", "等待授权"}:
+        raise RuntimeError(f"选择的 Gmail 账号与原账号不一致：{email}")
+    if session.get("managed_action") == "add":
+        with GMAIL_ACCOUNTS_LOCK:
+            duplicate = next((item for item in ACCOUNTS if item["email"].lower() == email.lower()), None)
+        if duplicate:
+            cfg = dict(duplicate)
+
+    cfg["email"] = email
+    cfg["enabled"] = True
+    stop_gmail_watcher(str(cfg["name"]), cancel_auth=False)
+    write_json_atomic(str(cfg["token_file"]), json.loads(credentials.to_json()))
+
+    with GMAIL_ACCOUNTS_LOCK:
+        index = next((i for i, item in enumerate(ACCOUNTS) if item["name"] == cfg["name"]), None)
+        if index is None:
+            ACCOUNTS.append(cfg)
+        else:
+            ACCOUNTS[index] = cfg
+    save_gmail_accounts()
+    ensure_gmail_state(cfg)
+    save_state(cfg["name"], {"email": email, "status": "授权完成，正在启动"})
+    start_gmail_watcher(cfg)
+    return cfg
+
+
+def sanitize_gmail_account(cfg: AccountConfig) -> Dict[str, Any]:
+    with STATE_LOCK:
+        state = dict(STATE.get(cfg["name"], {}))
+    token_file = cfg["token_file"]
+    return {
+        "name": cfg["name"],
+        "email": cfg["email"],
+        "enabled": cfg.get("enabled", True),
+        "authorized": os.path.exists(token_file),
+        "token_updated_at": (
+            datetime.fromtimestamp(os.path.getmtime(token_file), timezone.utc).isoformat()
+            if os.path.exists(token_file)
+            else None
+        ),
+        "status": state.get("status") or "未知",
+        "updated_at": state.get("updated_at"),
+    }
 
 
 @app.on_event("startup")
 def start_watchers():
     source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
+    save_gmail_accounts()
     load_histories()
     load_codex_accounts()
     import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
     threading.Thread(target=codex_refresh_loop, daemon=True).start()
     for cfg in ACCOUNTS:
-        threading.Thread(target=watch_account, args=(cfg,), daemon=True).start()
+        start_gmail_watcher(cfg)
 
 
 @app.get("/")
@@ -1914,11 +2174,91 @@ def index(request: FastAPIRequest):
     return FileResponse("static/index.html")
 
 
+@app.get("/admin")
+def admin_page():
+    return FileResponse("static/admin.html")
+
+
 @app.get("/api/codes")
 def get_codes():
+    with GMAIL_ACCOUNTS_LOCK:
+        names = [item["name"] for item in ACCOUNTS]
     with STATE_LOCK:
-        data = list(STATE.values())
+        data = [dict(STATE[name]) for name in names if name in STATE]
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
+
+
+@app.get("/api/admin/gmail/accounts")
+def get_gmail_accounts():
+    with GMAIL_ACCOUNTS_LOCK:
+        items = [sanitize_gmail_account(item) for item in ACCOUNTS]
+    return JSONResponse(content={"items": items, "updated_at": now_iso()})
+
+
+@app.get("/api/admin/gmail/auth/start")
+def start_gmail_admin_auth(account_name: Optional[str] = None):
+    if account_name:
+        existing = find_gmail_account(account_name)
+        if not existing:
+            return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+        cfg = dict(existing)
+    else:
+        cfg = next_gmail_account_config()
+
+    if not os.path.exists(cfg["credential_file"]):
+        return JSONResponse(
+            content={"detail": f"Google OAuth 配置不存在：{cfg['credential_file']}"},
+            status_code=400,
+        )
+    try:
+        session = create_auth_session(cfg, managed=True)
+        session["managed_action"] = "reauth" if account_name else "add"
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(content={"detail": format_google_auth_error(e)}, status_code=400)
+    return RedirectResponse(url=str(session["auth_url"]), status_code=302)
+
+
+@app.post("/api/admin/gmail/accounts/{account_name}/enable")
+def enable_gmail_account(account_name: str):
+    cfg = find_gmail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+    if not os.path.exists(cfg["token_file"]):
+        return JSONResponse(content={"detail": "账号缺少授权，请先重新授权"}, status_code=409)
+    cfg["enabled"] = True
+    save_gmail_accounts()
+    start_gmail_watcher(cfg)
+    return JSONResponse(content={"item": sanitize_gmail_account(cfg)})
+
+
+@app.post("/api/admin/gmail/accounts/{account_name}/disable")
+def disable_gmail_account(account_name: str):
+    cfg = find_gmail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+    cfg["enabled"] = False
+    save_gmail_accounts()
+    stop_gmail_watcher(account_name)
+    save_state(account_name, {"status": "已停用"})
+    return JSONResponse(content={"item": sanitize_gmail_account(cfg)})
+
+
+@app.delete("/api/admin/gmail/accounts/{account_name}")
+def delete_gmail_account(account_name: str):
+    cfg = find_gmail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+    stop_gmail_watcher(account_name)
+    with GMAIL_ACCOUNTS_LOCK:
+        ACCOUNTS[:] = [item for item in ACCOUNTS if item["name"] != account_name]
+    save_gmail_accounts()
+    with STATE_LOCK:
+        STATE.pop(account_name, None)
+    with HISTORY_LOCK:
+        CODE_HISTORY.pop(account_name, None)
+    return JSONResponse(
+        content={"ok": True, "account": account_name, "data_preserved": True}
+    )
 
 
 def parse_codex_login_addr() -> tuple:
@@ -2128,6 +2468,7 @@ def delete_codex_account(account_id: str):
             content={"detail": f"未找到 Codex 账号：{account_id}"},
             status_code=404,
         )
+    delete_codex_record_auth_files(existed)
     save_codex_accounts()
     return JSONResponse(content={"ok": True, "account": account_id})
 

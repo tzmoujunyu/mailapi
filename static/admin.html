@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>账号控制台</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #f4f6f8;
+        color: #1f2937;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      .shell { min-height: 100vh; background: #fff; }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 20px;
+        border-bottom: 1px solid #dfe3e8;
+      }
+      h1 { margin: 0; font-size: 21px; }
+      h2 { margin: 0; font-size: 17px; }
+      .content { padding: 0 20px 28px; }
+      .section { padding: 22px 0 26px; border-bottom: 1px solid #e5e7eb; }
+      .section:last-child { border-bottom: 0; }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+      .btn {
+        display: inline-flex;
+        min-height: 32px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #c7ced6;
+        border-radius: 6px;
+        background: #fff;
+        color: #1f2937;
+        padding: 5px 10px;
+        font: inherit;
+        font-size: 13px;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .btn:hover { background: #f3f5f7; }
+      .btn-primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+      .btn-primary:hover { background: #1d4ed8; }
+      .btn-danger { border-color: #fecaca; color: #b91c1c; }
+      .table-wrap { width: 100%; overflow-x: auto; border: 1px solid #dfe3e8; border-radius: 6px; }
+      table { width: 100%; min-width: 920px; border-collapse: collapse; table-layout: fixed; }
+      th, td {
+        padding: 10px;
+        border-bottom: 1px solid #e5e7eb;
+        text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+      th { background: #f7f8fa; font-size: 13px; color: #4b5563; }
+      tbody tr:last-child td { border-bottom: 0; }
+      .gmail-table th:nth-child(1) { width: 25%; }
+      .gmail-table th:nth-child(2) { width: 13%; }
+      .gmail-table th:nth-child(3) { width: 28%; }
+      .gmail-table th:nth-child(4) { width: 14%; }
+      .gmail-table th:nth-child(5) { width: 20%; }
+      .codex-table th:nth-child(1) { width: 25%; }
+      .codex-table th:nth-child(2) { width: 19%; }
+      .codex-table th:nth-child(3) { width: 15%; }
+      .codex-table th:nth-child(4) { width: 21%; }
+      .codex-table th:nth-child(5) { width: 20%; }
+      .muted { color: #6b7280; font-size: 13px; }
+      .good { color: #15803d; font-weight: 700; }
+      .bad { color: #b91c1c; font-weight: 700; }
+      .warn { color: #b45309; font-weight: 700; }
+      .message { min-height: 20px; margin: 0 0 10px; font-size: 13px; }
+      .account-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .plan {
+        flex: 0 0 auto;
+        border-radius: 5px;
+        padding: 2px 6px;
+        background: #eef2f7;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .quota { display: grid; gap: 5px; }
+      .quota-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+      .track { height: 6px; overflow: hidden; border-radius: 5px; background: #dbeafe; }
+      .fill { height: 100%; background: #2563eb; }
+      @media (max-width: 680px) {
+        .topbar, .section-head { align-items: flex-start; }
+        .topbar, .content { padding-left: 10px; padding-right: 10px; }
+        th, td { font-size: 13px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <h1>账号控制台</h1>
+        <a class="btn" href="/">返回验证码</a>
+      </header>
+      <main class="content">
+        <section class="section">
+          <div class="section-head">
+            <h2>Gmail 接码账号</h2>
+            <a class="btn btn-primary" href="/api/admin/gmail/auth/start">添加账号</a>
+          </div>
+          <div id="gmail-message" class="message muted"></div>
+          <div class="table-wrap">
+            <table class="gmail-table">
+              <thead><tr><th>邮箱</th><th>授权</th><th>监听状态</th><th>最近更新</th><th>操作</th></tr></thead>
+              <tbody id="gmail-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-head">
+            <h2>Codex 账号</h2>
+            <a class="btn btn-primary" href="/api/codex/auth/start?reason=admin-import" target="_blank">导入账号</a>
+          </div>
+          <div id="codex-message" class="message muted"></div>
+          <div class="table-wrap">
+            <table class="codex-table">
+              <thead><tr><th>账号与订阅</th><th>周额度</th><th>授权状态</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="codex-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const gmailRows = document.getElementById('gmail-rows');
+      const codexRows = document.getElementById('codex-rows');
+      const gmailMessage = document.getElementById('gmail-message');
+      const codexMessage = document.getElementById('codex-message');
+
+      function escapeHtml(value) {
+        const node = document.createElement('div');
+        node.textContent = value === null || value === undefined ? '' : String(value);
+        return node.innerHTML;
+      }
+
+      function escapeAttr(value) {
+        return escapeHtml(value).replace(/"/g, '&quot;');
+      }
+
+      function formatTime(value) {
+        if (!value) return '-';
+        const date = new Date(typeof value === 'number' ? value * 1000 : value);
+        return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+      }
+
+      function setMessage(node, text, error = false) {
+        node.textContent = text || '';
+        node.className = `message ${error ? 'bad' : 'muted'}`;
+      }
+
+      async function api(url, options = {}) {
+        const response = await fetch(url, { cache: 'no-store', ...options });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+        return data;
+      }
+
+      function gmailRow(item) {
+        const enabled = item.enabled;
+        const authClass = item.authorized ? 'good' : 'bad';
+        return `
+          <tr>
+            <td><div>${escapeHtml(item.email || '-')}</div><div class="muted">${escapeHtml(item.name)}</div></td>
+            <td class="${authClass}">${item.authorized ? '已授权' : '未授权'}</td>
+            <td class="${enabled ? 'good' : 'warn'}">${escapeHtml(item.status || (enabled ? '未知' : '已停用'))}</td>
+            <td class="muted">${escapeHtml(formatTime(item.updated_at || item.token_updated_at))}</td>
+            <td><div class="actions">
+              <a class="btn" href="/api/admin/gmail/auth/start?account_name=${encodeURIComponent(item.name)}">重新授权</a>
+              <button class="btn" data-gmail-action="${enabled ? 'disable' : 'enable'}" data-name="${escapeAttr(item.name)}">${enabled ? '停用' : '启用'}</button>
+              <button class="btn btn-danger" data-gmail-action="delete" data-name="${escapeAttr(item.name)}">删除</button>
+            </div></td>
+          </tr>`;
+      }
+
+      async function loadGmail() {
+        try {
+          const data = await api('/api/admin/gmail/accounts');
+          gmailRows.innerHTML = data.items.length
+            ? data.items.map(gmailRow).join('')
+            : '<tr><td colspan="5" class="muted">暂无 Gmail 账号。</td></tr>';
+        } catch (error) {
+          gmailRows.innerHTML = '<tr><td colspan="5" class="bad">加载失败。</td></tr>';
+          setMessage(gmailMessage, error.message, true);
+        }
+      }
+
+      gmailRows.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-gmail-action]');
+        if (!button) return;
+        const action = button.dataset.gmailAction;
+        const name = button.dataset.name;
+        if (action === 'delete' && !confirm('删除后将停止监听，token 和历史文件会保留。继续吗？')) return;
+        try {
+          button.disabled = true;
+          if (action === 'delete') {
+            await api(`/api/admin/gmail/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' });
+          } else {
+            await api(`/api/admin/gmail/accounts/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
+          }
+          setMessage(gmailMessage, '操作已完成。');
+          await loadGmail();
+        } catch (error) {
+          setMessage(gmailMessage, error.message, true);
+          button.disabled = false;
+        }
+      });
+
+      function codexPlan(item) {
+        const subscription = item.subscription || {};
+        if (item.reauth_required && !subscription.plan_type && !subscription.account_plan_type) return '待确认';
+        return String(item.chatgpt_plan_type || subscription.account_plan_type || subscription.plan_type || 'free').toUpperCase();
+      }
+
+      function subscriptionText(item) {
+        const subscription = item.subscription || {};
+        if (item.reauth_required) return '重新授权后更新订阅';
+        if (item.subscription_error) return '订阅信息暂不可用';
+        if (subscription.has_subscription === false || codexPlan(item) === 'FREE') return '无订阅';
+        const end = subscription.expires_at || subscription.renews_at;
+        return end ? `订阅到期：${formatTime(end)}` : '订阅有效';
+      }
+
+      function quotaCell(usage) {
+        if (!usage || usage.used_percent === null || usage.used_percent === undefined) return '<span class="muted">未提供</span>';
+        const remain = Math.max(0, Math.min(100, Math.round(100 - Number(usage.used_percent))));
+        return `<div class="quota"><div class="quota-head"><span>周额度</span><strong>${remain}%</strong></div><div class="track"><div class="fill" style="width:${remain}%"></div></div><div class="muted">${escapeHtml(formatTime(usage.resets_at))} 重置</div></div>`;
+      }
+
+      function codexState(item) {
+        if (item.reauth_required) return { text: '需重新授权', detail: 'Refresh Token 已失效', cls: 'bad' };
+        if (item.error) return { text: item.status || '刷新失败', detail: item.status_reason || item.error, cls: 'bad' };
+        if (item.usage_status === 'unavailable') return { text: '限流', detail: item.status_reason || '额度已耗尽', cls: 'bad' };
+        if (item.usage_status === 'available') return { text: '可用', detail: '', cls: 'good' };
+        return { text: item.status || '未知', detail: item.status_reason || '', cls: 'warn' };
+      }
+
+      function codexRow(item) {
+        const state = codexState(item);
+        return `
+          <tr>
+            <td><div class="account-line"><span class="email">${escapeHtml(item.email || item.label || 'Codex账号')}</span><span class="plan">${escapeHtml(codexPlan(item))}</span></div><div class="muted">${escapeHtml(subscriptionText(item))}</div></td>
+            <td>${quotaCell(item.usage)}</td>
+            <td><div>${item.has_refresh_token ? '可续期' : '不可续期'}</div><div class="muted">${escapeHtml(formatTime(item.access_token_expires_at))}</div></td>
+            <td class="${state.cls}"><div>${escapeHtml(state.text)}</div>${state.detail ? `<div class="muted">${escapeHtml(state.detail)}</div>` : ''}</td>
+            <td><div class="actions">
+              <button class="btn" data-codex-action="refresh" data-id="${escapeAttr(item.id)}">刷新信息</button>
+              <a class="btn" href="/api/codex/auth/start?reason=admin-reauth" target="_blank">重新授权</a>
+              <button class="btn btn-danger" data-codex-action="delete" data-id="${escapeAttr(item.id)}">删除</button>
+            </div></td>
+          </tr>`;
+      }
+
+      async function loadCodex() {
+        try {
+          const data = await api('/api/codex/accounts');
+          codexRows.innerHTML = data.items.length
+            ? data.items.map(codexRow).join('')
+            : '<tr><td colspan="5" class="muted">暂无 Codex 账号。</td></tr>';
+        } catch (error) {
+          codexRows.innerHTML = '<tr><td colspan="5" class="bad">加载失败。</td></tr>';
+          setMessage(codexMessage, error.message, true);
+        }
+      }
+
+      codexRows.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-codex-action]');
+        if (!button) return;
+        const action = button.dataset.codexAction;
+        const id = button.dataset.id;
+        if (action === 'delete' && !confirm('确认删除这个 Codex 账号及其本地 auth 文件吗？')) return;
+        try {
+          button.disabled = true;
+          const options = { method: action === 'delete' ? 'DELETE' : 'POST' };
+          await api(`/api/codex/accounts/${encodeURIComponent(id)}${action === 'refresh' ? '/refresh' : ''}`, options);
+          setMessage(codexMessage, action === 'refresh' ? '账号信息已刷新。' : '账号已删除。');
+          await loadCodex();
+        } catch (error) {
+          setMessage(codexMessage, error.message, true);
+          button.disabled = false;
+        }
+      });
+
+      loadGmail();
+      loadCodex();
+      setInterval(loadGmail, 5000);
+      setInterval(loadCodex, 60000);
+    </script>
+  </body>
+</html>
