@@ -3,16 +3,19 @@ import hashlib
 import html
 import http.server
 import json
+import logging
 import os
 import secrets
 import string
 import re
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
 
 from google.auth.transport.requests import Request as GoogleRequest
@@ -71,6 +74,10 @@ CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
 GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
+ERROR_LOG_DIR = os.path.join(DATA_DIR, "logs")
+ERROR_LOG_FILE = os.path.join(ERROR_LOG_DIR, "errors.log")
+ERROR_LOG_MAX_BYTES = int(os.getenv("ERROR_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+ERROR_LOG_BACKUP_COUNT = int(os.getenv("ERROR_LOG_BACKUP_COUNT", "5"))
 GMAIL_AUTH_FALLBACK = os.getenv("GMAIL_AUTH_FALLBACK", "auto").strip().lower()
 GMAIL_OAUTH_REDIRECT_BASE = os.getenv("GMAIL_OAUTH_REDIRECT_BASE", "http://localhost:8000").rstrip("/")
 APP_BASE_URL = os.getenv("APP_BASE_URL", GMAIL_OAUTH_REDIRECT_BASE).rstrip("/")
@@ -104,6 +111,7 @@ CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
 ACCESS_COOKIE_NAME = "chatgpt_code_access"
+ERROR_LOGGER = logging.getLogger("mailapi.errors")
 OPENAI_CODE_SENDERS = {
     item.strip().lower()
     for item in os.getenv(
@@ -138,6 +146,12 @@ BARE_CODE_PATTERNS = [
     re.compile(r"(?<!\d)(\d{4,5})(?!\d)"),
     re.compile(r"(?<!\d)(\d{7,8})(?!\d)"),
 ]
+
+BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+SECRET_LOG_PATTERN = re.compile(
+    r'(?i)(access_token|refresh_token|id_token|authorization|password)'
+    r'(\s*["\']?\s*[:=]\s*["\']?)([^"\',}\s]+)'
+)
 
 
 class AccountConfig(TypedDict):
@@ -335,6 +349,50 @@ os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(HISTORY_ID_DIR, exist_ok=True)
 os.makedirs(CODEX_AUTH_DIR, exist_ok=True)
 os.makedirs(GMAIL_TOKEN_DIR, exist_ok=True)
+os.makedirs(ERROR_LOG_DIR, exist_ok=True)
+
+
+def configure_error_logging() -> None:
+    if ERROR_LOGGER.handlers:
+        return
+    ERROR_LOGGER.setLevel(logging.ERROR)
+    ERROR_LOGGER.propagate = False
+    handler = RotatingFileHandler(
+        ERROR_LOG_FILE,
+        maxBytes=max(1024, ERROR_LOG_MAX_BYTES),
+        backupCount=max(1, ERROR_LOG_BACKUP_COUNT),
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
+    )
+    ERROR_LOGGER.addHandler(handler)
+    try:
+        os.chmod(ERROR_LOG_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def redact_log_text(value: Any) -> str:
+    text = str(value)
+    text = BEARER_LOG_PATTERN.sub("Bearer <redacted>", text)
+    text = SECRET_LOG_PATTERN.sub(r"\1\2<redacted>", text)
+    return text
+
+
+def log_exception(context: str, error: Exception) -> None:
+    stack = "".join(traceback.format_tb(error.__traceback__)).rstrip()
+    stack_detail = f"\nTraceback:\n{redact_log_text(stack)}" if stack else ""
+    ERROR_LOGGER.error(
+        "%s: %s: %s%s",
+        redact_log_text(context),
+        type(error).__name__,
+        redact_log_text(error),
+        stack_detail,
+    )
+
+
+configure_error_logging()
 
 
 def now_iso() -> str:
@@ -540,6 +598,7 @@ def delete_codex_record_auth_files(record: Dict[str, Any]) -> None:
         except FileNotFoundError:
             continue
         except Exception as e:  # noqa: BLE001
+            log_exception(f"删除 Codex auth 文件 {path}", e)
             print(f"Codex auth 文件删除失败：{path}: {e}")
 
 
@@ -551,6 +610,7 @@ def load_codex_auth_file() -> Optional[Dict[str, Any]]:
             value = json.load(f)
         return value if isinstance(value, dict) else None
     except Exception as e:  # noqa: BLE001
+        log_exception(f"加载 Codex auth 文件 {CODEX_AUTH_FILE}", e)
         print(f"Codex auth 文件加载失败：{e}")
         return None
 
@@ -574,6 +634,7 @@ def load_codex_auth_files() -> List[Dict[str, Any]]:
                 if isinstance(item, dict):
                     entries.append((os.path.getmtime(path), path, item))
         except Exception as e:  # noqa: BLE001
+            log_exception(f"加载 Codex auth 文件 {path}", e)
             print(f"Codex auth 文件加载失败：{path}: {e}")
 
     deduped: Dict[str, Dict[str, Any]] = {}
@@ -1332,6 +1393,10 @@ def refresh_codex_account_record(
                     if plan_type:
                         updated["chatgpt_plan_type"] = plan_type
             except Exception as e:  # noqa: BLE001
+                log_exception(
+                    f"刷新 Codex 订阅信息 account={updated.get('email') or updated.get('id')}",
+                    e,
+                )
                 message = f"订阅信息: {e}"
                 subscription_errors.append(message)
                 errors.append(message)
@@ -1342,6 +1407,10 @@ def refresh_codex_account_record(
             updated["usage_status"] = classify_usage_status(usage)
             updated["status_reason"] = codex_usage_status_reason(usage)
         except Exception as e:  # noqa: BLE001
+            log_exception(
+                f"刷新 Codex 用量 account={updated.get('email') or updated.get('id')}",
+                e,
+            )
             message = f"额度信息: {e}"
             usage_errors.append(message)
             errors.append(message)
@@ -1358,6 +1427,10 @@ def refresh_codex_account_record(
                 if refreshed_once:
                     continue
             except Exception as e:  # noqa: BLE001
+                log_exception(
+                    f"续期 Codex token account={updated.get('email') or updated.get('id')}",
+                    e,
+                )
                 refresh_error = str(e)
                 errors.append(f"刷新 token: {refresh_error}")
         break
@@ -1418,6 +1491,7 @@ def load_codex_accounts() -> None:
                 if isinstance(item, dict) and item.get("id"):
                     CODEX_ACCOUNTS[str(item["id"])] = item
     except Exception as e:  # noqa: BLE001
+        log_exception(f"加载 Codex 账号信息 {CODEX_ACCOUNTS_FILE}", e)
         print(f"Codex 账号信息加载失败：{e}")
 
 
@@ -1487,6 +1561,10 @@ def import_codex_auth_json(
             try:
                 record = refresh_codex_account_record(record, force_subscription=True)
             except Exception as e:  # noqa: BLE001
+                log_exception(
+                    f"导入后刷新 Codex 账号 account={record.get('email') or record.get('id')}",
+                    e,
+                )
                 record["status"] = "已导入，刷新失败"
                 record["error"] = str(e)
                 record["status_reason"] = codex_usage_status_reason(
@@ -1518,6 +1596,10 @@ def refresh_all_codex_accounts_once() -> None:
         try:
             updated = refresh_codex_account_record(record)
         except Exception as e:  # noqa: BLE001
+            log_exception(
+                f"后台刷新 Codex 账号 account={record.get('email') or account_id}",
+                e,
+            )
             updated = dict(record)
             updated["status"] = "刷新失败"
             updated["error"] = str(e)
@@ -1540,6 +1622,7 @@ def codex_refresh_loop() -> None:
         try:
             refresh_all_codex_accounts_once()
         except Exception as e:  # noqa: BLE001
+            log_exception("Codex 后台刷新循环", e)
             print(f"Codex 账号额度刷新失败：{e}")
         time.sleep(max(10, CODEX_REFRESH_INTERVAL_SECONDS))
 
@@ -1552,6 +1635,7 @@ def load_accounts() -> List[AccountConfig]:
                 value = json.load(f)
             cfgs = value.get("items") if isinstance(value, dict) else value
         except Exception as e:  # noqa: BLE001
+            log_exception(f"加载 Gmail 账号配置 {GMAIL_ACCOUNTS_FILE}", e)
             print(f"Gmail 账号配置加载失败：{e}")
 
     if not isinstance(cfgs, list):
@@ -1652,7 +1736,8 @@ def load_code_history(name: str) -> List[Dict[str, str]]:
             data = json.load(f)
         if isinstance(data, list):
             return data
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"加载验证码历史 account={name}", e)
         return []
     return []
 
@@ -1701,6 +1786,15 @@ def request_access_ok(request: FastAPIRequest) -> bool:
     if cookie_token == ACCESS_PASSWORD or token == ACCESS_PASSWORD:
         return True
     return False
+
+
+@app.middleware("http")
+async def error_log_guard(request: FastAPIRequest, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"Web 请求 {request.method} {request.url.path}", e)
+        raise
 
 
 @app.middleware("http")
@@ -1794,6 +1888,10 @@ def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
             event.set()
         return HTMLResponse("Google 授权完成，token 已返回服务器。可以关闭此页面并回到终端。")
     except Exception as e:  # noqa: BLE001
+        log_exception(
+            f"Google OAuth 回调 account={session.get('account_name') or 'unknown'}",
+            e,
+        )
         session["error"] = format_google_auth_error(e)
         if hasattr(event, "set"):
             event.set()
@@ -1823,6 +1921,7 @@ def get_gmail_service(cfg: AccountConfig):
                     try:
                         creds.refresh(GoogleRequest())
                     except Exception as e:  # noqa: BLE001
+                        log_exception(f"刷新 Gmail token account={cfg['name']}", e)
                         if not should_reauth_after_google_refresh_error(e):
                             raise RuntimeError(format_google_auth_error(e)) from e
                         backup_path = backup_token_file(token_file)
@@ -2074,12 +2173,15 @@ def watch_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = No
                     history_id = int(profile["historyId"])
                     write_history_id(cfg, history_id)
                 else:
+                    log_exception(f"Gmail API account={name} status={status}", e)
                     save_state(name, {"status": f"API 错误: {status}"})
             except Exception as e:  # noqa: BLE001
+                log_exception(f"Gmail 监听 account={name}", e)
                 save_state(name, {"status": f"运行错误: {e}"})
 
             stop_event.wait(CHECK_INTERVAL_SECONDS)
     except Exception as e:  # noqa: BLE001
+        log_exception(f"启动 Gmail 监听 account={name}", e)
         save_state(name, {"status": f"启动失败: {e}"})
     finally:
         with GMAIL_WATCHERS_LOCK:
@@ -2198,6 +2300,7 @@ def gpt_password_for_account(cfg: AccountConfig) -> Optional[str]:
 def start_watchers():
     source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
+    print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
     save_gmail_accounts()
     load_histories()
     load_codex_accounts()
@@ -2274,6 +2377,7 @@ def start_gmail_admin_auth(account_name: Optional[str] = None):
         session = create_auth_session(cfg, managed=True)
         session["managed_action"] = "reauth" if account_name else "add"
     except Exception as e:  # noqa: BLE001
+        log_exception(f"发起 Gmail 授权 account={cfg['name']}", e)
         return JSONResponse(content={"detail": format_google_auth_error(e)}, status_code=400)
     return RedirectResponse(url=str(session["auth_url"]), status_code=302)
 
@@ -2347,6 +2451,7 @@ def codex_callback_result(params: Dict[str, str]) -> tuple:
     try:
         imported = complete_codex_oauth_callback(code, state)
     except Exception as e:  # noqa: BLE001
+        log_exception("Codex OAuth 回调", e)
         return False, f"Codex 授权导入失败：{e}", 500
 
     label = imported[0].get("label") if imported else "Codex 账号"
@@ -2403,6 +2508,7 @@ def start_codex_auth(request: FastAPIRequest):
     try:
         ensure_codex_login_server()
     except Exception as e:  # noqa: BLE001
+        log_exception("启动 Codex OAuth 回调服务", e)
         return JSONResponse(content={"detail": str(e)}, status_code=500)
     session = create_codex_auth_session(reason)
     return RedirectResponse(url=str(session["auth_url"]), status_code=302)
@@ -2490,6 +2596,7 @@ async def import_codex_accounts(request: FastAPIRequest):
     try:
         imported = import_codex_auth_json(raw_text)
     except Exception as e:  # noqa: BLE001
+        log_exception("导入 Codex auth 内容", e)
         return JSONResponse(content={"detail": str(e)}, status_code=400)
 
     return JSONResponse(content={"items": imported, "updated_at": now_iso()})
@@ -2508,6 +2615,10 @@ def refresh_codex_account(account_id: str):
     try:
         updated = refresh_codex_account_record(record)
     except Exception as e:  # noqa: BLE001
+        log_exception(
+            f"手动刷新 Codex 账号 account={record.get('email') or account_id}",
+            e,
+        )
         updated = dict(record)
         updated["status"] = "刷新失败"
         updated["error"] = str(e)

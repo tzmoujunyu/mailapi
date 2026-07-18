@@ -65,6 +65,16 @@ ACCOUNT_PASSWORD_3=ssstevenclark@gmail.com的GPT密码
 
 账号列表接口只返回是否配置密码；实际密码仅在登录后的页面点击“复制”时按需读取，并禁止响应缓存。
 
+## 异常日志
+
+程序会把 Gmail 监听、Google/Codex 授权、Codex 信息刷新和未处理 Web 请求的异常写入：
+
+```text
+runtime/logs/errors.log
+```
+
+日志仅记录异常上下文和堆栈，并会脱敏常见 token、Authorization 和 password 字段。单个文件默认最大 5 MB，保留 5 个滚动备份；可通过 `ERROR_LOG_MAX_BYTES` 和 `ERROR_LOG_BACKUP_COUNT` 调整。
+
 ## Codex 账号信息
 
 打开 `/admin` 账号控制台，点击 Codex 区域的“导入账号”或“重新授权”会打开 Codex/OpenAI 授权页面。选择账号并授权后，回调会自动保存 auth 文件并刷新账号订阅和额度信息。主页面只负责显示账号状态，不再提供修改操作。
