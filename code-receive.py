@@ -405,12 +405,47 @@ def safe_codex_auth_filename(payload: Dict[str, Any]) -> str:
     return f"{(name or 'codex_auth')[:160]}.json"
 
 
+def write_json_atomic(path: str, value: Any) -> None:
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    temporary = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(value, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
 def save_codex_auth_file(payload: Dict[str, Any]) -> None:
-    with open(CODEX_AUTH_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    write_json_atomic(CODEX_AUTH_FILE, payload)
     path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, payload)
+
+
+def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
+    token = record.get("token") if isinstance(record.get("token"), dict) else {}
+    payload = {
+        "tokens": {
+            "access_token": token.get("access_token") or "",
+            "id_token": token.get("id_token") or "",
+            "refresh_token": token.get("refresh_token") or "",
+        },
+        "source": "refresh",
+        "updated_at": now_iso(),
+        "account_id": record.get("id"),
+        "email": record.get("email"),
+        "subject": record.get("subject"),
+        "chatgpt_account_id": record.get("chatgpt_account_id"),
+        "workspace_id": record.get("workspace_id"),
+        "chatgpt_plan_type": record.get("chatgpt_plan_type"),
+        "access_token_expires_at": record.get("access_token_expires_at"),
+    }
+    path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
+    write_json_atomic(path, payload)
 
 
 def load_codex_auth_file() -> Optional[Dict[str, Any]]:
@@ -453,10 +488,18 @@ def load_codex_auth_files() -> List[Dict[str, Any]]:
     return list(deduped.values())
 
 
-def import_codex_auth_file(refresh_snapshot: bool = False) -> List[Dict[str, Any]]:
+def import_codex_auth_file(
+    refresh_snapshot: bool = False, overwrite_existing_tokens: bool = True
+) -> List[Dict[str, Any]]:
     imported: List[Dict[str, Any]] = []
     for payload in load_codex_auth_files():
-        imported.extend(import_codex_auth_json(json.dumps(payload), refresh_snapshot=refresh_snapshot))
+        imported.extend(
+            import_codex_auth_json(
+                json.dumps(payload),
+                refresh_snapshot=refresh_snapshot,
+                overwrite_existing_tokens=overwrite_existing_tokens,
+            )
+        )
     return imported
 
 
@@ -734,6 +777,8 @@ def build_codex_account_record(
         "error": previous.get("error"),
         "subscription_error": previous.get("subscription_error"),
         "usage_error": None,
+        "refresh_error": None,
+        "reauth_required": False,
         "created_at": previous.get("created_at") or now,
         "updated_at": now,
         "last_refresh_at": previous.get("last_refresh_at"),
@@ -1093,7 +1138,23 @@ def should_refresh_codex_token(error: str) -> bool:
     detail = error.lower()
     if "unsupported_country_region_territory" in detail:
         return False
-    return " status 401 " in detail or " status 403 " in detail or "token" in detail
+    return " status 401 " in detail
+
+
+def codex_refresh_requires_reauth(error: str) -> bool:
+    detail = error.lower()
+    return any(
+        marker in detail
+        for marker in (
+            " status 400 ",
+            " status 401 ",
+            "invalid_grant",
+            "refresh_token_expired",
+            "refresh_token_reused",
+            "refresh_token_invalidated",
+            "app_session_terminated",
+        )
+    )
 
 
 def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
@@ -1138,6 +1199,7 @@ def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
     refreshed_record = build_codex_account_record(refreshed_payload, record)
     record.update(refreshed_record)
     record["status"] = "token 已刷新"
+    save_codex_record_auth_file(record)
     return True
 
 
@@ -1154,6 +1216,8 @@ def refresh_codex_account_record(
     usage_errors: List[str] = []
     subscription_refresh_attempted = False
     refreshed_once = False
+    refresh_attempted = False
+    refresh_error: Optional[str] = None
     for attempt in range(2):
         errors = []
         subscription_errors = []
@@ -1185,17 +1249,19 @@ def refresh_codex_account_record(
             errors.append(message)
 
         if (
-            errors
+            usage_errors
             and attempt == 0
             and not refreshed_once
-            and any(should_refresh_codex_token(error) for error in errors)
+            and any(should_refresh_codex_token(error) for error in usage_errors)
         ):
+            refresh_attempted = True
             try:
                 refreshed_once = refresh_codex_access_token(updated)
                 if refreshed_once:
                     continue
             except Exception as e:  # noqa: BLE001
-                errors.append(f"刷新 token: {e}")
+                refresh_error = str(e)
+                errors.append(f"刷新 token: {refresh_error}")
         break
 
     updated["last_refresh_at"] = now_iso()
@@ -1209,11 +1275,23 @@ def refresh_codex_account_record(
         updated["subscription_error"] = record.get("subscription_error")
     updated["usage_error"] = "; ".join(usage_errors) if usage_errors else None
     updated["error"] = updated["usage_error"]
-    if usage_errors:
-        updated["status_reason"] = codex_usage_status_reason(
-            updated.get("usage") if isinstance(updated.get("usage"), dict) else None,
-            updated["usage_error"],
+    updated["refresh_error"] = refresh_error
+    updated["reauth_required"] = bool(
+        (refresh_error and codex_refresh_requires_reauth(refresh_error))
+        or (
+            refresh_attempted
+            and refresh_error is None
+            and any(should_refresh_codex_token(error) for error in usage_errors)
         )
+    )
+    if usage_errors:
+        if updated["reauth_required"]:
+            updated["status_reason"] = "refresh_token_invalid"
+        else:
+            updated["status_reason"] = codex_usage_status_reason(
+                updated.get("usage") if isinstance(updated.get("usage"), dict) else None,
+                updated["usage_error"],
+            )
     else:
         updated["status_reason"] = codex_usage_status_reason(
             updated.get("usage") if isinstance(updated.get("usage"), dict) else None
@@ -1248,8 +1326,7 @@ def load_codex_accounts() -> None:
 def save_codex_accounts() -> None:
     with CODEX_ACCOUNTS_LOCK:
         items = list(CODEX_ACCOUNTS.values())
-    with open(CODEX_ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"items": items}, f, ensure_ascii=False, indent=2)
+    write_json_atomic(CODEX_ACCOUNTS_FILE, {"items": items})
 
 
 def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1285,19 +1362,28 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "error": error,
         "subscription_error": subscription_error,
         "usage_error": usage_error,
+        "refresh_error": record.get("refresh_error"),
+        "reauth_required": bool(record.get("reauth_required")),
         "created_at": record.get("created_at"),
         "updated_at": record.get("updated_at"),
         "last_refresh_at": record.get("last_refresh_at"),
     }
 
 
-def import_codex_auth_json(raw_text: str, refresh_snapshot: bool = True) -> List[Dict[str, Any]]:
+def import_codex_auth_json(
+    raw_text: str,
+    refresh_snapshot: bool = True,
+    overwrite_existing_tokens: bool = True,
+) -> List[Dict[str, Any]]:
     imported: List[Dict[str, Any]] = []
     for item in parse_codex_auth_items(raw_text):
         payload = extract_codex_token_payload(item)
         candidate = build_codex_account_record(payload)
         with CODEX_ACCOUNTS_LOCK:
             existing = CODEX_ACCOUNTS.get(str(candidate.get("id") or ""))
+        if existing and not overwrite_existing_tokens:
+            imported.append(sanitize_codex_account(existing))
+            continue
         record = build_codex_account_record(payload, existing)
         if refresh_snapshot:
             try:
@@ -1328,6 +1414,8 @@ def refresh_all_codex_accounts_once() -> None:
     for record in records:
         account_id = str(record.get("id") or "")
         if not account_id:
+            continue
+        if record.get("reauth_required"):
             continue
         try:
             updated = refresh_codex_account_record(record)
@@ -1813,7 +1901,7 @@ def start_watchers():
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
     load_histories()
     load_codex_accounts()
-    import_codex_auth_file(refresh_snapshot=False)
+    import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
     threading.Thread(target=codex_refresh_loop, daemon=True).start()
     for cfg in ACCOUNTS:
         threading.Thread(target=watch_account, args=(cfg,), daemon=True).start()
