@@ -64,11 +64,12 @@
       }
       th { background: #f7f8fa; font-size: 13px; color: #4b5563; }
       tbody tr:last-child td { border-bottom: 0; }
-      .gmail-table th:nth-child(1) { width: 25%; }
-      .gmail-table th:nth-child(2) { width: 13%; }
-      .gmail-table th:nth-child(3) { width: 28%; }
-      .gmail-table th:nth-child(4) { width: 14%; }
-      .gmail-table th:nth-child(5) { width: 20%; }
+      .mail-table th:nth-child(1) { width: 23%; }
+      .mail-table th:nth-child(2) { width: 10%; }
+      .mail-table th:nth-child(3) { width: 11%; }
+      .mail-table th:nth-child(4) { width: 23%; }
+      .mail-table th:nth-child(5) { width: 13%; }
+      .mail-table th:nth-child(6) { width: 20%; }
       .codex-table th:nth-child(1) { width: 25%; }
       .codex-table th:nth-child(2) { width: 19%; }
       .codex-table th:nth-child(3) { width: 15%; }
@@ -109,14 +110,17 @@
       <main class="content">
         <section class="section">
           <div class="section-head">
-            <h2>Gmail 接码账号</h2>
-            <a class="btn btn-primary" href="/api/admin/gmail/auth/start">添加账号</a>
+            <h2>邮箱接码账号</h2>
+            <div class="actions">
+              <a class="btn btn-primary" href="/api/admin/gmail/auth/start">添加 Gmail</a>
+              <button id="add-proton" class="btn">添加 Proton</button>
+            </div>
           </div>
-          <div id="gmail-message" class="message muted"></div>
+          <div id="mail-message" class="message muted"></div>
           <div class="table-wrap">
-            <table class="gmail-table">
-              <thead><tr><th>邮箱</th><th>授权</th><th>监听状态</th><th>最近更新</th><th>操作</th></tr></thead>
-              <tbody id="gmail-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            <table class="mail-table">
+              <thead><tr><th>邮箱</th><th>类型</th><th>授权</th><th>监听状态</th><th>最近更新</th><th>操作</th></tr></thead>
+              <tbody id="mail-rows"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -138,10 +142,11 @@
     </div>
 
     <script>
-      const gmailRows = document.getElementById('gmail-rows');
+      const mailRows = document.getElementById('mail-rows');
       const codexRows = document.getElementById('codex-rows');
-      const gmailMessage = document.getElementById('gmail-message');
+      const mailMessage = document.getElementById('mail-message');
       const codexMessage = document.getElementById('codex-message');
+      const addProtonButton = document.getElementById('add-proton');
 
       function escapeHtml(value) {
         const node = document.createElement('div');
@@ -171,52 +176,73 @@
         return data;
       }
 
-      function gmailRow(item) {
+      function mailRow(item) {
         const enabled = item.enabled;
         const authClass = item.authorized ? 'good' : 'bad';
+        const provider = item.provider === 'proton' ? 'Proton' : 'Gmail';
+        const authAction = item.provider === 'proton'
+          ? `<button class="btn" data-mail-action="login" data-name="${escapeAttr(item.name)}">${item.authorized ? '重新登录' : '登录'}</button>`
+          : `<a class="btn" href="/api/admin/gmail/auth/start?account_name=${encodeURIComponent(item.name)}">重新授权</a>`;
         return `
           <tr>
             <td><div>${escapeHtml(item.email || '-')}</div><div class="muted">${escapeHtml(item.name)}</div></td>
+            <td><span class="plan">${provider}</span></td>
             <td class="${authClass}">${item.authorized ? '已授权' : '未授权'}</td>
             <td class="${enabled ? 'good' : 'warn'}">${escapeHtml(item.status || (enabled ? '未知' : '已停用'))}</td>
             <td class="muted">${escapeHtml(formatTime(item.updated_at || item.token_updated_at))}</td>
             <td><div class="actions">
-              <a class="btn" href="/api/admin/gmail/auth/start?account_name=${encodeURIComponent(item.name)}">重新授权</a>
-              <button class="btn" data-gmail-action="${enabled ? 'disable' : 'enable'}" data-name="${escapeAttr(item.name)}">${enabled ? '停用' : '启用'}</button>
-              <button class="btn btn-danger" data-gmail-action="delete" data-name="${escapeAttr(item.name)}">删除</button>
+              ${authAction}
+              <button class="btn" data-mail-action="${enabled ? 'disable' : 'enable'}" data-name="${escapeAttr(item.name)}">${enabled ? '停用' : '启用'}</button>
+              <button class="btn btn-danger" data-mail-action="delete" data-name="${escapeAttr(item.name)}">删除</button>
             </div></td>
           </tr>`;
       }
 
-      async function loadGmail() {
+      async function loadMailAccounts() {
         try {
-          const data = await api('/api/admin/gmail/accounts');
-          gmailRows.innerHTML = data.items.length
-            ? data.items.map(gmailRow).join('')
-            : '<tr><td colspan="5" class="muted">暂无 Gmail 账号。</td></tr>';
+          const data = await api('/api/admin/mail/accounts');
+          mailRows.innerHTML = data.items.length
+            ? data.items.map(mailRow).join('')
+            : '<tr><td colspan="6" class="muted">暂无邮箱账号。</td></tr>';
         } catch (error) {
-          gmailRows.innerHTML = '<tr><td colspan="5" class="bad">加载失败。</td></tr>';
-          setMessage(gmailMessage, error.message, true);
+          mailRows.innerHTML = '<tr><td colspan="6" class="bad">加载失败。</td></tr>';
+          setMessage(mailMessage, error.message, true);
         }
       }
 
-      gmailRows.addEventListener('click', async (event) => {
-        const button = event.target.closest('[data-gmail-action]');
+      addProtonButton.addEventListener('click', async () => {
+        try {
+          addProtonButton.disabled = true;
+          await api('/api/admin/proton/accounts', { method: 'POST' });
+          setMessage(mailMessage, 'Proton 账号已加入，请点击“登录”生成会话。');
+          await loadMailAccounts();
+        } catch (error) {
+          setMessage(mailMessage, error.message, true);
+        } finally {
+          addProtonButton.disabled = false;
+        }
+      });
+
+      mailRows.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-mail-action]');
         if (!button) return;
-        const action = button.dataset.gmailAction;
+        const action = button.dataset.mailAction;
         const name = button.dataset.name;
         if (action === 'delete' && !confirm('删除后将停止监听，token 和历史文件会保留。继续吗？')) return;
         try {
           button.disabled = true;
-          if (action === 'delete') {
-            await api(`/api/admin/gmail/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' });
+          if (action === 'login') {
+            setMessage(mailMessage, '正在登录 Proton，请稍候...');
+            await api(`/api/admin/proton/accounts/${encodeURIComponent(name)}/login`, { method: 'POST' });
+          } else if (action === 'delete') {
+            await api(`/api/admin/mail/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' });
           } else {
-            await api(`/api/admin/gmail/accounts/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
+            await api(`/api/admin/mail/accounts/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
           }
-          setMessage(gmailMessage, '操作已完成。');
-          await loadGmail();
+          setMessage(mailMessage, '操作已完成。');
+          await loadMailAccounts();
         } catch (error) {
-          setMessage(gmailMessage, error.message, true);
+          setMessage(mailMessage, error.message, true);
           button.disabled = false;
         }
       });
@@ -296,9 +322,9 @@
         }
       });
 
-      loadGmail();
+      loadMailAccounts();
       loadCodex();
-      setInterval(loadGmail, 5000);
+      setInterval(loadMailAccounts, 5000);
       setInterval(loadCodex, 60000);
     </script>
   </body>

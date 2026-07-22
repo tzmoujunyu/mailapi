@@ -1,4 +1,4 @@
-# ChatGPT 验证码监听
+# ChatGPT 多邮箱验证码监听
 
 ## 启动
 
@@ -7,9 +7,11 @@ export ACCESS_PASSWORD='你的口令'
 python3 code-receive.py
 ```
 
+依赖可通过 `pip install -r requirements.txt` 安装。当前支持 Gmail 和 Proton，Outlook 适配器尚未加入。
+
 ## 缺少 Gmail Token 时授权
 
-登录后打开 `/admin` 账号控制台，点击“添加账号”即可选择新的 Google 账号。授权完成后，程序会读取实际 Gmail 地址、保存独立 token 并立即开始监听。账号列表保存在 `runtime/gmail_accounts.json`，新 token 保存在 `runtime/gmail_tokens/`。
+登录后打开 `/admin` 账号控制台，点击“添加 Gmail”即可选择新的 Google 账号。授权完成后，程序会读取实际 Gmail 地址、保存独立 token 并立即开始监听。统一邮箱账号列表暂沿用 `runtime/gmail_accounts.json` 文件名，新 token 保存在 `runtime/gmail_tokens/`。
 
 控制台支持重新授权、停用、启用和删除。删除只移出监听列表，原 token 和验证码历史仍会保留。首次迁移时，原来的 `runtime/token_account1.json` 和 `runtime/token_account2.json` 会继续使用。
 
@@ -55,19 +57,42 @@ export SSL_CERT_FILE='/path/to/ca-bundle.pem'
 OPENAI_CODE_SENDERS=noreply@tm.openai.com,noreply@tm1.openai.com
 ```
 
-验证码页面可按邮箱显示并复制对应的 GPT 密码。密码变量按邮箱固定映射，未配置时页面显示“无”：
+## Proton Free 接码
+
+Proton Free 没有官方 IMAP/API 接口，本项目通过 `protonmail-api-client` 复用 Proton 网页会话。默认从下列配置读取账号密码和 TOTP：
+
+```text
+~/proton/.env
+```
+
+也可以在项目 `.env` 中设置 `PROTON_CONFIG_FILE` 指向其他配置文件。账号控制台点击“添加 Proton”会读取配置并创建账号；点击“登录”会生成独立会话文件：
+
+```text
+runtime/proton_sessions/account-4.pickle
+```
+
+如果网页登录触发 CAPTCHA，在项目目录运行：
+
+```bash
+/home/moujy/.conda/envs/gmail/bin/python scripts/proton_login.py --account account-4 --manual-captcha
+```
+
+登录完成后重启主程序。Proton 密码和 TOTP 不会写入账号列表；会话文件、配置文件和整个 `runtime/` 都不能上传或分享。
+
+验证码页面可按邮箱显示并复制对应的 GPT 密码。密码变量按 `account-N` 编号映射，未配置时页面显示“无”：
 
 ```bash
 ACCOUNT_PASSWORD_1=第一个邮箱的GPT密码
-ACCOUNT_PASSWORD_2=janymil722@gmail.com的GPT密码
-ACCOUNT_PASSWORD_3=ssstevenclark@gmail.com的GPT密码
+ACCOUNT_PASSWORD_2=第二个邮箱的GPT密码
+ACCOUNT_PASSWORD_3=第三个邮箱的GPT密码
+ACCOUNT_PASSWORD_4=第四个邮箱的GPT密码
 ```
 
 账号列表接口只返回是否配置密码；实际密码仅在登录后的页面点击“复制”时按需读取，并禁止响应缓存。
 
 ## 异常日志
 
-程序会把 Gmail 监听、Google/Codex 授权、Codex 信息刷新和未处理 Web 请求的异常写入：
+程序会把 Gmail/Proton 监听、Google/Codex 授权、Codex 信息刷新和未处理 Web 请求的异常写入：
 
 ```text
 runtime/logs/errors.log

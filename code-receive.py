@@ -34,6 +34,13 @@ from fastapi.staticfiles import StaticFiles
 
 from typing import TypedDict
 
+from mail_messages import IncomingMail, extract_verification_code as extract_code_from_mail
+from mail_providers.proton import (
+    ProtonAuthorizationRequired,
+    ProtonMailbox,
+    load_proton_credentials,
+)
+
 
 def load_dotenv_file(path: str = ".env") -> None:
     if not os.path.exists(path):
@@ -74,6 +81,13 @@ CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
 GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
+PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
+PROTON_CONFIG_FILE = os.path.expanduser(
+    os.getenv("PROTON_CONFIG_FILE", "~/proton/.env")
+)
+PROTON_POLL_INTERVAL_SECONDS = int(os.getenv("PROTON_POLL_INTERVAL_SECONDS", "3"))
+PROTON_KEEPALIVE_SECONDS = int(os.getenv("PROTON_KEEPALIVE_SECONDS", "30"))
+PROTON_CATCHUP_LIMIT = int(os.getenv("PROTON_CATCHUP_LIMIT", "30"))
 ERROR_LOG_DIR = os.path.join(DATA_DIR, "logs")
 ERROR_LOG_FILE = os.path.join(ERROR_LOG_DIR, "errors.log")
 ERROR_LOG_MAX_BYTES = int(os.getenv("ERROR_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
@@ -105,8 +119,8 @@ AUTH_SESSION_LOCK = threading.Lock()
 CODEX_ACCOUNTS_LOCK = threading.Lock()
 CODEX_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER_LOCK = threading.Lock()
-GMAIL_ACCOUNTS_LOCK = threading.Lock()
-GMAIL_WATCHERS_LOCK = threading.Lock()
+MAIL_ACCOUNTS_LOCK = threading.Lock()
+MAIL_WATCHERS_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
@@ -127,38 +141,21 @@ SEARCH_QUERY = (
     'OR "ChatGPT" OR "OpenAI")'
 )
 
-VERIFICATION_TERMS = (
-    r"temporary|login|sign[ -]?in|verification|security|otp|one[ -]?time|"
-    r"临时|登录|验证(?:码|代码)|动态码"
-)
-STRONG_SUBJECT_PATTERN = re.compile(
-    rf"(?is)^(?=.*(?:chatgpt|openai))(?=.*(?:{VERIFICATION_TERMS})).*$"
-)
-STRONG_BODY_PATTERN = re.compile(
-    rf"(?is)(?=.*(?:chatgpt|openai))(?=.*(?:{VERIFICATION_TERMS})).*"
-)
-CONTEXT_CODE_PATTERNS = [
-    re.compile(rf"(?is)(?:{VERIFICATION_TERMS}|code)[^\d]{{0,80}}?(\d{{4,8}})"),
-    re.compile(rf"(?is)(?<!\d)(\d{{4,8}})(?!\d).{{0,80}}?(?:{VERIFICATION_TERMS}|code)"),
-]
-BARE_CODE_PATTERNS = [
-    re.compile(r"(?<!\d)(\d{6})(?!\d)"),
-    re.compile(r"(?<!\d)(\d{4,5})(?!\d)"),
-    re.compile(r"(?<!\d)(\d{7,8})(?!\d)"),
-]
-
 BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
 SECRET_LOG_PATTERN = re.compile(
-    r'(?i)(access_token|refresh_token|id_token|authorization|password)'
+    r'(?i)(access_token|refresh_token|id_token|authorization|password|totp_secret|session_id|cookie)'
     r'(\s*["\']?\s*[:=]\s*["\']?)([^"\',}\s]+)'
 )
 
 
-class AccountConfig(TypedDict):
+class AccountConfig(TypedDict, total=False):
     name: str
     email: str
+    provider: str
     token_file: str
     credential_file: str
+    session_file: str
+    config_file: str
     enabled: bool
 
 
@@ -326,6 +323,7 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
     {
         "name": "account-1",
         "email": "santeekyan0162@gmail.com",
+        "provider": "gmail",
         "token_file": os.path.join(DATA_DIR, "token_account1.json"),
         "credential_file": "credentials.json",
         "enabled": True,
@@ -333,22 +331,18 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
     {
         "name": "account-2",
         "email": "janymil722@gmail.com",
+        "provider": "gmail",
         "token_file": os.path.join(DATA_DIR, "token_account2.json"),
         "credential_file": "credentials.json",
         "enabled": True,
     },
 ]
 
-GPT_PASSWORD_ENV_BY_EMAIL = {
-    "santeekyan0162@gmail.com": "ACCOUNT_PASSWORD_1",
-    "janymil722@gmail.com": "ACCOUNT_PASSWORD_2",
-    "ssstevenclark@gmail.com": "ACCOUNT_PASSWORD_3",
-}
-
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(HISTORY_ID_DIR, exist_ok=True)
 os.makedirs(CODEX_AUTH_DIR, exist_ok=True)
 os.makedirs(GMAIL_TOKEN_DIR, exist_ok=True)
+os.makedirs(PROTON_SESSION_DIR, exist_ok=True)
 os.makedirs(ERROR_LOG_DIR, exist_ok=True)
 
 
@@ -1655,39 +1649,62 @@ def load_accounts() -> List[AccountConfig]:
         if not name or name in used_names:
             name = fallback_name
         used_names.add(name)
-        normalized.append(
-            {
-                "name": name,
-                "email": str(item.get("email") or "未配置"),
-                "token_file": str(item.get("token_file") or os.path.join(GMAIL_TOKEN_DIR, f"{name}.json")),
-                "credential_file": str(item.get("credential_file") or "credentials.json"),
-                "enabled": item.get("enabled") is not False,
-            }
-        )
+        provider = str(item.get("provider") or "gmail").strip().lower()
+        cfg: AccountConfig = {
+            "name": name,
+            "email": str(item.get("email") or "未配置"),
+            "provider": provider,
+            "enabled": item.get("enabled") is not False,
+        }
+        if provider == "proton":
+            cfg["session_file"] = str(
+                item.get("session_file")
+                or os.path.join(PROTON_SESSION_DIR, f"{name}.pickle")
+            )
+            cfg["config_file"] = os.path.expanduser(
+                str(item.get("config_file") or PROTON_CONFIG_FILE)
+            )
+        else:
+            cfg["provider"] = "gmail"
+            cfg["token_file"] = str(
+                item.get("token_file") or os.path.join(GMAIL_TOKEN_DIR, f"{name}.json")
+            )
+            cfg["credential_file"] = str(item.get("credential_file") or "credentials.json")
+        normalized.append(cfg)
     return normalized
 
 
-def save_gmail_accounts() -> None:
-    with GMAIL_ACCOUNTS_LOCK:
+def save_mail_accounts() -> None:
+    with MAIL_ACCOUNTS_LOCK:
         items = [dict(item) for item in ACCOUNTS]
     write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
 
 
-def find_gmail_account(name: str) -> Optional[AccountConfig]:
-    with GMAIL_ACCOUNTS_LOCK:
+def find_mail_account(name: str) -> Optional[AccountConfig]:
+    with MAIL_ACCOUNTS_LOCK:
         return next((item for item in ACCOUNTS if item["name"] == name), None)
 
 
-def next_gmail_account_config() -> AccountConfig:
-    with GMAIL_ACCOUNTS_LOCK:
+def find_gmail_account(name: str) -> Optional[AccountConfig]:
+    cfg = find_mail_account(name)
+    return cfg if cfg and cfg.get("provider", "gmail") == "gmail" else None
+
+
+def next_account_name() -> str:
+    with MAIL_ACCOUNTS_LOCK:
         used = {item["name"] for item in ACCOUNTS}
     index = 1
     while f"account-{index}" in used:
         index += 1
-    name = f"account-{index}"
+    return f"account-{index}"
+
+
+def next_gmail_account_config() -> AccountConfig:
+    name = next_account_name()
     return {
         "name": name,
         "email": "等待授权",
+        "provider": "gmail",
         "token_file": os.path.join(GMAIL_TOKEN_DIR, f"{name}.json"),
         "credential_file": "credentials.json",
         "enabled": True,
@@ -1700,15 +1717,16 @@ STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 CODEX_ACCOUNTS: Dict[str, Dict[str, Any]] = {}
 CODEX_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
-GMAIL_WATCHERS: Dict[str, Dict[str, Any]] = {}
+MAIL_WATCHERS: Dict[str, Dict[str, Any]] = {}
 
 
-def ensure_gmail_state(cfg: AccountConfig) -> None:
+def ensure_mail_state(cfg: AccountConfig) -> None:
     with STATE_LOCK:
         existing = STATE.get(cfg["name"], {})
         STATE[cfg["name"]] = {
             "name": cfg["name"],
             "email": cfg["email"],
+            "provider": cfg.get("provider", "gmail"),
             "last_code": existing.get("last_code"),
             "message_id": existing.get("message_id"),
             "subject": existing.get("subject"),
@@ -1720,7 +1738,7 @@ def ensure_gmail_state(cfg: AccountConfig) -> None:
 
 
 for cfg in ACCOUNTS:
-    ensure_gmail_state(cfg)
+    ensure_mail_state(cfg)
 
 
 def history_file_path(name: str) -> str:
@@ -1995,29 +2013,21 @@ def sender_email(message: Dict) -> str:
     return match.group(0).strip(".,;\"") if match else ""
 
 
-def extract_verification_code(message: Dict) -> Optional[str]:
+def gmail_incoming_mail(message: Dict) -> IncomingMail:
     snippet = message.get("snippet", "")
     subject = message_header(message, "Subject")
     payload_texts = collect_text_from_payload(message.get("payload", {}))
-    body_text = "\n".join([snippet] + payload_texts)
-    strong_subject = bool(STRONG_SUBJECT_PATTERN.search(subject))
-    strong_body = bool(STRONG_BODY_PATTERN.search(body_text))
-    if sender_email(message) not in OPENAI_CODE_SENDERS or not (strong_subject or strong_body):
-        return None
+    return IncomingMail(
+        message_id=str(message.get("id") or ""),
+        sender=sender_email(message),
+        subject=subject,
+        body="\n".join([snippet] + payload_texts),
+        received_at=int(message.get("internalDate") or 0) // 1000,
+    )
 
-    candidate_text = "\n".join([subject, body_text])
-    for pattern in CONTEXT_CODE_PATTERNS:
-        m = pattern.search(candidate_text)
-        if m:
-            return m.group(1)
 
-    if strong_subject:
-        for pattern in BARE_CODE_PATTERNS:
-            m = pattern.search(candidate_text)
-            if m:
-                return m.group(1)
-
-    return None
+def extract_verification_code(message: Dict) -> Optional[str]:
+    return extract_code_from_mail(gmail_incoming_mail(message), OPENAI_CODE_SENDERS)
 
 
 def parse_subject(message: Dict) -> str:
@@ -2053,6 +2063,33 @@ def save_state(name: str, patch: Dict[str, Optional[str]]):
             STATE[name].update(patch)
 
 
+def store_code_result(
+    cfg: AccountConfig,
+    result: Dict[str, str],
+    status: str = "监听中",
+) -> None:
+    append_code_record(
+        cfg["name"],
+        {
+            "code": result["code"],
+            "message_id": result["message_id"],
+            "subject": result["subject"],
+            "created_at": now_iso(),
+            "email": cfg["email"],
+        },
+    )
+    save_state(
+        cfg["name"],
+        {
+            "last_code": result["code"],
+            "message_id": result["message_id"],
+            "subject": result["subject"],
+            "updated_at": now_iso(),
+            "status": status,
+        },
+    )
+
+
 def process_message(service, cfg: AccountConfig, message_id: str) -> Optional[Dict[str, str]]:
     msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
 
@@ -2078,35 +2115,13 @@ def scan_unread_once(service, cfg: AccountConfig):
         q=SEARCH_QUERY,
         maxResults=20,
     ).execute()
-    latest = None
     for item in response.get("messages", []):
         result = process_message(service, cfg, item["id"])
         if result:
-            append_code_record(
-                cfg["name"],
-                {
-                    "code": result["code"],
-                    "message_id": result["message_id"],
-                    "subject": result["subject"],
-                    "created_at": now_iso(),
-                    "email": cfg["email"],
-                },
-            )
-            latest = result
-    if latest:
-        save_state(
-            cfg["name"],
-            {
-                "last_code": latest["code"],
-                "message_id": latest["message_id"],
-                "subject": latest["subject"],
-                "updated_at": now_iso(),
-                "status": "已完成（补扫）",
-            },
-        )
+            store_code_result(cfg, result, status="已完成（补扫）")
 
 
-def watch_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = None):
+def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = None):
     stop_event = stop_event or threading.Event()
     name = cfg["name"]
     save_state(name, {"status": "启动中"})
@@ -2137,26 +2152,7 @@ def watch_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = No
                         result = process_message(service, cfg, msg_id)
                         if result:
                             got = True
-                            append_code_record(
-                                cfg["name"],
-                                {
-                                    "code": result["code"],
-                                    "message_id": result["message_id"],
-                                    "subject": result["subject"],
-                                    "created_at": now_iso(),
-                                    "email": cfg["email"],
-                                },
-                            )
-                            save_state(
-                                name,
-                                {
-                                    "last_code": result["code"],
-                                    "message_id": result["message_id"],
-                                    "subject": result["subject"],
-                                    "updated_at": now_iso(),
-                                    "status": "监听中",
-                                },
-                            )
+                            store_code_result(cfg, result)
                 if response.get("historyId"):
                     history_id = int(response["historyId"])
                     write_history_id(cfg, history_id)
@@ -2184,41 +2180,140 @@ def watch_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = No
         log_exception(f"启动 Gmail 监听 account={name}", e)
         save_state(name, {"status": f"启动失败: {e}"})
     finally:
-        with GMAIL_WATCHERS_LOCK:
-            current = GMAIL_WATCHERS.get(name)
+        with MAIL_WATCHERS_LOCK:
+            current = MAIL_WATCHERS.get(name)
             if current and current.get("thread") is threading.current_thread():
-                GMAIL_WATCHERS.pop(name, None)
+                MAIL_WATCHERS.pop(name, None)
 
 
-def start_gmail_watcher(cfg: AccountConfig) -> bool:
+def proton_incoming_mail(message: Any) -> IncomingMail:
+    sender = getattr(getattr(message, "sender", None), "address", "") or ""
+    return IncomingMail(
+        message_id=str(getattr(message, "id", "") or ""),
+        sender=str(sender),
+        subject=str(getattr(message, "subject", "") or ""),
+        body=str(getattr(message, "body", "") or ""),
+        received_at=int(getattr(message, "time", 0) or 0),
+    )
+
+
+def process_proton_message(
+    mailbox: ProtonMailbox,
+    cfg: AccountConfig,
+    message: Any,
+) -> Optional[Dict[str, str]]:
+    if getattr(message, "unread", True) is False:
+        return None
+    full_message = mailbox.read_message(message)
+    incoming = proton_incoming_mail(full_message)
+    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    if not code:
+        return None
+    mailbox.mark_as_read(incoming.message_id)
+    return {
+        "code": code,
+        "message_id": incoming.message_id,
+        "subject": incoming.subject or "（无主题）",
+    }
+
+
+def scan_proton_unread_once(mailbox: ProtonMailbox, cfg: AccountConfig) -> None:
+    messages = mailbox.get_recent_messages(limit=max(1, PROTON_CATCHUP_LIMIT))
+    for message in reversed(messages):
+        if getattr(message, "unread", True) is False:
+            continue
+        try:
+            result = process_proton_message(mailbox, cfg, message)
+            if result:
+                store_code_result(cfg, result, status="已完成（补扫）")
+        except Exception as e:  # noqa: BLE001
+            log_exception(f"Proton 补扫 account={cfg['name']}", e)
+
+
+def watch_proton_account(
+    cfg: AccountConfig,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    stop_event = stop_event or threading.Event()
+    name = cfg["name"]
+    mailbox = ProtonMailbox(str(cfg["session_file"]))
+    save_state(name, {"status": "启动中"})
+    try:
+        mailbox.connect()
+        scan_proton_unread_once(mailbox, cfg)
+        save_state(name, {"status": "监听中"})
+        while not stop_event.is_set():
+            try:
+                message = mailbox.wait_for_new_message(
+                    interval=max(1, PROTON_POLL_INTERVAL_SECONDS),
+                    timeout=max(10, PROTON_KEEPALIVE_SECONDS),
+                )
+                if message is None:
+                    save_state(name, {"status": "监听中"})
+                    continue
+                result = process_proton_message(mailbox, cfg, message)
+                if result:
+                    store_code_result(cfg, result)
+            except Exception as e:  # noqa: BLE001
+                log_exception(f"Proton 监听 account={name}", e)
+                save_state(name, {"status": "连接异常，正在重连"})
+                if stop_event.wait(5):
+                    break
+                mailbox.connect()
+                scan_proton_unread_once(mailbox, cfg)
+                save_state(name, {"status": "监听中"})
+    except ProtonAuthorizationRequired as e:
+        save_state(name, {"status": str(e)})
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"启动 Proton 监听 account={name}", e)
+        save_state(name, {"status": f"启动失败: {e}"})
+    finally:
+        with MAIL_WATCHERS_LOCK:
+            current = MAIL_WATCHERS.get(name)
+            if current and current.get("thread") is threading.current_thread():
+                MAIL_WATCHERS.pop(name, None)
+
+
+def start_mail_watcher(cfg: AccountConfig) -> bool:
     if not cfg.get("enabled", True):
         save_state(cfg["name"], {"status": "已停用"})
         return False
-    ensure_gmail_state(cfg)
-    with GMAIL_WATCHERS_LOCK:
-        current = GMAIL_WATCHERS.get(cfg["name"])
+    ensure_mail_state(cfg)
+    provider = cfg.get("provider", "gmail")
+    target = watch_proton_account if provider == "proton" else watch_gmail_account
+    with MAIL_WATCHERS_LOCK:
+        current = MAIL_WATCHERS.get(cfg["name"])
         if current and current.get("thread") and current["thread"].is_alive():
             return False
         stop_event = threading.Event()
         thread = threading.Thread(
-            target=watch_account,
+            target=target,
             args=(cfg, stop_event),
             daemon=True,
-            name=f"gmail-{cfg['name']}",
+            name=f"{provider}-{cfg['name']}",
         )
-        GMAIL_WATCHERS[cfg["name"]] = {"thread": thread, "stop_event": stop_event}
+        MAIL_WATCHERS[cfg["name"]] = {
+            "thread": thread,
+            "stop_event": stop_event,
+            "provider": provider,
+        }
         thread.start()
     return True
 
 
-def stop_gmail_watcher(name: str, cancel_auth: bool = True) -> None:
-    with GMAIL_WATCHERS_LOCK:
-        current = GMAIL_WATCHERS.pop(name, None)
+def stop_mail_watcher(name: str, cancel_auth: bool = True) -> None:
+    with MAIL_WATCHERS_LOCK:
+        current = MAIL_WATCHERS.pop(name, None)
     if current:
         current["stop_event"].set()
         thread = current.get("thread")
         if thread and thread is not threading.current_thread():
-            thread.join(timeout=CHECK_INTERVAL_SECONDS + 2)
+            timeout = (
+                max(10, PROTON_KEEPALIVE_SECONDS) + 2
+                if current.get("provider") == "proton"
+                else CHECK_INTERVAL_SECONDS + 2
+            )
+            thread.join(timeout=timeout)
 
     if cancel_auth:
         with AUTH_SESSION_LOCK:
@@ -2246,41 +2341,57 @@ def complete_managed_gmail_auth(
     if session.get("managed_action") == "reauth" and cfg.get("email") not in {email, "未配置", "等待授权"}:
         raise RuntimeError(f"选择的 Gmail 账号与原账号不一致：{email}")
     if session.get("managed_action") == "add":
-        with GMAIL_ACCOUNTS_LOCK:
-            duplicate = next((item for item in ACCOUNTS if item["email"].lower() == email.lower()), None)
+        with MAIL_ACCOUNTS_LOCK:
+            duplicate = next(
+                (
+                    item
+                    for item in ACCOUNTS
+                    if item.get("provider", "gmail") == "gmail"
+                    and item["email"].lower() == email.lower()
+                ),
+                None,
+            )
         if duplicate:
             cfg = dict(duplicate)
 
     cfg["email"] = email
+    cfg["provider"] = "gmail"
     cfg["enabled"] = True
-    stop_gmail_watcher(str(cfg["name"]), cancel_auth=False)
+    stop_mail_watcher(str(cfg["name"]), cancel_auth=False)
     write_json_atomic(str(cfg["token_file"]), json.loads(credentials.to_json()))
 
-    with GMAIL_ACCOUNTS_LOCK:
+    with MAIL_ACCOUNTS_LOCK:
         index = next((i for i, item in enumerate(ACCOUNTS) if item["name"] == cfg["name"]), None)
         if index is None:
             ACCOUNTS.append(cfg)
         else:
             ACCOUNTS[index] = cfg
-    save_gmail_accounts()
-    ensure_gmail_state(cfg)
+    save_mail_accounts()
+    ensure_mail_state(cfg)
     save_state(cfg["name"], {"email": email, "status": "授权完成，正在启动"})
-    start_gmail_watcher(cfg)
+    start_mail_watcher(cfg)
     return cfg
 
 
-def sanitize_gmail_account(cfg: AccountConfig) -> Dict[str, Any]:
+def account_auth_file(cfg: AccountConfig) -> str:
+    if cfg.get("provider", "gmail") == "proton":
+        return str(cfg.get("session_file") or "")
+    return str(cfg.get("token_file") or "")
+
+
+def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
     with STATE_LOCK:
         state = dict(STATE.get(cfg["name"], {}))
-    token_file = cfg["token_file"]
+    auth_file = account_auth_file(cfg)
     return {
         "name": cfg["name"],
         "email": cfg["email"],
+        "provider": cfg.get("provider", "gmail"),
         "enabled": cfg.get("enabled", True),
-        "authorized": os.path.exists(token_file),
+        "authorized": bool(auth_file and os.path.exists(auth_file)),
         "token_updated_at": (
-            datetime.fromtimestamp(os.path.getmtime(token_file), timezone.utc).isoformat()
-            if os.path.exists(token_file)
+            datetime.fromtimestamp(os.path.getmtime(auth_file), timezone.utc).isoformat()
+            if auth_file and os.path.exists(auth_file)
             else None
         ),
         "status": state.get("status") or "未知",
@@ -2289,9 +2400,10 @@ def sanitize_gmail_account(cfg: AccountConfig) -> Dict[str, Any]:
 
 
 def gpt_password_for_account(cfg: AccountConfig) -> Optional[str]:
-    env_name = GPT_PASSWORD_ENV_BY_EMAIL.get(cfg["email"].strip().lower())
-    if not env_name:
+    match = re.fullmatch(r"account-(\d+)", cfg["name"])
+    if not match:
         return None
+    env_name = f"ACCOUNT_PASSWORD_{match.group(1)}"
     password = os.getenv(env_name, "")
     return password if password else None
 
@@ -2301,13 +2413,13 @@ def start_watchers():
     source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
-    save_gmail_accounts()
+    save_mail_accounts()
     load_histories()
     load_codex_accounts()
     import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
     threading.Thread(target=codex_refresh_loop, daemon=True).start()
     for cfg in ACCOUNTS:
-        start_gmail_watcher(cfg)
+        start_mail_watcher(cfg)
 
 
 @app.get("/")
@@ -2324,7 +2436,7 @@ def admin_page():
 
 @app.get("/api/codes")
 def get_codes():
-    with GMAIL_ACCOUNTS_LOCK:
+    with MAIL_ACCOUNTS_LOCK:
         accounts = {item["name"]: item for item in ACCOUNTS}
     with STATE_LOCK:
         data = []
@@ -2337,11 +2449,12 @@ def get_codes():
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
 
 
+@app.post("/api/mail/accounts/{account_name}/gpt-password")
 @app.post("/api/gmail/accounts/{account_name}/gpt-password")
 def get_gpt_password(account_name: str):
-    cfg = find_gmail_account(account_name)
+    cfg = find_mail_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
     password = gpt_password_for_account(cfg)
     if password is None:
         return JSONResponse(content={"detail": "该账号未配置 GPT 密码"}, status_code=404)
@@ -2351,10 +2464,11 @@ def get_gpt_password(account_name: str):
     )
 
 
+@app.get("/api/admin/mail/accounts")
 @app.get("/api/admin/gmail/accounts")
-def get_gmail_accounts():
-    with GMAIL_ACCOUNTS_LOCK:
-        items = [sanitize_gmail_account(item) for item in ACCOUNTS]
+def get_mail_accounts():
+    with MAIL_ACCOUNTS_LOCK:
+        items = [sanitize_mail_account(item) for item in ACCOUNTS]
     return JSONResponse(content={"items": items, "updated_at": now_iso()})
 
 
@@ -2382,40 +2496,44 @@ def start_gmail_admin_auth(account_name: Optional[str] = None):
     return RedirectResponse(url=str(session["auth_url"]), status_code=302)
 
 
+@app.post("/api/admin/mail/accounts/{account_name}/enable")
 @app.post("/api/admin/gmail/accounts/{account_name}/enable")
-def enable_gmail_account(account_name: str):
-    cfg = find_gmail_account(account_name)
+def enable_mail_account(account_name: str):
+    cfg = find_mail_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
-    if not os.path.exists(cfg["token_file"]):
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    auth_file = account_auth_file(cfg)
+    if not auth_file or not os.path.exists(auth_file):
         return JSONResponse(content={"detail": "账号缺少授权，请先重新授权"}, status_code=409)
     cfg["enabled"] = True
-    save_gmail_accounts()
-    start_gmail_watcher(cfg)
-    return JSONResponse(content={"item": sanitize_gmail_account(cfg)})
+    save_mail_accounts()
+    start_mail_watcher(cfg)
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)})
 
 
+@app.post("/api/admin/mail/accounts/{account_name}/disable")
 @app.post("/api/admin/gmail/accounts/{account_name}/disable")
-def disable_gmail_account(account_name: str):
-    cfg = find_gmail_account(account_name)
+def disable_mail_account(account_name: str):
+    cfg = find_mail_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
     cfg["enabled"] = False
-    save_gmail_accounts()
-    stop_gmail_watcher(account_name)
+    save_mail_accounts()
+    stop_mail_watcher(account_name)
     save_state(account_name, {"status": "已停用"})
-    return JSONResponse(content={"item": sanitize_gmail_account(cfg)})
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)})
 
 
+@app.delete("/api/admin/mail/accounts/{account_name}")
 @app.delete("/api/admin/gmail/accounts/{account_name}")
-def delete_gmail_account(account_name: str):
-    cfg = find_gmail_account(account_name)
+def delete_mail_account(account_name: str):
+    cfg = find_mail_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
-    stop_gmail_watcher(account_name)
-    with GMAIL_ACCOUNTS_LOCK:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    stop_mail_watcher(account_name)
+    with MAIL_ACCOUNTS_LOCK:
         ACCOUNTS[:] = [item for item in ACCOUNTS if item["name"] != account_name]
-    save_gmail_accounts()
+    save_mail_accounts()
     with STATE_LOCK:
         STATE.pop(account_name, None)
     with HISTORY_LOCK:
@@ -2423,6 +2541,72 @@ def delete_gmail_account(account_name: str):
     return JSONResponse(
         content={"ok": True, "account": account_name, "data_preserved": True}
     )
+
+
+@app.post("/api/admin/proton/accounts")
+def register_proton_account():
+    try:
+        credentials = load_proton_credentials(PROTON_CONFIG_FILE)
+    except Exception as e:  # noqa: BLE001
+        log_exception("读取 Proton 配置", e)
+        return JSONResponse(content={"detail": str(e)}, status_code=400)
+
+    with MAIL_ACCOUNTS_LOCK:
+        existing = next(
+            (
+                item
+                for item in ACCOUNTS
+                if item.get("provider") == "proton"
+                and item.get("email", "").lower() == credentials.username.lower()
+            ),
+            None,
+        )
+    if existing:
+        ensure_mail_state(existing)
+        return JSONResponse(content={"item": sanitize_mail_account(existing)})
+
+    name = next_account_name()
+    cfg: AccountConfig = {
+        "name": name,
+        "email": credentials.username,
+        "provider": "proton",
+        "session_file": os.path.join(PROTON_SESSION_DIR, f"{name}.pickle"),
+        "config_file": PROTON_CONFIG_FILE,
+        "enabled": True,
+    }
+    with MAIL_ACCOUNTS_LOCK:
+        ACCOUNTS.append(cfg)
+    save_mail_accounts()
+    ensure_mail_state(cfg)
+    save_state(name, {"status": "等待 Proton 登录"})
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)}, status_code=201)
+
+
+@app.post("/api/admin/proton/accounts/{account_name}/login")
+def login_proton_account(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg or cfg.get("provider") != "proton":
+        return JSONResponse(content={"detail": f"未找到 Proton 账号：{account_name}"}, status_code=404)
+    try:
+        credentials = load_proton_credentials(str(cfg.get("config_file") or PROTON_CONFIG_FILE))
+        if cfg.get("email", "").lower() != credentials.username.lower():
+            raise RuntimeError("Proton 配置邮箱与账号记录不一致")
+        stop_mail_watcher(account_name)
+        save_state(account_name, {"status": "正在登录 Proton"})
+        ProtonMailbox(str(cfg["session_file"])).login_fresh(credentials)
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"Proton 登录 account={account_name}", e)
+        detail = redact_log_text(e)
+        save_state(account_name, {"status": f"登录失败: {detail}"})
+        return JSONResponse(
+            content={"detail": f"Proton 登录失败：{detail}。若触发 CAPTCHA，请先在终端完成登录。"},
+            status_code=400,
+        )
+    cfg["enabled"] = True
+    save_mail_accounts()
+    save_state(account_name, {"status": "登录完成，正在启动"})
+    start_mail_watcher(cfg)
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)})
 
 
 def parse_codex_login_addr() -> tuple:
@@ -2684,5 +2868,5 @@ def clear_history(account_name: str):
 if __name__ == "__main__":
     import uvicorn
 
-    print("启动 Gmail 多邮箱验证码监听 Web 服务（http://127.0.0.1:8000）")
+    print("启动多邮箱验证码监听 Web 服务（http://127.0.0.1:8000）")
     uvicorn.run(app, host="0.0.0.0", port=8000)

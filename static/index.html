@@ -541,7 +541,7 @@
         try {
           const name = button.dataset.passwordName || '';
           const res = await fetch(
-            `/api/gmail/accounts/${encodeURIComponent(name)}/gpt-password`,
+            `/api/mail/accounts/${encodeURIComponent(name)}/gpt-password`,
             { method: 'POST', cache: 'no-store' },
           );
           const data = await res.json();
@@ -629,15 +629,16 @@
             const tr = document.createElement('tr');
             const name = item.name || '-';
             const email = item.email || '-';
+            const provider = item.provider === 'proton' ? 'Proton' : 'Gmail';
             tr.innerHTML = `
-              <td>${email}</td>
+              <td><div>${escapeHtml(email)}</div><div class="muted">${provider}</div></td>
               <td>${item.has_gpt_password
                 ? `<button class="small-btn" data-password-name="${escapeAttr(name)}">复制</button>`
                 : '<span class="muted">无</span>'}</td>
-              <td class="code">${item.last_code || '（暂无）'}</td>
-              <td><pre>${item.subject || '-'}</pre></td>
+              <td class="code">${escapeHtml(item.last_code || '（暂无）')}</td>
+              <td><pre>${escapeHtml(item.subject || '-')}</pre></td>
               <td class="muted">${item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}</td>
-              <td class="status">${item.status || '-'}</td>
+              <td class="status">${escapeHtml(item.status || '-')}</td>
               <td><button class="small-btn" data-history-name="${escapeAttr(name)}" data-history-email="${escapeAttr(email)}">查看历史</button></td>
             `;
             codeRows.appendChild(tr);
