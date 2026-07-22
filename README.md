@@ -79,6 +79,54 @@ runtime/proton_sessions/account-4.pickle
 
 登录完成后重启主程序。Proton 密码和 TOTP 不会写入账号列表；会话文件、配置文件和整个 `runtime/` 都不能上传或分享。
 
+### 本地中继模式
+
+服务器无法连接 Proton 时，将对应账号设置为 `delivery_mode: relay`。服务器会停止直连 Proton，改为接收本地电脑推送的验证码。项目当前的 `account-4` 已使用该模式。
+
+服务器首次启动新版程序时会生成专用密钥：
+
+```text
+runtime/mail_relay_secret
+```
+
+该文件权限为 `600`，不要通过聊天、网页或公开仓库传输。通过 SCP 等安全方式复制到本地电脑，并保持权限为 `600`。可以从 [proton-relay.env.example](proton-relay.env.example) 创建本地配置，其中必须设置：
+
+```bash
+MAIL_RELAY_URL=https://你的服务器/api/internal/mail-relay
+MAIL_RELAY_SECRET_FILE=mail_relay_secret
+MAIL_RELAY_ACCOUNT=account-4
+```
+
+公网服务器必须使用有效 HTTPS。中继请求使用 HMAC-SHA256、五分钟时间窗和一次性 nonce 验证；它不使用网页的 `ACCESS_PASSWORD`。
+
+如果服务器没有 HTTPS，可在本地电脑建立 SSH 隧道：
+
+```bash
+ssh -N -L 18000:127.0.0.1:8000 服务器用户名@服务器地址
+```
+
+然后把本地配置改为：
+
+```bash
+MAIL_RELAY_URL=http://localhost:18000/api/internal/mail-relay
+```
+
+这种方式下 HTTP 只经过本机回环接口，实际跨网络流量由 SSH 加密。中继脚本不会允许向其他远程地址发送明文 HTTP。
+
+在能访问 Proton 的本地电脑安装依赖后，首次登录并启动监听：
+
+```bash
+python scripts/proton_relay.py --config proton-relay.env --login --manual-captcha
+```
+
+已有有效本地会话时直接运行：
+
+```bash
+python scripts/proton_relay.py --config proton-relay.env
+```
+
+本地程序复用与 Gmail 相同的 OpenAI 发件人和验证码规则。只有服务器确认接收成功后，邮件才会标为已读；服务器暂时不可用时会保留未读并重试。完成本地部署后，应从服务器 `.env` 删除 `PROTON_PASSWORD` 和 `PROTON_TOTP_SECRET`，凭据只留在本地电脑。
+
 验证码页面可按邮箱显示并复制对应的 GPT 密码。密码变量按 `account-N` 编号映射，未配置时页面显示“无”：
 
 ```bash

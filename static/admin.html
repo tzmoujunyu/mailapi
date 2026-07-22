@@ -178,16 +178,22 @@
 
       function mailRow(item) {
         const enabled = item.enabled;
+        const isRelay = item.provider === 'proton' && item.delivery_mode === 'relay';
         const authClass = item.authorized ? 'good' : 'bad';
-        const provider = item.provider === 'proton' ? 'Proton' : 'Gmail';
-        const authAction = item.provider === 'proton'
+        const provider = isRelay ? 'Proton 中继' : (item.provider === 'proton' ? 'Proton' : 'Gmail');
+        const authLabel = isRelay
+          ? (item.authorized ? '中继已配置' : '缺少中继密钥')
+          : (item.authorized ? '已授权' : '未授权');
+        const authAction = isRelay
+          ? ''
+          : item.provider === 'proton'
           ? `<button class="btn" data-mail-action="login" data-name="${escapeAttr(item.name)}">${item.authorized ? '重新登录' : '登录'}</button>`
           : `<a class="btn" href="/api/admin/gmail/auth/start?account_name=${encodeURIComponent(item.name)}">重新授权</a>`;
         return `
           <tr>
             <td><div>${escapeHtml(item.email || '-')}</div><div class="muted">${escapeHtml(item.name)}</div></td>
             <td><span class="plan">${provider}</span></td>
-            <td class="${authClass}">${item.authorized ? '已授权' : '未授权'}</td>
+            <td class="${authClass}">${authLabel}</td>
             <td class="${enabled ? 'good' : 'warn'}">${escapeHtml(item.status || (enabled ? '未知' : '已停用'))}</td>
             <td class="muted">${escapeHtml(formatTime(item.updated_at || item.token_updated_at))}</td>
             <td><div class="actions">
@@ -213,8 +219,11 @@
       addProtonButton.addEventListener('click', async () => {
         try {
           addProtonButton.disabled = true;
-          await api('/api/admin/proton/accounts', { method: 'POST' });
-          setMessage(mailMessage, 'Proton 账号已加入，请点击“登录”生成会话。');
+          const data = await api('/api/admin/proton/accounts', { method: 'POST' });
+          const isRelay = data.item && data.item.delivery_mode === 'relay';
+          setMessage(mailMessage, isRelay
+            ? 'Proton 账号已加入，等待本地中继。'
+            : 'Proton 账号已加入，请点击“登录”生成会话。');
           await loadMailAccounts();
         } catch (error) {
           setMessage(mailMessage, error.message, true);

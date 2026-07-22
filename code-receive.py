@@ -40,6 +40,13 @@ from mail_providers.proton import (
     ProtonMailbox,
     load_proton_credentials,
 )
+from mail_relay import (
+    RelayAuthenticationError,
+    RelayValidationError,
+    ReplayGuard,
+    parse_message as parse_relay_message,
+    verify_request as verify_relay_request,
+)
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -88,6 +95,15 @@ PROTON_CONFIG_FILE = os.path.expanduser(
 PROTON_POLL_INTERVAL_SECONDS = int(os.getenv("PROTON_POLL_INTERVAL_SECONDS", "3"))
 PROTON_KEEPALIVE_SECONDS = int(os.getenv("PROTON_KEEPALIVE_SECONDS", "30"))
 PROTON_CATCHUP_LIMIT = int(os.getenv("PROTON_CATCHUP_LIMIT", "30"))
+PROTON_DELIVERY_MODE = os.getenv("PROTON_DELIVERY_MODE", "direct").strip().lower()
+if PROTON_DELIVERY_MODE not in {"direct", "relay"}:
+    PROTON_DELIVERY_MODE = "direct"
+MAIL_RELAY_SECRET_FILE = os.path.expanduser(
+    os.getenv("MAIL_RELAY_SECRET_FILE", os.path.join(DATA_DIR, "mail_relay_secret"))
+)
+MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS = int(
+    os.getenv("MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS", "300")
+)
 ERROR_LOG_DIR = os.path.join(DATA_DIR, "logs")
 ERROR_LOG_FILE = os.path.join(ERROR_LOG_DIR, "errors.log")
 ERROR_LOG_MAX_BYTES = int(os.getenv("ERROR_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
@@ -121,6 +137,7 @@ CODEX_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER_LOCK = threading.Lock()
 MAIL_ACCOUNTS_LOCK = threading.Lock()
 MAIL_WATCHERS_LOCK = threading.Lock()
+MAIL_RELAY_REPLAY_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
@@ -143,7 +160,8 @@ SEARCH_QUERY = (
 
 BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
 SECRET_LOG_PATTERN = re.compile(
-    r'(?i)(access_token|refresh_token|id_token|authorization|password|totp_secret|session_id|cookie)'
+    r'(?i)(access_token|refresh_token|id_token|authorization|password|totp_secret|'
+    r'session_id|cookie|mail_relay_secret|signature)'
     r'(\s*["\']?\s*[:=]\s*["\']?)([^"\',}\s]+)'
 )
 
@@ -156,6 +174,7 @@ class AccountConfig(TypedDict, total=False):
     credential_file: str
     session_file: str
     config_file: str
+    delivery_mode: str
     enabled: bool
 
 
@@ -344,6 +363,40 @@ os.makedirs(CODEX_AUTH_DIR, exist_ok=True)
 os.makedirs(GMAIL_TOKEN_DIR, exist_ok=True)
 os.makedirs(PROTON_SESSION_DIR, exist_ok=True)
 os.makedirs(ERROR_LOG_DIR, exist_ok=True)
+
+
+def load_or_create_mail_relay_secret() -> str:
+    configured = os.getenv("MAIL_RELAY_SECRET", "").strip()
+    if configured:
+        if len(configured) < 32:
+            raise RuntimeError("MAIL_RELAY_SECRET 至少需要 32 个字符")
+        return configured
+
+    try:
+        with open(MAIL_RELAY_SECRET_FILE, "r", encoding="utf-8") as f:
+            saved = f.read().strip()
+        if len(saved) >= 32:
+            os.chmod(MAIL_RELAY_SECRET_FILE, 0o600)
+            return saved
+    except FileNotFoundError:
+        pass
+
+    secret = secrets.token_hex(32)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    descriptor = os.open(MAIL_RELAY_SECRET_FILE, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+        f.write(secret)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(MAIL_RELAY_SECRET_FILE, 0o600)
+    return secret
+
+
+MAIL_RELAY_SECRET = load_or_create_mail_relay_secret()
+MAIL_RELAY_REPLAY_GUARD = ReplayGuard(
+    retention_seconds=max(60, MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS * 2)
+)
 
 
 def configure_error_logging() -> None:
@@ -1657,6 +1710,12 @@ def load_accounts() -> List[AccountConfig]:
             "enabled": item.get("enabled") is not False,
         }
         if provider == "proton":
+            delivery_mode = str(
+                item.get("delivery_mode") or PROTON_DELIVERY_MODE
+            ).strip().lower()
+            cfg["delivery_mode"] = (
+                delivery_mode if delivery_mode in {"direct", "relay"} else "direct"
+            )
             cfg["session_file"] = str(
                 item.get("session_file")
                 or os.path.join(PROTON_SESSION_DIR, f"{name}.pickle")
@@ -1721,6 +1780,11 @@ MAIL_WATCHERS: Dict[str, Dict[str, Any]] = {}
 
 
 def ensure_mail_state(cfg: AccountConfig) -> None:
+    waiting_status = (
+        "等待本地中继"
+        if cfg.get("provider") == "proton" and cfg.get("delivery_mode") == "relay"
+        else "待启动"
+    )
     with STATE_LOCK:
         existing = STATE.get(cfg["name"], {})
         STATE[cfg["name"]] = {
@@ -1731,7 +1795,8 @@ def ensure_mail_state(cfg: AccountConfig) -> None:
             "message_id": existing.get("message_id"),
             "subject": existing.get("subject"),
             "updated_at": existing.get("updated_at"),
-            "status": existing.get("status") or ("待启动" if cfg["enabled"] else "已停用"),
+            "status": existing.get("status")
+            or (waiting_status if cfg["enabled"] else "已停用"),
         }
     with HISTORY_LOCK:
         CODE_HISTORY.setdefault(cfg["name"], [])
@@ -1773,14 +1838,15 @@ def clear_code_history(name: str) -> None:
         os.remove(path)
 
 
-def append_code_record(name: str, record: Dict[str, str]) -> None:
+def append_code_record(name: str, record: Dict[str, str]) -> bool:
     with HISTORY_LOCK:
         records = CODE_HISTORY.get(name, [])
         if any(item.get("message_id") == record.get("message_id") for item in records):
-            return
+            return False
         records.insert(0, record)
         CODE_HISTORY[name] = records[:MAX_HISTORY_RECORDS]
         save_code_history(name, CODE_HISTORY[name])
+        return True
 
 
 def load_histories():
@@ -1817,6 +1883,8 @@ async def error_log_guard(request: FastAPIRequest, call_next):
 
 @app.middleware("http")
 async def access_guard(request: FastAPIRequest, call_next):
+    if request.url.path == "/api/internal/mail-relay":
+        return await call_next(request)
     if request_access_ok(request):
         return await call_next(request)
 
@@ -2067,8 +2135,8 @@ def store_code_result(
     cfg: AccountConfig,
     result: Dict[str, str],
     status: str = "监听中",
-) -> None:
-    append_code_record(
+) -> bool:
+    inserted = append_code_record(
         cfg["name"],
         {
             "code": result["code"],
@@ -2078,6 +2146,8 @@ def store_code_result(
             "email": cfg["email"],
         },
     )
+    if not inserted:
+        return False
     save_state(
         cfg["name"],
         {
@@ -2088,6 +2158,7 @@ def store_code_result(
             "status": status,
         },
     )
+    return True
 
 
 def process_message(service, cfg: AccountConfig, message_id: str) -> Optional[Dict[str, str]]:
@@ -2280,6 +2351,9 @@ def start_mail_watcher(cfg: AccountConfig) -> bool:
         return False
     ensure_mail_state(cfg)
     provider = cfg.get("provider", "gmail")
+    if provider == "proton" and cfg.get("delivery_mode") == "relay":
+        save_state(cfg["name"], {"status": "等待本地中继"})
+        return False
     target = watch_proton_account if provider == "proton" else watch_gmail_account
     with MAIL_WATCHERS_LOCK:
         current = MAIL_WATCHERS.get(cfg["name"])
@@ -2382,13 +2456,20 @@ def account_auth_file(cfg: AccountConfig) -> str:
 def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
     with STATE_LOCK:
         state = dict(STATE.get(cfg["name"], {}))
+    delivery_mode = cfg.get("delivery_mode", "direct")
+    is_relay = cfg.get("provider") == "proton" and delivery_mode == "relay"
     auth_file = account_auth_file(cfg)
     return {
         "name": cfg["name"],
         "email": cfg["email"],
         "provider": cfg.get("provider", "gmail"),
+        "delivery_mode": delivery_mode,
         "enabled": cfg.get("enabled", True),
-        "authorized": bool(auth_file and os.path.exists(auth_file)),
+        "authorized": (
+            bool(MAIL_RELAY_SECRET)
+            if is_relay
+            else bool(auth_file and os.path.exists(auth_file))
+        ),
         "token_updated_at": (
             datetime.fromtimestamp(os.path.getmtime(auth_file), timezone.utc).isoformat()
             if auth_file and os.path.exists(auth_file)
@@ -2413,6 +2494,7 @@ def start_watchers():
     source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
+    print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
     save_mail_accounts()
     load_histories()
     load_codex_accounts()
@@ -2447,6 +2529,60 @@ def get_codes():
             item["has_gpt_password"] = gpt_password_for_account(cfg) is not None
             data.append(item)
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
+
+
+@app.post("/api/internal/mail-relay")
+async def receive_mail_relay(request: FastAPIRequest):
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "邮件中继请求过大"}, status_code=413)
+
+    try:
+        timestamp = verify_relay_request(
+            MAIL_RELAY_SECRET,
+            request.headers.get("x-mail-relay-timestamp", ""),
+            request.headers.get("x-mail-relay-nonce", ""),
+            request.headers.get("x-mail-relay-signature", ""),
+            body,
+            max_clock_skew_seconds=max(30, MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS),
+        )
+    except RelayAuthenticationError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=401)
+
+    try:
+        message = parse_relay_message(json.loads(body.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, RelayValidationError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    cfg = find_mail_account(message.account_name)
+    if not cfg or cfg.get("provider") != "proton":
+        return JSONResponse(
+            content={"detail": f"未找到 Proton 账号：{message.account_name}"},
+            status_code=404,
+        )
+    if cfg.get("delivery_mode") != "relay":
+        return JSONResponse(content={"detail": "该 Proton 账号未启用中继模式"}, status_code=409)
+    if not cfg.get("enabled", True):
+        return JSONResponse(content={"detail": "该 Proton 账号已停用"}, status_code=409)
+
+    nonce = request.headers.get("x-mail-relay-nonce", "")
+    with MAIL_RELAY_REPLAY_LOCK:
+        if not MAIL_RELAY_REPLAY_GUARD.consume(nonce, timestamp):
+            return JSONResponse(content={"detail": "邮件中继请求已处理"}, status_code=409)
+
+    inserted = store_code_result(
+        cfg,
+        {
+            "code": message.code,
+            "message_id": message.message_id,
+            "subject": message.subject,
+        },
+        status="已通过本地中继接收",
+    )
+    return JSONResponse(
+        content={"ok": True, "duplicate": not inserted, "updated_at": now_iso()},
+        status_code=201 if inserted else 200,
+    )
 
 
 @app.post("/api/mail/accounts/{account_name}/gpt-password")
@@ -2502,9 +2638,13 @@ def enable_mail_account(account_name: str):
     cfg = find_mail_account(account_name)
     if not cfg:
         return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
-    auth_file = account_auth_file(cfg)
-    if not auth_file or not os.path.exists(auth_file):
-        return JSONResponse(content={"detail": "账号缺少授权，请先重新授权"}, status_code=409)
+    is_relay = (
+        cfg.get("provider") == "proton" and cfg.get("delivery_mode") == "relay"
+    )
+    if not is_relay:
+        auth_file = account_auth_file(cfg)
+        if not auth_file or not os.path.exists(auth_file):
+            return JSONResponse(content={"detail": "账号缺少授权，请先重新授权"}, status_code=409)
     cfg["enabled"] = True
     save_mail_accounts()
     start_mail_watcher(cfg)
@@ -2570,6 +2710,7 @@ def register_proton_account():
         "name": name,
         "email": credentials.username,
         "provider": "proton",
+        "delivery_mode": PROTON_DELIVERY_MODE,
         "session_file": os.path.join(PROTON_SESSION_DIR, f"{name}.pickle"),
         "config_file": PROTON_CONFIG_FILE,
         "enabled": True,
@@ -2587,6 +2728,11 @@ def login_proton_account(account_name: str):
     cfg = find_mail_account(account_name)
     if not cfg or cfg.get("provider") != "proton":
         return JSONResponse(content={"detail": f"未找到 Proton 账号：{account_name}"}, status_code=404)
+    if cfg.get("delivery_mode") == "relay":
+        return JSONResponse(
+            content={"detail": "该账号使用本地中继模式，请在能访问 Proton 的电脑运行 proton_relay.py"},
+            status_code=409,
+        )
     try:
         credentials = load_proton_credentials(str(cfg.get("config_file") or PROTON_CONFIG_FILE))
         if cfg.get("email", "").lower() != credentials.username.lower():
