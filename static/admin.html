@@ -80,6 +80,28 @@
       .bad { color: #b91c1c; font-weight: 700; }
       .warn { color: #b45309; font-weight: 700; }
       .message { min-height: 20px; margin: 0 0 10px; font-size: 13px; }
+      .callback-submit {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        margin: 0 0 12px;
+      }
+      .callback-submit input {
+        width: 100%;
+        min-width: 0;
+        min-height: 34px;
+        border: 1px solid #c7ced6;
+        border-radius: 6px;
+        padding: 6px 9px;
+        color: #1f2937;
+        font: inherit;
+        font-size: 13px;
+      }
+      .callback-submit input:focus {
+        border-color: #2563eb;
+        outline: 2px solid #bfdbfe;
+        outline-offset: 0;
+      }
       .account-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
       .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .plan {
@@ -97,6 +119,7 @@
       @media (max-width: 680px) {
         .topbar, .section-head { align-items: flex-start; }
         .topbar, .content { padding-left: 10px; padding-right: 10px; }
+        .callback-submit { grid-template-columns: 1fr; }
         th, td { font-size: 13px; }
       }
     </style>
@@ -112,11 +135,23 @@
           <div class="section-head">
             <h2>邮箱接码账号</h2>
             <div class="actions">
-              <a class="btn btn-primary" href="/api/admin/gmail/auth/start">添加 Gmail</a>
+              <a class="btn btn-primary" href="/api/admin/gmail/auth/start" target="_blank" rel="noopener">添加 Gmail</a>
               <button id="add-proton" class="btn">添加 Proton</button>
             </div>
           </div>
           <div id="mail-message" class="message muted"></div>
+          <form id="gmail-callback-form" class="callback-submit">
+            <input
+              id="gmail-callback-url"
+              type="url"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Google 授权返回链接"
+              aria-label="Google 授权返回链接"
+              required
+            />
+            <button id="gmail-callback-submit" class="btn" type="submit">提交返回链接</button>
+          </form>
           <div class="table-wrap">
             <table class="mail-table">
               <thead><tr><th>邮箱</th><th>类型</th><th>授权</th><th>监听状态</th><th>最近更新</th><th>操作</th></tr></thead>
@@ -147,6 +182,9 @@
       const mailMessage = document.getElementById('mail-message');
       const codexMessage = document.getElementById('codex-message');
       const addProtonButton = document.getElementById('add-proton');
+      const gmailCallbackForm = document.getElementById('gmail-callback-form');
+      const gmailCallbackUrl = document.getElementById('gmail-callback-url');
+      const gmailCallbackSubmit = document.getElementById('gmail-callback-submit');
 
       function escapeHtml(value) {
         const node = document.createElement('div');
@@ -188,7 +226,7 @@
           ? ''
           : item.provider === 'proton'
           ? `<button class="btn" data-mail-action="login" data-name="${escapeAttr(item.name)}">${item.authorized ? '重新登录' : '登录'}</button>`
-          : `<a class="btn" href="/api/admin/gmail/auth/start?account_name=${encodeURIComponent(item.name)}">重新授权</a>`;
+          : `<a class="btn" href="/api/admin/gmail/auth/start?account_name=${encodeURIComponent(item.name)}" target="_blank" rel="noopener">重新授权</a>`;
         return `
           <tr>
             <td><div>${escapeHtml(item.email || '-')}</div><div class="muted">${escapeHtml(item.name)}</div></td>
@@ -229,6 +267,28 @@
           setMessage(mailMessage, error.message, true);
         } finally {
           addProtonButton.disabled = false;
+        }
+      });
+
+      gmailCallbackForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const callbackUrl = gmailCallbackUrl.value.trim();
+        if (!callbackUrl) return;
+        try {
+          gmailCallbackSubmit.disabled = true;
+          setMessage(mailMessage, '正在提交 Google 授权返回链接...');
+          const data = await api('/api/admin/gmail/auth/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callback_url: callbackUrl }),
+          });
+          gmailCallbackUrl.value = '';
+          setMessage(mailMessage, data.detail || 'Google 授权完成。');
+          await loadMailAccounts();
+        } catch (error) {
+          setMessage(mailMessage, error.message, true);
+        } finally {
+          gmailCallbackSubmit.disabled = false;
         }
       });
 

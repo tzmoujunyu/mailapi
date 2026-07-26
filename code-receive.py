@@ -47,6 +47,12 @@ from mail_relay import (
     parse_message as parse_relay_message,
     verify_request as verify_relay_request,
 )
+from google_oauth_callback import (
+    GoogleCallbackLink,
+    GoogleCallbackLinkError,
+    authorization_response_for_redirect,
+    parse_google_callback_link,
+)
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -159,6 +165,7 @@ SEARCH_QUERY = (
 )
 
 BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+OAUTH_QUERY_LOG_PATTERN = re.compile(r"(?i)([?&](?:code|state)=)[^&\s]+")
 SECRET_LOG_PATTERN = re.compile(
     r'(?i)(access_token|refresh_token|id_token|authorization|password|totp_secret|'
     r'session_id|cookie|mail_relay_secret|signature)'
@@ -229,6 +236,9 @@ def create_auth_session(cfg: AccountConfig, managed: bool = False) -> Dict[str, 
         "cfg": dict(cfg),
     }
     with AUTH_SESSION_LOCK:
+        previous = AUTH_SESSIONS.get(cfg["name"])
+        if previous:
+            AUTH_SESSIONS.pop(str(previous.get("state") or ""), None)
         AUTH_SESSIONS[cfg["name"]] = session
         AUTH_SESSIONS[state] = session
     return session
@@ -294,11 +304,15 @@ def format_google_auth_error(error: Exception) -> str:
     return detail
 
 
-def fetch_google_oauth_token(flow: InstalledAppFlow, request: FastAPIRequest) -> None:
+def fetch_google_oauth_token(
+    flow: InstalledAppFlow,
+    callback: GoogleCallbackLink,
+) -> None:
     redirect_uri = str(flow.redirect_uri or "").strip()
     parsed = urllib.parse.urlparse(redirect_uri)
-    authorization_response = urllib.parse.urlunparse(
-        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, str(request.url.query), "")
+    authorization_response = authorization_response_for_redirect(
+        callback,
+        redirect_uri,
     )
     if parsed.scheme.lower() != "http":
         flow.fetch_token(authorization_response=authorization_response)
@@ -423,6 +437,7 @@ def configure_error_logging() -> None:
 def redact_log_text(value: Any) -> str:
     text = str(value)
     text = BEARER_LOG_PATTERN.sub("Bearer <redacted>", text)
+    text = OAUTH_QUERY_LOG_PATTERN.sub(r"\1<redacted>", text)
     text = SECRET_LOG_PATTERN.sub(r"\1\2<redacted>", text)
     return text
 
@@ -1944,48 +1959,76 @@ def login_submit(access_token: str = Form(...)):
     return HTMLResponse("口令错误", status_code=401)
 
 
-def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
-    state = request.query_params.get("state", "")
+def remove_google_auth_session(session: Dict[str, object], state: str) -> None:
     with AUTH_SESSION_LOCK:
-        session = AUTH_SESSIONS.get(state)
+        AUTH_SESSIONS.pop(str(session.get("account_name") or ""), None)
+        AUTH_SESSIONS.pop(state, None)
 
-    if not session:
-        return HTMLResponse("授权会话不存在或已完成，请回到终端重新发起授权。", status_code=404)
 
+def finish_google_auth_session(
+    session: Dict[str, object],
+    callback: GoogleCallbackLink,
+) -> Optional[AccountConfig]:
+    flow = session["flow"]
+    if not isinstance(flow, InstalledAppFlow):
+        raise RuntimeError("授权会话数据异常")
+    credentials = session.get("credentials")
+    if not isinstance(credentials, Credentials):
+        fetch_google_oauth_token(flow, callback)
+        credentials = flow.credentials
+        if not isinstance(credentials, Credentials):
+            raise RuntimeError("Google token 交换完成但未收到 credentials")
+        session["credentials"] = credentials
+    session["error"] = None
     event = session["event"]
+    if session.get("managed"):
+        cfg = complete_managed_gmail_auth(session, credentials)
+        remove_google_auth_session(session, callback.state)
+        return cfg
+    if hasattr(event, "set"):
+        event.set()
+    return None
+
+
+def fail_google_auth_session(
+    session: Dict[str, object],
+    error: Exception,
+) -> str:
+    detail = format_google_auth_error(error)
+    session["error"] = detail
+    event = session["event"]
+    if not session.get("managed") and hasattr(event, "set"):
+        event.set()
+    return detail
+
+
+def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
     try:
-        flow = session["flow"]
-        if not isinstance(flow, InstalledAppFlow):
-            raise RuntimeError("授权会话数据异常")
-        fetch_google_oauth_token(flow, request)
-        session["credentials"] = flow.credentials
-        session["error"] = None
-        if session.get("managed"):
-            cfg = complete_managed_gmail_auth(session, flow.credentials)
-            with AUTH_SESSION_LOCK:
-                AUTH_SESSIONS.pop(str(session.get("account_name") or ""), None)
-                AUTH_SESSIONS.pop(state, None)
+        callback = parse_google_callback_link(str(request.url))
+    except GoogleCallbackLinkError as error:
+        return HTMLResponse(f"Google 授权返回链接无效：{html.escape(str(error))}", status_code=400)
+
+    with AUTH_SESSION_LOCK:
+        session = AUTH_SESSIONS.get(callback.state)
+    if not session:
+        return HTMLResponse("授权会话不存在或已完成，请重新发起授权。", status_code=404)
+
+    try:
+        cfg = finish_google_auth_session(session, callback)
+        if cfg:
             return HTMLResponse(
                 "Google 授权完成，账号已开始监听。"
                 f'<script>setTimeout(() => window.location.href = "/admin", 800);</script>'
                 f'<p><a href="/admin">返回账号控制台：{html.escape(cfg["email"])}</a></p>'
             )
-        if hasattr(event, "set"):
-            event.set()
         return HTMLResponse("Google 授权完成，token 已返回服务器。可以关闭此页面并回到终端。")
     except Exception as e:  # noqa: BLE001
         log_exception(
             f"Google OAuth 回调 account={session.get('account_name') or 'unknown'}",
             e,
         )
-        session["error"] = format_google_auth_error(e)
-        if hasattr(event, "set"):
-            event.set()
-        if session.get("managed"):
-            with AUTH_SESSION_LOCK:
-                AUTH_SESSIONS.pop(str(session.get("account_name") or ""), None)
-                AUTH_SESSIONS.pop(state, None)
-        return HTMLResponse(f"Google 授权失败：{html.escape(session['error'])}", status_code=400)
+        detail = fail_google_auth_session(session, e)
+        return HTMLResponse(f"Google 授权失败：{html.escape(detail)}", status_code=400)
 
 
 @app.get("/oauth2callback/{account_name}", response_class=HTMLResponse)
@@ -2630,6 +2673,53 @@ def start_gmail_admin_auth(account_name: Optional[str] = None):
         log_exception(f"发起 Gmail 授权 account={cfg['name']}", e)
         return JSONResponse(content={"detail": format_google_auth_error(e)}, status_code=400)
     return RedirectResponse(url=str(session["auth_url"]), status_code=302)
+
+
+@app.post("/api/admin/gmail/auth/complete")
+async def complete_gmail_admin_auth(request: FastAPIRequest):
+    body = await request.body()
+    if len(body) > 16384:
+        return JSONResponse(content={"detail": "Google 授权返回链接过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        callback = parse_google_callback_link(
+            str(payload.get("callback_url") or "") if isinstance(payload, dict) else ""
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, GoogleCallbackLinkError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    with AUTH_SESSION_LOCK:
+        session = AUTH_SESSIONS.get(callback.state)
+    if not session:
+        return JSONResponse(
+            content={"detail": "授权会话不存在或已完成，请重新点击添加或重新授权"},
+            status_code=404,
+        )
+
+    try:
+        cfg = finish_google_auth_session(session, callback)
+    except Exception as error:  # noqa: BLE001
+        log_exception(
+            f"提交 Google OAuth 返回链接 account={session.get('account_name') or 'unknown'}",
+            error,
+        )
+        detail = fail_google_auth_session(session, error)
+        return JSONResponse(content={"detail": detail}, status_code=400)
+
+    content: Dict[str, Any] = {
+        "ok": True,
+        "detail": (
+            "Google 授权完成，账号已开始监听"
+            if cfg
+            else "Google 授权链接已提交，后台正在保存 token"
+        ),
+    }
+    if cfg:
+        content["item"] = sanitize_mail_account(cfg)
+    return JSONResponse(
+        content=content,
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
 
 
 @app.post("/api/admin/mail/accounts/{account_name}/enable")
