@@ -1,4 +1,5 @@
 import base64
+import glob
 import hashlib
 import html
 import http.server
@@ -16,6 +17,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from google.auth.transport.requests import Request as GoogleRequest
@@ -53,6 +55,13 @@ from google_oauth_callback import (
     authorization_response_for_redirect,
     parse_google_callback_link,
 )
+from auth_storage import (
+    archive_auth_file,
+    ensure_private_directory,
+    files_are_identical,
+    migrate_auth_file,
+    secure_auth_file,
+)
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -89,11 +98,13 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 DATA_DIR = "runtime"
 HISTORY_DIR = os.path.join(DATA_DIR, "history")
 HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
-CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
 CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
+CODEX_AUTH_BACKUP_DIR = os.path.join(CODEX_AUTH_DIR, "backups")
+LEGACY_CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
 GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
+GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
 PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
 PROTON_CONFIG_FILE = os.path.expanduser(
     os.getenv("PROTON_CONFIG_FILE", "~/proton/.env")
@@ -357,7 +368,7 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
         "name": "account-1",
         "email": "santeekyan0162@gmail.com",
         "provider": "gmail",
-        "token_file": os.path.join(DATA_DIR, "token_account1.json"),
+        "token_file": os.path.join(GMAIL_TOKEN_DIR, "account-1.json"),
         "credential_file": "credentials.json",
         "enabled": True,
     },
@@ -365,7 +376,7 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
         "name": "account-2",
         "email": "janymil722@gmail.com",
         "provider": "gmail",
-        "token_file": os.path.join(DATA_DIR, "token_account2.json"),
+        "token_file": os.path.join(GMAIL_TOKEN_DIR, "account-2.json"),
         "credential_file": "credentials.json",
         "enabled": True,
     },
@@ -373,8 +384,10 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [
 
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(HISTORY_ID_DIR, exist_ok=True)
-os.makedirs(CODEX_AUTH_DIR, exist_ok=True)
-os.makedirs(GMAIL_TOKEN_DIR, exist_ok=True)
+ensure_private_directory(CODEX_AUTH_DIR)
+ensure_private_directory(CODEX_AUTH_BACKUP_DIR)
+ensure_private_directory(GMAIL_TOKEN_DIR)
+ensure_private_directory(GMAIL_TOKEN_BACKUP_DIR)
 os.makedirs(PROTON_SESSION_DIR, exist_ok=True)
 os.makedirs(ERROR_LOG_DIR, exist_ok=True)
 
@@ -595,17 +608,50 @@ def write_json_atomic(path: str, value: Any) -> None:
     temporary = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
     try:
         with open(temporary, "w", encoding="utf-8") as f:
+            os.chmod(temporary, 0o600)
             json.dump(value, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
         os.replace(temporary, path)
+        os.chmod(path, 0o600)
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
 
 
+def migrate_codex_auth_layout() -> None:
+    ensure_private_directory(CODEX_AUTH_DIR)
+    ensure_private_directory(CODEX_AUTH_BACKUP_DIR)
+    if os.path.isfile(LEGACY_CODEX_AUTH_FILE):
+        try:
+            with open(LEGACY_CODEX_AUTH_FILE, "r", encoding="utf-8") as f:
+                value = json.load(f)
+            target_name = (
+                safe_codex_auth_filename(value)
+                if isinstance(value, dict)
+                else "legacy-import.json"
+            )
+            migrate_auth_file(
+                LEGACY_CODEX_AUTH_FILE,
+                os.path.join(CODEX_AUTH_DIR, target_name),
+                CODEX_AUTH_BACKUP_DIR,
+            )
+        except Exception as error:  # noqa: BLE001
+            log_exception("迁移旧 Codex auth 文件", error)
+            archive_auth_file(LEGACY_CODEX_AUTH_FILE, CODEX_AUTH_BACKUP_DIR)
+
+    for backup in glob.glob(f"{LEGACY_CODEX_AUTH_FILE}.bak.*"):
+        archive_auth_file(backup, CODEX_AUTH_BACKUP_DIR)
+    for filename in os.listdir(CODEX_AUTH_DIR):
+        path = os.path.join(CODEX_AUTH_DIR, filename)
+        if os.path.isfile(path) and filename.endswith(".json"):
+            secure_auth_file(path)
+
+
+migrate_codex_auth_layout()
+
+
 def save_codex_auth_file(payload: Dict[str, Any]) -> None:
-    write_json_atomic(CODEX_AUTH_FILE, payload)
     path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
     write_json_atomic(path, payload)
 
@@ -633,7 +679,7 @@ def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
 
 
 def delete_codex_record_auth_files(record: Dict[str, Any]) -> None:
-    paths = [CODEX_AUTH_FILE]
+    paths = []
     if os.path.isdir(CODEX_AUTH_DIR):
         paths.extend(
             os.path.join(CODEX_AUTH_DIR, name)
@@ -664,24 +710,9 @@ def delete_codex_record_auth_files(record: Dict[str, Any]) -> None:
             print(f"Codex auth 文件删除失败：{path}: {e}")
 
 
-def load_codex_auth_file() -> Optional[Dict[str, Any]]:
-    if not os.path.exists(CODEX_AUTH_FILE):
-        return None
-    try:
-        with open(CODEX_AUTH_FILE, "r", encoding="utf-8") as f:
-            value = json.load(f)
-        return value if isinstance(value, dict) else None
-    except Exception as e:  # noqa: BLE001
-        log_exception(f"加载 Codex auth 文件 {CODEX_AUTH_FILE}", e)
-        print(f"Codex auth 文件加载失败：{e}")
-        return None
-
-
 def load_codex_auth_files() -> List[Dict[str, Any]]:
     entries = []
     paths = []
-    if os.path.exists(CODEX_AUTH_FILE):
-        paths.append(CODEX_AUTH_FILE)
     if os.path.isdir(CODEX_AUTH_DIR):
         for filename in sorted(os.listdir(CODEX_AUTH_DIR)):
             if filename.endswith(".json"):
@@ -1689,6 +1720,62 @@ def codex_refresh_loop() -> None:
         time.sleep(max(10, CODEX_REFRESH_INTERVAL_SECONDS))
 
 
+def gmail_token_path(account_name: str) -> str:
+    return os.path.join(GMAIL_TOKEN_DIR, f"{account_name}.json")
+
+
+def legacy_gmail_token_path(account_name: str) -> Optional[str]:
+    match = re.fullmatch(r"account-(\d+)", account_name)
+    if not match:
+        return None
+    return os.path.join(DATA_DIR, f"token_account{match.group(1)}.json")
+
+
+def migrate_gmail_token_layout(account_name: str, configured_path: str) -> str:
+    target = gmail_token_path(account_name)
+    backup_dir = os.path.join(GMAIL_TOKEN_BACKUP_DIR, account_name)
+    ensure_private_directory(backup_dir)
+
+    candidates = [configured_path, target]
+    legacy = legacy_gmail_token_path(account_name)
+    if legacy:
+        candidates.append(legacy)
+    candidates = list(dict.fromkeys(os.path.normpath(path) for path in candidates if path))
+
+    authoritative = next(
+        (
+            path
+            for path in candidates
+            if path == os.path.normpath(configured_path) and os.path.isfile(path)
+        ),
+        None,
+    )
+    if not authoritative and os.path.isfile(target):
+        authoritative = target
+    if not authoritative:
+        authoritative = next((path for path in candidates if os.path.isfile(path)), None)
+
+    if authoritative:
+        result = migrate_auth_file(authoritative, target, backup_dir)
+        if result in {"moved", "deduplicated"}:
+            print(f"[{account_name}] Gmail token 已归档到 {target}")
+
+    for candidate in candidates:
+        if candidate in {target, authoritative} or not os.path.isfile(candidate):
+            continue
+        if os.path.isfile(target) and files_are_identical(Path(candidate), Path(target)):
+            os.remove(candidate)
+        else:
+            archive_auth_file(candidate, backup_dir)
+
+    for candidate in candidates:
+        for backup in glob.glob(f"{candidate}.bak.*"):
+            archive_auth_file(backup, backup_dir)
+
+    secure_auth_file(target)
+    return target
+
+
 def load_accounts() -> List[AccountConfig]:
     cfgs: Any = None
     if os.path.exists(GMAIL_ACCOUNTS_FILE):
@@ -1740,8 +1827,9 @@ def load_accounts() -> List[AccountConfig]:
             )
         else:
             cfg["provider"] = "gmail"
-            cfg["token_file"] = str(
-                item.get("token_file") or os.path.join(GMAIL_TOKEN_DIR, f"{name}.json")
+            cfg["token_file"] = migrate_gmail_token_layout(
+                name,
+                str(item.get("token_file") or gmail_token_path(name)),
             )
             cfg["credential_file"] = str(item.get("credential_file") or "credentials.json")
         normalized.append(cfg)
@@ -2063,8 +2151,7 @@ def get_gmail_service(cfg: AccountConfig):
                         f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"
                     )
                 creds = request_gmail_browser_auth(cfg)
-        with open(token_file, "w", encoding="utf-8") as token:
-            token.write(creds.to_json())
+        write_json_atomic(token_file, json.loads(creds.to_json()))
 
     return build("gmail", "v1", credentials=creds)
 
@@ -2072,8 +2159,16 @@ def get_gmail_service(cfg: AccountConfig):
 def backup_token_file(token_file: str) -> Optional[str]:
     if not os.path.exists(token_file):
         return None
-    backup_path = f"{token_file}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    account_name = os.path.splitext(os.path.basename(token_file))[0]
+    backup_dir = os.path.join(GMAIL_TOKEN_BACKUP_DIR, account_name)
+    ensure_private_directory(backup_dir)
+    filename = (
+        f"{os.path.basename(token_file)}.bak."
+        f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    )
+    backup_path = os.path.join(backup_dir, filename)
     os.replace(token_file, backup_path)
+    secure_auth_file(backup_path)
     return backup_path
 
 
@@ -2875,7 +2970,7 @@ def codex_callback_result(params: Dict[str, str]) -> tuple:
         return False, f"Codex 授权导入失败：{e}", 500
 
     label = imported[0].get("label") if imported else "Codex 账号"
-    return True, f"{label} 已导入，auth 文件已保存到 runtime/codex_auth/ 并同步最新文件", 200
+    return True, f"{label} 已导入，auth 文件已保存到 runtime/codex_auth/", 200
 
 
 class CodexLoginHTTPServer(http.server.ThreadingHTTPServer):
