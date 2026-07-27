@@ -629,7 +629,9 @@
             const tr = document.createElement('tr');
             const name = item.name || '-';
             const email = item.email || '-';
-            const provider = item.provider === 'proton' ? 'Proton' : 'Gmail';
+            const provider = item.provider === 'outlook'
+              ? 'Outlook'
+              : (item.provider === 'proton' ? 'Proton（旧）' : 'Gmail');
             tr.innerHTML = `
               <td><div>${escapeHtml(email)}</div><div class="muted">${provider}</div></td>
               <td>${item.has_gpt_password

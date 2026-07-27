@@ -7,7 +7,7 @@ export ACCESS_PASSWORD='你的口令'
 python3 code-receive.py
 ```
 
-依赖可通过 `pip install -r requirements.txt` 安装。当前支持 Gmail 和 Proton，Outlook 适配器尚未加入。
+依赖可通过 `pip install -r requirements.txt` 安装。网页控制台当前支持 Gmail 和 Outlook；Proton 旧实现仍保留在代码中，但不再提供新增和登录入口。
 
 ## 缺少 Gmail Token 时授权
 
@@ -61,7 +61,38 @@ export SSL_CERT_FILE='/path/to/ca-bundle.pem'
 OPENAI_CODE_SENDERS=noreply@tm.openai.com,noreply@tm1.openai.com
 ```
 
-## Proton Free 接码
+## Outlook 接码
+
+Outlook/Hotmail 使用 Microsoft Graph 和 OAuth，不保存邮箱密码。先在 Microsoft Entra 管理中心注册应用：
+
+1. 支持的账号类型选择包含“个人 Microsoft 账号”的选项。
+2. 添加 Web 重定向 URI，必须与 `OUTLOOK_OAUTH_REDIRECT_URI` 完全一致。
+3. 创建客户端密码。
+4. 添加 Microsoft Graph 委托权限 `User.Read` 和 `Mail.ReadWrite`。
+
+在 `.env` 中配置：
+
+```bash
+OUTLOOK_CLIENT_ID=应用客户端ID
+OUTLOOK_CLIENT_SECRET=客户端密码值
+OUTLOOK_TENANT=common
+OUTLOOK_OAUTH_REDIRECT_URI=https://你的公网域名/api/admin/outlook/auth/callback
+OUTLOOK_POLL_INTERVAL_SECONDS=3
+```
+
+公网回调必须使用有效 HTTPS；本机端口转发场景也可以注册
+`http://localhost:8000/api/admin/outlook/auth/callback`。重启程序后，在 `/admin`
+点击“添加 Outlook”，选择账号并同意权限即可。授权缓存保存在：
+
+```text
+runtime/outlook_tokens/account-N.json
+```
+
+程序每次轮询只读取收件箱未读邮件，继续使用与 Gmail 相同的 OpenAI 发件人白名单和中英文验证码规则，仅在成功提取验证码后将该邮件标记为已读。MSAL 会使用缓存中的 refresh token 静默续期；失效时控制台显示“需重新授权”。
+
+## Proton 旧实现
+
+Proton 接码代码、中继脚本和已有运行文件会继续保留，便于查看或回退，但账号控制台不再显示“添加 Proton”或“重新登录”。以下内容仅作为旧部署参考。
 
 Proton Free 没有官方 IMAP/API 接口，本项目通过 `protonmail-api-client` 复用 Proton 网页会话。默认从下列配置读取账号密码和 TOTP：
 
@@ -69,7 +100,7 @@ Proton Free 没有官方 IMAP/API 接口，本项目通过 `protonmail-api-clien
 ~/proton/.env
 ```
 
-也可以在项目 `.env` 中设置 `PROTON_CONFIG_FILE` 指向其他配置文件。账号控制台点击“添加 Proton”会读取配置并创建账号；点击“登录”会生成独立会话文件：
+也可以在项目 `.env` 中设置 `PROTON_CONFIG_FILE` 指向其他配置文件。旧版控制台创建的账号会使用独立会话文件：
 
 ```text
 runtime/proton_sessions/account-4.pickle
@@ -144,7 +175,7 @@ ACCOUNT_PASSWORD_4=第四个邮箱的GPT密码
 
 ## 异常日志
 
-程序会把 Gmail/Proton 监听、Google/Codex 授权、Codex 信息刷新和未处理 Web 请求的异常写入：
+程序会把 Gmail/Outlook 监听、Google/Microsoft/Codex 授权、Codex 信息刷新、Proton 旧监听和未处理 Web 请求的异常写入：
 
 ```text
 runtime/logs/errors.log
@@ -169,6 +200,8 @@ runtime/
 │   ├── account-2.json
 │   ├── account-3.json
 │   └── backups/account-N/
+├── outlook_tokens/
+│   └── account-N.json
 └── codex_auth/
     ├── <账号标识>.json
     └── backups/

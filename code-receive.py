@@ -42,6 +42,15 @@ from mail_providers.proton import (
     ProtonMailbox,
     load_proton_credentials,
 )
+from mail_providers.outlook import (
+    OutlookAPIError,
+    OutlookAuthorization,
+    OutlookAuthorizationRequired,
+    OutlookMailbox,
+    fetch_outlook_profile,
+    load_outlook_settings,
+    outlook_incoming_mail,
+)
 from mail_relay import (
     RelayAuthenticationError,
     RelayValidationError,
@@ -110,6 +119,7 @@ CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
 GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
 GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
+OUTLOOK_TOKEN_DIR = os.path.join(DATA_DIR, "outlook_tokens")
 PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
 PROTON_CONFIG_FILE = os.path.expanduser(
     os.getenv("PROTON_CONFIG_FILE", "~/proton/.env")
@@ -117,6 +127,8 @@ PROTON_CONFIG_FILE = os.path.expanduser(
 PROTON_POLL_INTERVAL_SECONDS = int(os.getenv("PROTON_POLL_INTERVAL_SECONDS", "3"))
 PROTON_KEEPALIVE_SECONDS = int(os.getenv("PROTON_KEEPALIVE_SECONDS", "30"))
 PROTON_CATCHUP_LIMIT = int(os.getenv("PROTON_CATCHUP_LIMIT", "30"))
+OUTLOOK_POLL_INTERVAL_SECONDS = int(os.getenv("OUTLOOK_POLL_INTERVAL_SECONDS", "3"))
+OUTLOOK_CATCHUP_LIMIT = int(os.getenv("OUTLOOK_CATCHUP_LIMIT", "30"))
 PROTON_DELIVERY_MODE = os.getenv("PROTON_DELIVERY_MODE", "direct").strip().lower()
 if PROTON_DELIVERY_MODE not in {"direct", "relay"}:
     PROTON_DELIVERY_MODE = "direct"
@@ -154,6 +166,7 @@ AUTH_LOCK = threading.Lock()
 GOOGLE_OAUTH_TRANSPORT_LOCK = threading.Lock()
 HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
+OUTLOOK_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_ACCOUNTS_LOCK = threading.Lock()
 CODEX_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER_LOCK = threading.Lock()
@@ -183,7 +196,7 @@ SEARCH_QUERY = (
 BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
 OAUTH_QUERY_LOG_PATTERN = re.compile(r"(?i)([?&](?:code|state)=)[^&\s]+")
 SECRET_LOG_PATTERN = re.compile(
-    r'(?i)(access_token|refresh_token|id_token|authorization|password|totp_secret|'
+    r'(?i)(access_token|refresh_token|id_token|authorization|client_secret|password|totp_secret|'
     r'session_id|cookie|mail_relay_secret|signature)'
     r'(\s*["\']?\s*[:=]\s*["\']?)([^"\',}\s]+)'
 )
@@ -393,6 +406,7 @@ ensure_private_directory(CODEX_AUTH_DIR)
 ensure_private_directory(CODEX_AUTH_BACKUP_DIR)
 ensure_private_directory(GMAIL_TOKEN_DIR)
 ensure_private_directory(GMAIL_TOKEN_BACKUP_DIR)
+ensure_private_directory(OUTLOOK_TOKEN_DIR)
 os.makedirs(PROTON_SESSION_DIR, exist_ok=True)
 os.makedirs(ERROR_LOG_DIR, exist_ok=True)
 
@@ -1838,6 +1852,12 @@ def load_accounts() -> List[AccountConfig]:
             cfg["config_file"] = os.path.expanduser(
                 str(item.get("config_file") or PROTON_CONFIG_FILE)
             )
+        elif provider == "outlook":
+            cfg["token_file"] = str(
+                item.get("token_file")
+                or os.path.join(OUTLOOK_TOKEN_DIR, f"{name}.json")
+            )
+            secure_auth_file(cfg["token_file"])
         else:
             cfg["provider"] = "gmail"
             cfg["token_file"] = migrate_gmail_token_layout(
@@ -1865,6 +1885,11 @@ def find_gmail_account(name: str) -> Optional[AccountConfig]:
     return cfg if cfg and cfg.get("provider", "gmail") == "gmail" else None
 
 
+def find_outlook_account(name: str) -> Optional[AccountConfig]:
+    cfg = find_mail_account(name)
+    return cfg if cfg and cfg.get("provider") == "outlook" else None
+
+
 def next_account_name() -> str:
     with MAIL_ACCOUNTS_LOCK:
         used = {item["name"] for item in ACCOUNTS}
@@ -1886,12 +1911,24 @@ def next_gmail_account_config() -> AccountConfig:
     }
 
 
+def next_outlook_account_config() -> AccountConfig:
+    name = next_account_name()
+    return {
+        "name": name,
+        "email": "等待授权",
+        "provider": "outlook",
+        "token_file": os.path.join(OUTLOOK_TOKEN_DIR, f"{name}.json"),
+        "enabled": True,
+    }
+
+
 ACCOUNTS = load_accounts()
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
 CODEX_ACCOUNTS: Dict[str, Dict[str, Any]] = {}
 CODEX_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
+OUTLOOK_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
 MAIL_WATCHERS: Dict[str, Dict[str, Any]] = {}
 
 
@@ -2005,7 +2042,12 @@ async def access_guard(request: FastAPIRequest, call_next):
         return await call_next(request)
 
     path = request.url.path
-    if path in {"/login", "/login.html", "/auth/callback"} or path.startswith("/oauth2callback/"):
+    if path in {
+        "/login",
+        "/login.html",
+        "/auth/callback",
+        "/api/admin/outlook/auth/callback",
+    } or path.startswith("/oauth2callback/"):
         return await call_next(request)
     if path == "/" and request.query_params.get("code") and request.query_params.get("state"):
         return await call_next(request)
@@ -2408,6 +2450,105 @@ def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event
                 MAIL_WATCHERS.pop(name, None)
 
 
+def process_outlook_message(
+    mailbox: OutlookMailbox,
+    cfg: AccountConfig,
+    message: Dict[str, Any],
+) -> Optional[Dict[str, str]]:
+    if message.get("isRead") is True:
+        return None
+    incoming = outlook_incoming_mail(message)
+    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    if not code:
+        return None
+    mailbox.mark_as_read(incoming.message_id)
+    return {
+        "code": code,
+        "message_id": incoming.message_id,
+        "subject": incoming.subject or "（无主题）",
+    }
+
+
+def save_outlook_cache(mailbox: OutlookMailbox, cfg: AccountConfig) -> None:
+    mailbox.save_refreshed_cache(
+        lambda value: write_json_atomic(str(cfg["token_file"]), value)
+    )
+
+
+def scan_outlook_unread_once(
+    mailbox: OutlookMailbox,
+    cfg: AccountConfig,
+    status: str = "监听中",
+) -> bool:
+    messages = mailbox.get_unread_messages(limit=max(1, OUTLOOK_CATCHUP_LIMIT))
+    save_outlook_cache(mailbox, cfg)
+    got = False
+    for message in reversed(messages):
+        try:
+            result = process_outlook_message(mailbox, cfg, message)
+            if result:
+                got = store_code_result(cfg, result, status=status) or got
+        except (OutlookAuthorizationRequired, OutlookAPIError):
+            raise
+        except Exception as error:  # noqa: BLE001
+            log_exception(f"Outlook 邮件处理 account={cfg['name']}", error)
+    return got
+
+
+def watch_outlook_account(
+    cfg: AccountConfig,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    stop_event = stop_event or threading.Event()
+    name = cfg["name"]
+    save_state(name, {"status": "启动中"})
+    try:
+        settings = load_outlook_settings(
+            f"{APP_BASE_URL}/api/admin/outlook/auth/callback"
+        )
+        mailbox = OutlookMailbox(settings, str(cfg["token_file"]), cfg["email"])
+        profile = mailbox.connect()
+        if profile["email"].lower() != cfg["email"].lower():
+            raise OutlookAuthorizationRequired(
+                f"Outlook token 账号与记录不一致：{profile['email']}"
+            )
+        save_outlook_cache(mailbox, cfg)
+        scan_outlook_unread_once(mailbox, cfg, status="已完成（补扫）")
+        save_state(name, {"status": "监听中"})
+
+        while not stop_event.wait(max(1, OUTLOOK_POLL_INTERVAL_SECONDS)):
+            try:
+                got = scan_outlook_unread_once(mailbox, cfg)
+                if not got:
+                    save_state(name, {"status": "监听中"})
+            except OutlookAuthorizationRequired as error:
+                log_exception(f"Outlook 授权失效 account={name}", error)
+                save_state(name, {"status": "需重新授权"})
+                break
+            except OutlookAPIError as error:
+                log_exception(
+                    f"Outlook Graph account={name} status={error.status}",
+                    error,
+                )
+                if error.status in {401, 403}:
+                    save_state(name, {"status": f"需重新授权: HTTP {error.status}"})
+                    break
+                save_state(name, {"status": f"API 错误: {error.status}"})
+            except Exception as error:  # noqa: BLE001
+                log_exception(f"Outlook 监听 account={name}", error)
+                save_state(name, {"status": f"运行错误: {error}"})
+    except OutlookAuthorizationRequired as error:
+        save_state(name, {"status": str(error)})
+    except Exception as error:  # noqa: BLE001
+        log_exception(f"启动 Outlook 监听 account={name}", error)
+        save_state(name, {"status": f"启动失败: {error}"})
+    finally:
+        with MAIL_WATCHERS_LOCK:
+            current = MAIL_WATCHERS.get(name)
+            if current and current.get("thread") is threading.current_thread():
+                MAIL_WATCHERS.pop(name, None)
+
+
 def proton_incoming_mail(message: Any) -> IncomingMail:
     sender = getattr(getattr(message, "sender", None), "address", "") or ""
     return IncomingMail(
@@ -2505,7 +2646,15 @@ def start_mail_watcher(cfg: AccountConfig) -> bool:
     if provider == "proton" and cfg.get("delivery_mode") == "relay":
         save_state(cfg["name"], {"status": "等待本地中继"})
         return False
-    target = watch_proton_account if provider == "proton" else watch_gmail_account
+    targets = {
+        "gmail": watch_gmail_account,
+        "outlook": watch_outlook_account,
+        "proton": watch_proton_account,
+    }
+    target = targets.get(provider)
+    if target is None:
+        save_state(cfg["name"], {"status": f"不支持的邮箱类型: {provider}"})
+        return False
     with MAIL_WATCHERS_LOCK:
         current = MAIL_WATCHERS.get(cfg["name"])
         if current and current.get("thread") and current["thread"].is_alive():
@@ -2548,6 +2697,15 @@ def stop_mail_watcher(name: str, cancel_auth: bool = True) -> None:
                 event = session.get("event")
                 if hasattr(event, "set"):
                     event.set()
+        with OUTLOOK_AUTH_SESSION_LOCK:
+            stale_states = [
+                state
+                for state, session in OUTLOOK_AUTH_SESSIONS.items()
+                if isinstance(session.get("cfg"), dict)
+                and session["cfg"].get("name") == name
+            ]
+            for state in stale_states:
+                OUTLOOK_AUTH_SESSIONS.pop(state, None)
 
 
 def complete_managed_gmail_auth(
@@ -2587,6 +2745,68 @@ def complete_managed_gmail_auth(
 
     with MAIL_ACCOUNTS_LOCK:
         index = next((i for i, item in enumerate(ACCOUNTS) if item["name"] == cfg["name"]), None)
+        if index is None:
+            ACCOUNTS.append(cfg)
+        else:
+            ACCOUNTS[index] = cfg
+    save_mail_accounts()
+    ensure_mail_state(cfg)
+    save_state(cfg["name"], {"email": email, "status": "授权完成，正在启动"})
+    start_mail_watcher(cfg)
+    return cfg
+
+
+def complete_managed_outlook_auth(
+    session: Dict[str, Any],
+    response: Dict[str, str],
+) -> AccountConfig:
+    authorization = session.get("authorization")
+    flow = session.get("flow")
+    raw_cfg = session.get("cfg")
+    if not isinstance(authorization, OutlookAuthorization):
+        raise RuntimeError("Outlook 授权会话数据异常")
+    if not isinstance(flow, dict) or not isinstance(raw_cfg, dict):
+        raise RuntimeError("Outlook 授权会话缺少账号配置")
+
+    access_token = authorization.complete(flow, response)
+    profile = fetch_outlook_profile(access_token)
+    email = profile["email"]
+    cfg: AccountConfig = dict(raw_cfg)
+    action = str(session.get("managed_action") or "add")
+    expected_email = str(cfg.get("email") or "")
+
+    if (
+        action == "reauth"
+        and expected_email not in {"未配置", "等待授权"}
+        and expected_email.lower() != email.lower()
+    ):
+        raise RuntimeError(f"选择的 Outlook 账号与原账号不一致：{email}")
+
+    if action == "add":
+        with MAIL_ACCOUNTS_LOCK:
+            duplicate = next(
+                (
+                    item
+                    for item in ACCOUNTS
+                    if item.get("provider") == "outlook"
+                    and item["email"].lower() == email.lower()
+                ),
+                None,
+            )
+        if duplicate:
+            cfg = dict(duplicate)
+
+    cfg["email"] = email
+    cfg["provider"] = "outlook"
+    cfg["enabled"] = True
+    stop_mail_watcher(str(cfg["name"]), cancel_auth=False)
+    write_json_atomic(str(cfg["token_file"]), authorization.serialized_cache())
+
+    with MAIL_ACCOUNTS_LOCK:
+        index = next(
+            (i for i, item in enumerate(ACCOUNTS) if item["name"] == cfg["name"]),
+            None,
+        )
         if index is None:
             ACCOUNTS.append(cfg)
         else:
@@ -2827,6 +3047,141 @@ async def complete_gmail_admin_auth(request: FastAPIRequest):
     return JSONResponse(
         content=content,
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/admin/outlook/auth/start")
+def start_outlook_admin_auth(account_name: Optional[str] = None):
+    if account_name:
+        existing = find_outlook_account(account_name)
+        if not existing:
+            return JSONResponse(
+                content={"detail": f"未找到 Outlook 账号：{account_name}"},
+                status_code=404,
+            )
+        cfg = dict(existing)
+        action = "reauth"
+    else:
+        cfg = next_outlook_account_config()
+        action = "add"
+
+    try:
+        settings = load_outlook_settings(
+            f"{APP_BASE_URL}/api/admin/outlook/auth/callback"
+        )
+        state = base64_url_no_pad(secrets.token_bytes(32))
+        authorization = OutlookAuthorization(settings, str(cfg["token_file"]))
+        flow = authorization.start(state)
+        session = {
+            "state": state,
+            "cfg": cfg,
+            "managed_action": action,
+            "authorization": authorization,
+            "flow": flow,
+            "created_at": now_iso(),
+        }
+        with OUTLOOK_AUTH_SESSION_LOCK:
+            OUTLOOK_AUTH_SESSIONS[state] = session
+    except Exception as error:  # noqa: BLE001
+        log_exception(
+            f"发起 Outlook 授权 account={cfg['name']}",
+            error,
+        )
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return RedirectResponse(url=str(flow["auth_uri"]), status_code=302)
+
+
+def outlook_callback_page(ok: bool, message: str, status_code: int) -> HTMLResponse:
+    title = "Outlook 授权完成" if ok else "Outlook 授权失败"
+    color = "#15803d" if ok else "#b91c1c"
+    redirect_script = (
+        '<script>setTimeout(() => { window.location.href = "/admin"; }, 1200);</script>'
+        if ok
+        else ""
+    )
+    return HTMLResponse(
+        f"""
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>{title}</title>
+          <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 32px; background: #f5f7fa; color: #1f2937; }}
+            main {{ max-width: 560px; margin: 60px auto; padding: 24px; background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; }}
+            h1 {{ margin: 0 0 12px; color: {color}; font-size: 22px; }}
+            p {{ line-height: 1.6; }}
+            a {{ color: #2563eb; }}
+          </style>
+        </head>
+        <body>
+          <main>
+            <h1>{title}</h1>
+            <p>{html.escape(message)}</p>
+            <p><a href="/admin">返回账号控制台</a></p>
+          </main>
+          {redirect_script}
+        </body>
+        </html>
+        """,
+        status_code=status_code,
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.api_route(
+    "/api/admin/outlook/auth/callback",
+    methods=["GET", "POST"],
+    response_class=HTMLResponse,
+)
+async def complete_outlook_admin_auth(request: FastAPIRequest):
+    if request.method == "POST":
+        body = await request.body()
+        if len(body) > 16384:
+            return outlook_callback_page(False, "Outlook 授权回调内容过长", 413)
+        try:
+            response = dict(
+                urllib.parse.parse_qsl(
+                    body.decode("utf-8"),
+                    keep_blank_values=True,
+                )
+            )
+        except UnicodeDecodeError:
+            return outlook_callback_page(False, "Outlook 授权回调编码无效", 400)
+    else:
+        response = dict(request.query_params)
+    state = str(response.get("state") or "").strip()
+    if not state:
+        return outlook_callback_page(False, "授权回调缺少 state", 400)
+
+    with OUTLOOK_AUTH_SESSION_LOCK:
+        session = OUTLOOK_AUTH_SESSIONS.pop(state, None)
+    if not session:
+        return outlook_callback_page(
+            False,
+            "授权会话不存在或已完成，请重新点击添加或重新授权。",
+            404,
+        )
+
+    try:
+        cfg = complete_managed_outlook_auth(session, response)
+    except Exception as error:  # noqa: BLE001
+        raw_cfg = session.get("cfg")
+        account_name = (
+            str(raw_cfg.get("name") or "unknown")
+            if isinstance(raw_cfg, dict)
+            else "unknown"
+        )
+        log_exception(
+            f"Outlook OAuth 回调 account={account_name}",
+            error,
+        )
+        return outlook_callback_page(False, str(error), 400)
+    return outlook_callback_page(
+        True,
+        f"{cfg['email']} 已授权并开始监听验证码。",
+        200,
     )
 
 
