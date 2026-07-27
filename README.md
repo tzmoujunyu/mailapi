@@ -156,6 +156,8 @@ runtime/logs/errors.log
 
 打开 `/admin` 账号控制台，点击 Codex 区域的“导入账号”或“重新授权”会打开 Codex/OpenAI 授权页面。选择账号并授权后，回调会自动保存 auth 文件并刷新账号订阅和额度信息。主页面只负责显示账号状态，不再提供修改操作。
 
+如果授权完成后浏览器无法打开 `http://localhost:1455/auth/callback`，复制浏览器地址栏中包含 `code` 和 `state` 的完整链接，粘贴到控制台的“Codex 授权返回链接”输入框。必须先从目标账号所在行点击“重新授权”：服务端会通过一次性 `state` 找回目标邮箱，并在保存前核对 token 中的实际邮箱；选错账号时会拒绝覆盖原授权。“导入账号”生成的会话没有预设目标，会按 token 中的实际邮箱识别新账号。
+
 授权结果按账号分别保存在 `runtime/codex_auth/`，不再额外创建根目录兼容副本。旧的 `runtime/codex_auth.json` 会在启动时归并到对应账号文件；冲突版本保存在 `runtime/codex_auth/backups/`。账号快照保存在 `runtime/codex_accounts.json`，这些运行时文件已被 git 忽略。自动续期产生的新 token 会写回对应账号 auth 文件；明确失效的账号会停止重复刷新并显示“需重新授权”。
 
 Gmail 和 Codex 授权目录权限为 `700`，token/auth 文件权限为 `600`。规范布局如下：

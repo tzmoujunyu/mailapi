@@ -55,6 +55,11 @@ from google_oauth_callback import (
     authorization_response_for_redirect,
     parse_google_callback_link,
 )
+from codex_oauth_callback import (
+    CodexCallbackLinkError,
+    parse_codex_callback_link,
+    validate_codex_account_email,
+)
 from auth_storage import (
     archive_auth_file,
     ensure_private_directory,
@@ -512,14 +517,18 @@ def build_codex_authorize_url(code_challenge: str, state: str) -> str:
     return f"{CODEX_ISSUER}/oauth/authorize?{urllib.parse.urlencode(query)}"
 
 
-def create_codex_auth_session(reason: str) -> Dict[str, Any]:
+def create_codex_auth_session(
+    reason: str, target_account: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     pkce = generate_codex_pkce()
     state = generate_codex_state()
+    target = target_account or {}
     session = {
         "state": state,
         "code_verifier": pkce["code_verifier"],
         "auth_url": build_codex_authorize_url(pkce["code_challenge"], state),
         "reason": reason,
+        "target_email": str(target.get("email") or "").strip(),
         "created_at": now_iso(),
     }
     with CODEX_AUTH_SESSION_LOCK:
@@ -760,6 +769,10 @@ def complete_codex_oauth_callback(code: str, state: str) -> List[Dict[str, Any]]
 
     tokens = exchange_codex_code_for_tokens(code, str(session["code_verifier"]))
     payload = codex_auth_payload_from_tokens(tokens)
+    validate_codex_account_email(
+        str(session.get("target_email") or ""),
+        str(payload.get("email") or ""),
+    )
     save_codex_auth_file(payload)
     return import_codex_auth_json(json.dumps(payload), refresh_snapshot=True)
 
@@ -2965,6 +2978,9 @@ def codex_callback_result(params: Dict[str, str]) -> tuple:
 
     try:
         imported = complete_codex_oauth_callback(code, state)
+    except CodexCallbackLinkError as e:
+        log_exception("Codex OAuth 账号关联校验", e)
+        return False, f"Codex 授权导入失败：{e}", 400
     except Exception as e:  # noqa: BLE001
         log_exception("Codex OAuth 回调", e)
         return False, f"Codex 授权导入失败：{e}", 500
@@ -3020,13 +3036,57 @@ def ensure_codex_login_server() -> None:
 @app.get("/api/codex/auth/start")
 def start_codex_auth(request: FastAPIRequest):
     reason = request.query_params.get("reason", "import").strip() or "import"
+    account_id = request.query_params.get("account_id", "").strip()
+    target_account = None
+    if account_id:
+        with CODEX_ACCOUNTS_LOCK:
+            existing = CODEX_ACCOUNTS.get(account_id)
+            target_account = dict(existing) if existing else None
+        if not target_account:
+            return JSONResponse(
+                content={"detail": f"未找到 Codex 账号：{account_id}"},
+                status_code=404,
+            )
+        if not str(target_account.get("email") or "").strip():
+            return JSONResponse(
+                content={"detail": "目标 Codex 账号缺少邮箱，无法进行关联授权"},
+                status_code=409,
+            )
     try:
         ensure_codex_login_server()
     except Exception as e:  # noqa: BLE001
         log_exception("启动 Codex OAuth 回调服务", e)
         return JSONResponse(content={"detail": str(e)}, status_code=500)
-    session = create_codex_auth_session(reason)
+    session = create_codex_auth_session(reason, target_account)
     return RedirectResponse(url=str(session["auth_url"]), status_code=302)
+
+
+@app.post("/api/codex/auth/complete")
+async def complete_codex_auth_link(request: FastAPIRequest):
+    body = await request.body()
+    if len(body) > 16384:
+        return JSONResponse(content={"detail": "Codex 授权返回链接过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        callback = parse_codex_callback_link(
+            str(payload.get("callback_url") or "") if isinstance(payload, dict) else ""
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, CodexCallbackLinkError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    with CODEX_AUTH_SESSION_LOCK:
+        session = CODEX_AUTH_SESSIONS.get(callback.state)
+    if not session:
+        return JSONResponse(
+            content={"detail": "授权会话不存在或已完成，请重新点击导入或重新授权"},
+            status_code=404,
+        )
+
+    ok, message, status_code = codex_callback_result(callback.params)
+    content: Dict[str, Any] = {"ok": ok, "detail": message}
+    if ok:
+        content["target_email"] = str(session.get("target_email") or "")
+    return JSONResponse(content=content, status_code=status_code)
 
 
 @app.get("/auth/callback", response_class=HTMLResponse)
