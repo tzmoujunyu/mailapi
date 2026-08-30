@@ -162,16 +162,20 @@ python scripts/proton_relay.py --config proton-relay.env
 
 本地程序复用与 Gmail 相同的 OpenAI 发件人和验证码规则。只有服务器确认接收成功后，邮件才会标为已读；服务器暂时不可用时会保留未读并重试。完成本地部署后，应从服务器 `.env` 删除 `PROTON_PASSWORD` 和 `PROTON_TOTP_SECRET`，凭据只留在本地电脑。
 
-验证码页面可按邮箱显示并复制对应的 GPT 密码。密码变量按 `account-N` 编号映射，未配置时页面显示“无”：
+验证码页面可按邮箱显示并复制对应的 GPT 密码。密码不再需要按 `account-N`
+编号写入 `.env`：在 `/admin` 账号控制台找到对应邮箱，点击 GPT 密码栏的“添加”或
+“修改”即可。后端会同时校验内部账号标识与邮箱地址，避免账号编号复用时串号。
 
-```bash
-ACCOUNT_PASSWORD_1=第一个邮箱的GPT密码
-ACCOUNT_PASSWORD_2=第二个邮箱的GPT密码
-ACCOUNT_PASSWORD_3=第三个邮箱的GPT密码
-ACCOUNT_PASSWORD_4=第四个邮箱的GPT密码
+密码独立保存在：
+
+```text
+runtime/gpt_passwords.json
 ```
 
-账号列表接口只返回是否配置密码；实际密码仅在登录后的页面点击“复制”时按需读取，并禁止响应缓存。
+该文件与原 `.env` 一样属于服务器端明文凭据，但权限固定为 `600`；内容不会写入邮箱账号列表或普通列表接口。实际密码仅在登录后的
+验证码页面点击“复制”时按需读取，并禁止响应缓存。旧版 `.env` 中已有的
+`ACCOUNT_PASSWORD_N` 会在首次启动时自动迁移到该文件，确认控制台显示“已添加”后即可
+从 `.env` 删除这些旧变量。
 
 ## 异常日志
 
@@ -202,6 +206,7 @@ runtime/
 │   └── backups/account-N/
 ├── outlook_tokens/
 │   └── account-N.json
+├── gpt_passwords.json
 └── codex_auth/
     ├── <账号标识>.json
     └── backups/

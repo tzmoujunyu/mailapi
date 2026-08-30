@@ -76,6 +76,7 @@ from auth_storage import (
     migrate_auth_file,
     secure_auth_file,
 )
+from account_passwords import AccountPasswordError, AccountPasswordStore
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -117,6 +118,7 @@ CODEX_AUTH_BACKUP_DIR = os.path.join(CODEX_AUTH_DIR, "backups")
 LEGACY_CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
+GPT_PASSWORDS_FILE = os.path.join(DATA_DIR, "gpt_passwords.json")
 GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
 GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
 OUTLOOK_TOKEN_DIR = os.path.join(DATA_DIR, "outlook_tokens")
@@ -1923,6 +1925,7 @@ def next_outlook_account_config() -> AccountConfig:
 
 
 ACCOUNTS = load_accounts()
+GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
@@ -2848,16 +2851,12 @@ def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
         ),
         "status": state.get("status") or "未知",
         "updated_at": state.get("updated_at"),
+        "has_gpt_password": gpt_password_for_account(cfg) is not None,
     }
 
 
 def gpt_password_for_account(cfg: AccountConfig) -> Optional[str]:
-    match = re.fullmatch(r"account-(\d+)", cfg["name"])
-    if not match:
-        return None
-    env_name = f"ACCOUNT_PASSWORD_{match.group(1)}"
-    password = os.getenv(env_name, "")
-    return password if password else None
+    return GPT_PASSWORD_STORE.get(cfg["name"], cfg["email"])
 
 
 @app.on_event("startup")
@@ -2866,6 +2865,9 @@ def start_watchers():
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
     print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
+    imported_passwords = GPT_PASSWORD_STORE.import_legacy_environment(ACCOUNTS, os.environ)
+    if imported_passwords:
+        print(f"已将 {imported_passwords} 个 .env GPT 密码迁移到 {GPT_PASSWORDS_FILE}")
     save_mail_accounts()
     load_histories()
     load_codex_accounts()
@@ -2967,6 +2969,42 @@ def get_gpt_password(account_name: str):
         return JSONResponse(content={"detail": "该账号未配置 GPT 密码"}, status_code=404)
     return JSONResponse(
         content={"password": password},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.put("/api/admin/mail/accounts/{account_name}/gpt-password")
+async def set_gpt_password(account_name: str, request: FastAPIRequest):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "GPT 密码内容过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        password = payload.get("password") if isinstance(payload, dict) else None
+        if not isinstance(password, str):
+            raise AccountPasswordError("请求缺少 GPT 密码")
+        GPT_PASSWORD_STORE.set(account_name, cfg["email"], password)
+    except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    return JSONResponse(
+        content={"ok": True, "item": sanitize_mail_account(cfg)},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.delete("/api/admin/mail/accounts/{account_name}/gpt-password")
+def delete_gpt_password(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    GPT_PASSWORD_STORE.delete(account_name)
+    return JSONResponse(
+        content={"ok": True, "item": sanitize_mail_account(cfg)},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
@@ -3231,8 +3269,14 @@ def delete_mail_account(account_name: str):
         STATE.pop(account_name, None)
     with HISTORY_LOCK:
         CODE_HISTORY.pop(account_name, None)
+    GPT_PASSWORD_STORE.delete(account_name)
     return JSONResponse(
-        content={"ok": True, "account": account_name, "data_preserved": True}
+        content={
+            "ok": True,
+            "account": account_name,
+            "data_preserved": True,
+            "gpt_password_deleted": True,
+        }
     )
 
 

@@ -54,7 +54,7 @@
       .btn-primary:hover { background: #1d4ed8; }
       .btn-danger { border-color: #fecaca; color: #b91c1c; }
       .table-wrap { width: 100%; overflow-x: auto; border: 1px solid #dfe3e8; border-radius: 6px; }
-      table { width: 100%; min-width: 920px; border-collapse: collapse; table-layout: fixed; }
+      table { width: 100%; min-width: 1080px; border-collapse: collapse; table-layout: fixed; }
       th, td {
         padding: 10px;
         border-bottom: 1px solid #e5e7eb;
@@ -64,12 +64,13 @@
       }
       th { background: #f7f8fa; font-size: 13px; color: #4b5563; }
       tbody tr:last-child td { border-bottom: 0; }
-      .mail-table th:nth-child(1) { width: 23%; }
-      .mail-table th:nth-child(2) { width: 10%; }
-      .mail-table th:nth-child(3) { width: 11%; }
-      .mail-table th:nth-child(4) { width: 23%; }
-      .mail-table th:nth-child(5) { width: 13%; }
-      .mail-table th:nth-child(6) { width: 20%; }
+      .mail-table th:nth-child(1) { width: 20%; }
+      .mail-table th:nth-child(2) { width: 9%; }
+      .mail-table th:nth-child(3) { width: 9%; }
+      .mail-table th:nth-child(4) { width: 18%; }
+      .mail-table th:nth-child(5) { width: 12%; }
+      .mail-table th:nth-child(6) { width: 13%; }
+      .mail-table th:nth-child(7) { width: 19%; }
       .codex-table th:nth-child(1) { width: 25%; }
       .codex-table th:nth-child(2) { width: 19%; }
       .codex-table th:nth-child(3) { width: 15%; }
@@ -116,6 +117,25 @@
       .quota-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
       .track { height: 6px; overflow: hidden; border-radius: 5px; background: #dbeafe; }
       .fill { height: 100%; background: #2563eb; }
+      dialog {
+        width: min(420px, calc(100vw - 24px));
+        border: 1px solid #c7ced6;
+        border-radius: 8px;
+        padding: 20px;
+        color: #1f2937;
+      }
+      dialog::backdrop { background: rgba(17, 24, 39, 0.42); }
+      .password-form { display: grid; gap: 14px; }
+      .password-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 700; }
+      .password-form input {
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid #c7ced6;
+        border-radius: 6px;
+        padding: 7px 9px;
+        font: inherit;
+      }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
       @media (max-width: 680px) {
         .topbar, .section-head { align-items: flex-start; }
         .topbar, .content { padding-left: 10px; padding-right: 10px; }
@@ -154,8 +174,8 @@
           </form>
           <div class="table-wrap">
             <table class="mail-table">
-              <thead><tr><th>邮箱</th><th>类型</th><th>授权</th><th>监听状态</th><th>最近更新</th><th>操作</th></tr></thead>
-              <tbody id="mail-rows"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody>
+              <thead><tr><th>邮箱</th><th>类型</th><th>授权</th><th>监听状态</th><th>最近更新</th><th>GPT密码</th><th>操作</th></tr></thead>
+              <tbody id="mail-rows"><tr><td colspan="7" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -188,6 +208,21 @@
       </main>
     </div>
 
+    <dialog id="password-dialog">
+      <form id="password-form" class="password-form">
+        <h2>设置 GPT 密码</h2>
+        <div id="password-account" class="muted"></div>
+        <label>
+          GPT 密码
+          <input id="password-input" type="password" autocomplete="new-password" maxlength="4096" required />
+        </label>
+        <div class="dialog-actions">
+          <button id="password-cancel" class="btn" type="button">取消</button>
+          <button id="password-save" class="btn btn-primary" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
     <script>
       const mailRows = document.getElementById('mail-rows');
       const codexRows = document.getElementById('codex-rows');
@@ -199,6 +234,13 @@
       const codexCallbackForm = document.getElementById('codex-callback-form');
       const codexCallbackUrl = document.getElementById('codex-callback-url');
       const codexCallbackSubmit = document.getElementById('codex-callback-submit');
+      const passwordDialog = document.getElementById('password-dialog');
+      const passwordForm = document.getElementById('password-form');
+      const passwordAccount = document.getElementById('password-account');
+      const passwordInput = document.getElementById('password-input');
+      const passwordCancel = document.getElementById('password-cancel');
+      const passwordSave = document.getElementById('password-save');
+      let passwordAccountName = '';
 
       function escapeHtml(value) {
         const node = document.createElement('div');
@@ -250,6 +292,10 @@
             <td class="${authClass}">${authLabel}</td>
             <td class="${enabled ? 'good' : 'warn'}">${escapeHtml(item.status || (enabled ? '未知' : '已停用'))}</td>
             <td class="muted">${escapeHtml(formatTime(item.updated_at || item.token_updated_at))}</td>
+            <td><div>${item.has_gpt_password ? '<span class="good">已添加</span>' : '<span class="muted">无</span>'}</div><div class="actions">
+              <button class="btn" data-password-action="edit" data-name="${escapeAttr(item.name)}" data-email="${escapeAttr(item.email)}">${item.has_gpt_password ? '修改' : '添加'}</button>
+              ${item.has_gpt_password ? `<button class="btn btn-danger" data-password-action="delete" data-name="${escapeAttr(item.name)}" data-email="${escapeAttr(item.email)}">删除</button>` : ''}
+            </div></td>
             <td><div class="actions">
               ${authAction}
               <button class="btn" data-mail-action="${enabled ? 'disable' : 'enable'}" data-name="${escapeAttr(item.name)}">${enabled ? '停用' : '启用'}</button>
@@ -263,9 +309,9 @@
           const data = await api('/api/admin/mail/accounts');
           mailRows.innerHTML = data.items.length
             ? data.items.map(mailRow).join('')
-            : '<tr><td colspan="6" class="muted">暂无邮箱账号。</td></tr>';
+            : '<tr><td colspan="7" class="muted">暂无邮箱账号。</td></tr>';
         } catch (error) {
-          mailRows.innerHTML = '<tr><td colspan="6" class="bad">加载失败。</td></tr>';
+          mailRows.innerHTML = '<tr><td colspan="7" class="bad">加载失败。</td></tr>';
           setMessage(mailMessage, error.message, true);
         }
       }
@@ -314,12 +360,64 @@
         }
       });
 
+      function closePasswordDialog() {
+        passwordDialog.close();
+        passwordInput.value = '';
+        passwordAccountName = '';
+      }
+
+      passwordCancel.addEventListener('click', closePasswordDialog);
+
+      passwordForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!passwordAccountName || !passwordInput.value) return;
+        try {
+          passwordSave.disabled = true;
+          await api(`/api/admin/mail/accounts/${encodeURIComponent(passwordAccountName)}/gpt-password`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: passwordInput.value }),
+          });
+          closePasswordDialog();
+          setMessage(mailMessage, 'GPT 密码已保存。');
+          await loadMailAccounts();
+        } catch (error) {
+          setMessage(mailMessage, error.message, true);
+        } finally {
+          passwordSave.disabled = false;
+        }
+      });
+
       mailRows.addEventListener('click', async (event) => {
+        const passwordButton = event.target.closest('[data-password-action]');
+        if (passwordButton) {
+          const action = passwordButton.dataset.passwordAction;
+          const name = passwordButton.dataset.name || '';
+          const email = passwordButton.dataset.email || '';
+          if (action === 'edit') {
+            passwordAccountName = name;
+            passwordAccount.textContent = email;
+            passwordInput.value = '';
+            passwordDialog.showModal();
+            passwordInput.focus();
+          } else if (action === 'delete' && confirm(`确认删除 ${email} 的 GPT 密码吗？`)) {
+            try {
+              passwordButton.disabled = true;
+              await api(`/api/admin/mail/accounts/${encodeURIComponent(name)}/gpt-password`, { method: 'DELETE' });
+              setMessage(mailMessage, 'GPT 密码已删除。');
+              await loadMailAccounts();
+            } catch (error) {
+              setMessage(mailMessage, error.message, true);
+              passwordButton.disabled = false;
+            }
+          }
+          return;
+        }
         const button = event.target.closest('[data-mail-action]');
         if (!button) return;
         const action = button.dataset.mailAction;
         const name = button.dataset.name;
-        if (action === 'delete' && !confirm('删除后将停止监听，token 和历史文件会保留。继续吗？')) return;
+        if (action === 'delete' && !confirm('删除后将停止监听并删除 GPT 密码，token 和历史文件会保留。继续吗？')) return;
         try {
           button.disabled = true;
           if (action === 'delete') {
