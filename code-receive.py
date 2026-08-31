@@ -1482,7 +1482,9 @@ def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
 
 
 def refresh_codex_account_record(
-    record: Dict[str, Any], force_subscription: bool = False
+    record: Dict[str, Any],
+    force_subscription: bool = False,
+    force_token_refresh: bool = False,
 ) -> Dict[str, Any]:
     updated = dict(record)
     updated["token"] = dict(record.get("token") or {})
@@ -1496,6 +1498,17 @@ def refresh_codex_account_record(
     refreshed_once = False
     refresh_attempted = False
     refresh_error: Optional[str] = None
+    if force_token_refresh:
+        refresh_attempted = True
+        try:
+            refreshed_once = refresh_codex_access_token(updated)
+        except Exception as e:  # noqa: BLE001
+            log_exception(
+                f"手动续期 Codex token account={updated.get('email') or updated.get('id')}",
+                e,
+            )
+            refresh_error = str(e)
+
     for attempt in range(2):
         errors = []
         subscription_errors = []
@@ -1540,7 +1553,7 @@ def refresh_codex_account_record(
         if (
             usage_errors
             and attempt == 0
-            and not refreshed_once
+            and not refresh_attempted
             and any(should_refresh_codex_token(error) for error in usage_errors)
         ):
             refresh_attempted = True
@@ -3587,7 +3600,11 @@ def refresh_codex_account(account_id: str):
         )
 
     try:
-        updated = refresh_codex_account_record(record)
+        updated = refresh_codex_account_record(
+            record,
+            force_subscription=True,
+            force_token_refresh=True,
+        )
     except Exception as e:  # noqa: BLE001
         log_exception(
             f"手动刷新 Codex 账号 account={record.get('email') or account_id}",
