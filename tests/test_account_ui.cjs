@@ -35,7 +35,7 @@ function page(file) {
     setTimeout(callback) { return ++counter; },
     navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true },
     confirm: () => true,
-    fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : fixture(), password: 'password-value', secret: 'secret-value' }) }; },
+    fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : fixture(), password: 'password-value', code: '081804' }) }; },
   });
   vm.runInContext(fs.readFileSync(file, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1], context);
   async function click(id, selector, dataset) {
@@ -74,7 +74,9 @@ test('Codex-only account can copy both credentials and shows neutral email statu
   assert.match(app.nodes.get('rows').innerHTML, /status-neutral">无邮箱验证/);
   assert.match(app.nodes.get('rows').innerHTML, /data-name="email:only@example.com"/);
   for (const type of ['password', 'totp']) await app.click('rows', '[data-copy-type]', { copyType: type, name: 'email:only@example.com' });
-  assert.deepEqual(app.calls.filter(call => call[0] === 'clipboard').map(call => call[1]), ['password-value', 'secret-value']);
+  assert.ok(app.calls.some(([url]) => url.endsWith('/totp-code')));
+  assert.ok(!app.calls.some(([url]) => url.endsWith('/totp-secret')));
+  assert.deepEqual(app.calls.filter(call => call[0] === 'clipboard').map(call => call[1]), ['password-value', '081804']);
 });
 
 test('late history response cannot reopen collapsed content', async () => {

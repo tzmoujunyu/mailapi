@@ -212,8 +212,9 @@
         <div id="totp-account" class="muted"></div>
         <div id="totp-error" class="bad" role="alert"></div>
         <label>
-          2FA 密钥
-          <input id="totp-input" type="text" autocomplete="off" maxlength="4096" required />
+          2FA 密钥（Token）
+          <input id="totp-input" type="text" autocomplete="off" spellcheck="false" placeholder="填写2FA密钥，不是六位验证码" maxlength="4096" required />
+          <span class="muted">保存后，在主页点击“复制”可获取当前六位验证码。支持大小写和带空格的密钥。</span>
         </label>
         <div class="dialog-actions">
           <button id="totp-cancel" class="btn" type="button">取消</button>

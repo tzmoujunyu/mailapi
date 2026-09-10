@@ -95,7 +95,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
 
     def test_codex_only_login_credentials_crud_and_authentication(self):
         with self.account_client() as (client, store):
-            for path, field, value in (("gpt-password", "password", "test-password"), ("totp-secret", "secret", "test-secret")):
+            for path, field, value in (("gpt-password", "password", "test-password"), ("totp-secret", "secret", "JBSWY3DPEHPK3PXP")):
                 endpoint = f"/api/admin/accounts/email:only@example.com/{path}"
                 self.assertEqual(client.put(endpoint, json={field: value}).status_code, 200)
                 copied = client.post(f"/api/accounts/email:only@example.com/{path}")
@@ -108,6 +108,23 @@ class CodexAccountRefreshTests(unittest.TestCase):
             client.headers.pop('x-access-token')
             self.assertEqual(client.get('/api/accounts').status_code, 401)
             self.assertEqual(client.post('/api/accounts/email:only@example.com/totp-secret').status_code, 401)
+
+    def test_current_totp_endpoint_returns_code_without_secret(self):
+        with self.account_client() as (client, store):
+            path = '/api/accounts/email:only@example.com/totp-code'
+            self.assertEqual(client.post(path).status_code, 404)
+            store.set('only@example.com', 'secret', 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ')
+            with patch.object(self.module.time, 'time', return_value=1111111109):
+                response = client.post(path)
+            self.assertEqual(response.json(), {'code': '081804', 'expires_at': 1111111110})
+            self.assertIn('no-store', response.headers['cache-control'])
+            store.set('only@example.com', 'secret', 'invalid-legacy-secret')
+            self.assertEqual(client.post(path).status_code, 400)
+            self.assertNotIn('invalid-legacy-secret', client.post(path).text)
+            self.assertEqual(client.put('/api/admin/accounts/email:only@example.com/totp-secret', json={'secret':'123456'}).status_code, 400)
+            self.assertEqual(store.get('only@example.com', 'secret'), 'invalid-legacy-secret')
+            client.headers.pop('x-access-token')
+            self.assertEqual(client.post(path).status_code, 401)
 
     def test_removing_one_integration_preserves_shared_credentials(self):
         with self.account_client() as (client, store):

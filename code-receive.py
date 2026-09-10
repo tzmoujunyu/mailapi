@@ -81,6 +81,7 @@ from account_passwords import (
     AccountPasswordError,
     AccountPasswordStore,
     normalize_totp_secret,
+    generate_totp_code,
 )
 
 
@@ -3071,6 +3072,24 @@ def delete_gpt_password(account_name: str):
     CREDENTIAL_STORE.delete(cfg["email"], "password")
     return JSONResponse(
         content={"ok": True, "item": sanitize_login_account(cfg)},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.post("/api/accounts/{account_name}/totp-code")
+def get_totp_code(account_name: str):
+    cfg = find_login_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    secret = totp_secret_for_account(cfg)
+    if secret is None:
+        return JSONResponse(content={"detail": "该账号未配置身份验证器(2FA)"}, status_code=404)
+    try:
+        result = generate_totp_code(secret, time.time())
+    except AccountPasswordError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(
+        content=result,
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 

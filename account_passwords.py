@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
+
+import pyotp
 
 
 MAX_PASSWORD_LENGTH = 4096
@@ -23,7 +27,22 @@ def normalize_totp_secret(value: Any) -> str:
         raise AccountPasswordError("2FA 密钥不能为空")
     if len(secret) > MAX_PASSWORD_LENGTH:
         raise AccountPasswordError("2FA 密钥过长")
+    secret = re.sub(r"\s+", "", secret).upper().rstrip("=")
+    try:
+        if not re.fullmatch(r"[A-Z2-7]+", secret):
+            raise ValueError("invalid Base32")
+        base64.b32decode(secret + "=" * (-len(secret) % 8))
+    except (ValueError, binascii.Error):
+        raise AccountPasswordError("2FA 密钥格式无效，请填写由 A-Z 和 2-7 组成的密钥，不是六位验证码") from None
     return secret
+
+
+def generate_totp_code(secret: str, timestamp: float) -> Dict[str, Any]:
+    totp = pyotp.TOTP(normalize_totp_secret(secret))
+    return {
+        "code": totp.at(timestamp),
+        "expires_at": (int(timestamp) // totp.interval + 1) * totp.interval,
+    }
 
 
 class AccountPasswordStore:
