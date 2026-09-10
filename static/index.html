@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>ChatGPT验证码</title>
+    <title>ChatGPT账号</title>
     <style>
       * { box-sizing: border-box; }
       body {
@@ -186,52 +186,32 @@
   <body>
     <div class="container">
       <div class="page-head">
-        <h1>ChatGPT验证码</h1>
+        <h1>ChatGPT账号</h1>
         <a class="small-btn" href="/admin">账号控制台</a>
       </div>
       <div class="table-wrap">
         <table class="email-table">
           <thead>
             <tr>
-              <th>邮箱</th>
-              <th>GPT密码</th>
-              <th>最新验证码</th>
-              <th>主题</th>
-              <th>更新时间</th>
+              <th>账号</th>
+              <th>周额度</th>
+              <th>登陆方式</th>
               <th>状态</th>
-              <th>历史记录</th>
             </tr>
           </thead>
           <tbody id="rows">
-            <tr><td colspan="7" class="muted">加载中...</td></tr>
+            <tr><td colspan="4" class="muted">加载中...</td></tr>
           </tbody>
         </table>
       </div>
 
       <div id="history-panel" class="history-panel" hidden></div>
 
-      <h2>Codex账号信息</h2>
-      <div class="table-wrap">
-        <table class="codex-table">
-          <thead>
-            <tr>
-              <th>账号</th>
-              <th>周额度</th>
-              <th>auth_token</th>
-              <th>状态</th>
-            </tr>
-          </thead>
-          <tbody id="codex-rows">
-            <tr><td colspan="4" class="muted">加载中...</td></tr>
-          </tbody>
-        </table>
-      </div>
     </div>
 
     <script>
       const historyPanel = document.getElementById('history-panel');
       const codeRows = document.getElementById('rows');
-      const codexRows = document.getElementById('codex-rows');
       const HISTORY_REFRESH_MS = 3000;
       let historyTimer = null;
       let currentHistoryName = '';
@@ -584,77 +564,20 @@
         syncHistoryButtons();
       }
 
-      async function renderCodexAccounts() {
-        try {
-          const res = await fetch('/api/codex/accounts', { cache: 'no-store' });
-          const data = await res.json();
-          const items = data.items || [];
-          codexRows.innerHTML = '';
-          if (!items.length) {
-            codexRows.innerHTML = '<tr><td colspan="4" class="muted">暂无 Codex 账号。</td></tr>';
-            return;
-          }
-
-          for (const item of items) {
-            const tr = document.createElement('tr');
-            const tokenText = item.access_token_expires_at
-              ? formatTsSeconds(item.access_token_expires_at)
-              : '-';
-            const status = codexStatus(item);
-            tr.innerHTML = `
-              <td>${accountCell(item)}</td>
-              <td>${usageCell(item.usage)}</td>
-              <td>
-                <div>${escapeHtml(tokenText)}</div>
-                <div class="muted">${item.has_refresh_token ? '可续期' : '不可续期'}</div>
-              </td>
-              <td class="${status.cls}">
-                <div>${escapeHtml(status.text)}</div>
-                ${status.detail ? `<div class="muted">${escapeHtml(status.detail)}</div>` : ''}
-              </td>
-            `;
-            codexRows.appendChild(tr);
-          }
-        } catch (e) {
-          codexRows.innerHTML = '<tr><td colspan="4">Codex 账号加载失败。</td></tr>';
-        }
+      let expandedAccount = '';
+      function statusBadge(text, kind, label) { return `<span class="status ${kind}">${escapeHtml(text || '-')}</span> <span class="plan-pill plan-free">${label}</span>`; }
+      function mergedRow(item, codex) {
+        const status = codexStatus(codex || {});
+        const detail = expandedAccount === item.name ? `<div class="history-panel" style="margin-top:10px"><div><strong>GPT密码：</strong>${item.has_gpt_password ? `<button class="small-btn" data-password-name="${escapeAttr(item.name)}">复制</button>` : '<span class="muted">未设置</span>'}</div><div style="margin-top:8px"><strong>身份验证器(2FA)：</strong><span class="muted">未配置</span></div>${item.last_code ? `<div style="margin-top:8px"><strong>最新验证码：</strong><span class="code">${escapeHtml(item.last_code)}</span> <strong>主题：</strong>${escapeHtml(item.subject || '-')} <strong>更新时间：</strong>${escapeHtml(formatDateTime(item.updated_at))} <button class="small-btn" data-history-name="${escapeAttr(item.name)}" data-history-email="${escapeAttr(item.email)}">查看历史</button></div>` : ''}</div>` : '';
+        return `<tr><td>${accountCell(codex || {email:item.email, label:item.email})}</td><td>${usageCell(codex && codex.usage)}</td><td><button class="small-btn" data-expand-name="${escapeAttr(item.name)}">${expandedAccount === item.name ? '收起' : '展开'}</button>${detail}</td><td>${statusBadge(status.text, status.cls, 'Codex')}<br>${item.email ? statusBadge(item.status || '监测中', 'status-neutral', '邮箱') : statusBadge('无邮箱验证', 'status-neutral', '邮箱')}</td></tr>`;
       }
-
       async function render() {
-        try {
-          const res = await fetch('/api/codes', { cache: 'no-store' });
-          const data = await res.json();
-          codeRows.innerHTML = '';
-          for (const item of data.items) {
-            const tr = document.createElement('tr');
-            const name = item.name || '-';
-            const email = item.email || '-';
-            const provider = item.provider === 'outlook'
-              ? 'Outlook'
-              : (item.provider === 'proton' ? 'Proton（旧）' : 'Gmail');
-            tr.innerHTML = `
-              <td><div>${escapeHtml(email)}</div><div class="muted">${provider}</div></td>
-              <td>${item.has_gpt_password
-                ? `<button class="small-btn" data-password-name="${escapeAttr(name)}">复制</button>`
-                : '<span class="muted">无</span>'}</td>
-              <td class="code">${escapeHtml(item.last_code || '（暂无）')}</td>
-              <td><pre>${escapeHtml(item.subject || '-')}</pre></td>
-              <td class="muted">${item.updated_at ? new Date(item.updated_at).toLocaleString() : '-'}</td>
-              <td class="status">${escapeHtml(item.status || '-')}</td>
-              <td><button class="small-btn" data-history-name="${escapeAttr(name)}" data-history-email="${escapeAttr(email)}">查看历史</button></td>
-            `;
-            codeRows.appendChild(tr);
-          }
-          syncHistoryButtons();
-        } catch (e) {
-          codeRows.innerHTML = '<tr><td colspan="7">加载失败，请检查服务是否正常启动。</td></tr>';
-        }
+        try { const [a,b] = await Promise.all([fetch('/api/codes',{cache:'no-store'}), fetch('/api/codex/accounts',{cache:'no-store'})]); const codes=(await a.json()).items||[]; const codex=(await b.json()).items||[]; codeRows.innerHTML=codes.length ? codes.map(item=>mergedRow(item,codex.find(c=>c.email&&c.email===item.email))).join('') : '<tr><td colspan="4" class="muted">暂无账号。</td></tr>'; syncHistoryButtons(); } catch(e) { codeRows.innerHTML='<tr><td colspan="4">加载失败，请检查服务是否正常启动。</td></tr>'; }
       }
+      codeRows.addEventListener('click', event => { const button=event.target.closest('[data-expand-name]'); if(button){ expandedAccount=expandedAccount===button.dataset.expandName?'':button.dataset.expandName; render(); } });
 
       render();
-      renderCodexAccounts();
       setInterval(render, 3000);
-      setInterval(renderCodexAccounts, 60000);
     </script>
   </body>
 </html>
