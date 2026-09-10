@@ -88,7 +88,11 @@ OUTLOOK_POLL_INTERVAL_SECONDS=3
 runtime/outlook_tokens/account-N.json
 ```
 
-程序每次轮询只读取收件箱未读邮件，继续使用与 Gmail 相同的 OpenAI 发件人白名单和中英文验证码规则，仅在成功提取验证码后将该邮件标记为已读。MSAL 会使用缓存中的 refresh token 静默续期；失效时控制台显示“需重新授权”。
+程序每次轮询读取收件箱和垃圾邮件文件夹各自最新的未读邮件，每个文件夹最多 `OUTLOOK_CATCHUP_LIMIT` 封（默认 30，上限 100），合并后按从旧到新的顺序处理，避免旧验证码覆盖最新验证码。超过扫描上限的历史未读邮件、其他文件夹及已读邮件不在本轮扫描范围内。继续使用与 Gmail 相同的 OpenAI 发件人白名单和中英文验证码规则，仅在验证码成功保存后将该邮件标记为已读；保存失败时保留未读状态，下次重试。启动连接和补扫遇到临时网络/API 错误时也会继续重试。MSAL 会使用缓存中的 refresh token 静默续期；失效时控制台显示“需重新授权”。
+
+若点击“添加 Outlook”提示 `缺少 OUTLOOK_CLIENT_ID` 或 `缺少 OUTLOOK_CLIENT_SECRET`，说明应用配置尚未完成，尚未进入邮箱收信阶段。请填写上述 `.env` 配置并重启服务，再完成网页授权。客户端密码应填写密码的**值**，不要填写密码 ID；不要将密钥提交到 git。
+
+Graph 的时间排序查询遵循 [Microsoft 官方的 filter/orderby 约束](https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0#using-filter-and-orderby-in-the-same-query)。
 
 ## Proton 旧实现
 

@@ -234,19 +234,25 @@ class OutlookMailbox:
         self.access_token = self.authorization.acquire_silent(self.email)
         query = urllib.parse.urlencode(
             {
-                "$filter": "isRead eq false",
+                # Graph requires orderby properties first in the filter.
+                "$filter": "receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false",
+                "$orderby": "receivedDateTime desc",
                 "$top": str(max(1, min(limit, 100))),
                 "$select": "id,subject,body,from,receivedDateTime,isRead",
             }
         )
-        value = graph_request(
-            self.access_token,
-            f"/me/mailFolders/inbox/messages?{query}",
+        messages = []
+        for folder in ("inbox", "junkemail"):
+            value = graph_request(
+                self.access_token,
+                f"/me/mailFolders/{folder}/messages?{query}",
+            )
+            items = value.get("value")
+            if isinstance(items, list):
+                messages.extend(item for item in items if isinstance(item, dict))
+        return sorted(
+            messages, key=lambda item: str(item.get("receivedDateTime") or ""), reverse=True
         )
-        messages = value.get("value")
-        if not isinstance(messages, list):
-            return []
-        return [item for item in messages if isinstance(item, dict)]
 
     def mark_as_read(self, message_id: str) -> None:
         encoded_id = urllib.parse.quote(message_id, safe="")

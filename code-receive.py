@@ -2040,9 +2040,7 @@ def load_code_history(name: str) -> List[Dict[str, str]]:
 
 
 def save_code_history(name: str, records: List[Dict[str, str]]) -> None:
-    path = history_file_path(name)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    write_json_atomic(history_file_path(name), records)
 
 
 def clear_code_history(name: str) -> None:
@@ -2057,9 +2055,9 @@ def append_code_record(name: str, record: Dict[str, str]) -> bool:
         records = CODE_HISTORY.get(name, [])
         if any(item.get("message_id") == record.get("message_id") for item in records):
             return False
-        records.insert(0, record)
-        CODE_HISTORY[name] = records[:MAX_HISTORY_RECORDS]
-        save_code_history(name, CODE_HISTORY[name])
+        updated = [record, *records][:MAX_HISTORY_RECORDS]
+        save_code_history(name, updated)
+        CODE_HISTORY[name] = updated
         return True
 
 
@@ -2522,7 +2520,6 @@ def process_outlook_message(
     code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
     if not code:
         return None
-    mailbox.mark_as_read(incoming.message_id)
     return {
         "code": code,
         "message_id": incoming.message_id,
@@ -2549,6 +2546,7 @@ def scan_outlook_unread_once(
             result = process_outlook_message(mailbox, cfg, message)
             if result:
                 got = store_code_result(cfg, result, status=status) or got
+                mailbox.mark_as_read(result["message_id"])
         except (OutlookAuthorizationRequired, OutlookAPIError):
             raise
         except Exception as error:  # noqa: BLE001
@@ -2568,18 +2566,22 @@ def watch_outlook_account(
             f"{APP_BASE_URL}/api/admin/outlook/auth/callback"
         )
         mailbox = OutlookMailbox(settings, str(cfg["token_file"]), cfg["email"])
-        profile = mailbox.connect()
-        if profile["email"].lower() != cfg["email"].lower():
-            raise OutlookAuthorizationRequired(
-                f"Outlook token 账号与记录不一致：{profile['email']}"
-            )
-        save_outlook_cache(mailbox, cfg)
-        scan_outlook_unread_once(mailbox, cfg, status="已完成（补扫）")
-        save_state(name, {"status": "监听中"})
-
-        while not stop_event.wait(max(1, OUTLOOK_POLL_INTERVAL_SECONDS)):
+        connected = False
+        first_scan = True
+        while not stop_event.is_set():
             try:
-                got = scan_outlook_unread_once(mailbox, cfg)
+                if not connected:
+                    profile = mailbox.connect()
+                    if profile["email"].lower() != cfg["email"].lower():
+                        raise OutlookAuthorizationRequired(
+                            f"Outlook token 账号与记录不一致：{profile['email']}"
+                        )
+                    save_outlook_cache(mailbox, cfg)
+                    connected = True
+                got = scan_outlook_unread_once(
+                    mailbox, cfg, status="已完成（补扫）" if first_scan else "监听中"
+                )
+                first_scan = False
                 if not got:
                     save_state(name, {"status": "监听中"})
             except OutlookAuthorizationRequired as error:
@@ -2598,6 +2600,7 @@ def watch_outlook_account(
             except Exception as error:  # noqa: BLE001
                 log_exception(f"Outlook 监听 account={name}", error)
                 save_state(name, {"status": f"运行错误: {error}"})
+            stop_event.wait(max(1, OUTLOOK_POLL_INTERVAL_SECONDS))
     except OutlookAuthorizationRequired as error:
         save_state(name, {"status": str(error)})
     except Exception as error:  # noqa: BLE001
