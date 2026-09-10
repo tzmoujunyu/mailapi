@@ -46,6 +46,7 @@ from mail_providers.outlook import (
     OutlookAPIError,
     OutlookAuthorization,
     OutlookAuthorizationRequired,
+    OutlookConfigurationError,
     OutlookMailbox,
     fetch_outlook_profile,
     load_outlook_settings,
@@ -3224,9 +3225,8 @@ def start_outlook_admin_auth(account_name: Optional[str] = None):
     if account_name:
         existing = find_outlook_account(account_name)
         if not existing:
-            return JSONResponse(
-                content={"detail": f"未找到 Outlook 账号：{account_name}"},
-                status_code=404,
+            return outlook_callback_page(
+                False, f"未找到 Outlook 账号：{account_name}", 404,
             )
         cfg = dict(existing)
         action = "reauth"
@@ -3251,17 +3251,41 @@ def start_outlook_admin_auth(account_name: Optional[str] = None):
         }
         with OUTLOOK_AUTH_SESSION_LOCK:
             OUTLOOK_AUTH_SESSIONS[state] = session
+    except OutlookConfigurationError as error:
+        log_exception(f"发起 Outlook 授权 account={cfg['name']}", error)
+        return outlook_callback_page(False, str(error), 503, setup_required=True)
     except Exception as error:  # noqa: BLE001
         log_exception(
             f"发起 Outlook 授权 account={cfg['name']}",
             error,
         )
-        return JSONResponse(content={"detail": str(error)}, status_code=400)
+        return outlook_callback_page(False, str(error), 400)
     return RedirectResponse(url=str(flow["auth_uri"]), status_code=302)
 
 
-def outlook_callback_page(ok: bool, message: str, status_code: int) -> HTMLResponse:
-    title = "Outlook 授权完成" if ok else "Outlook 授权失败"
+def outlook_callback_page(
+    ok: bool, message: str, status_code: int, setup_required: bool = False,
+) -> HTMLResponse:
+    title = "Outlook 配置未完成" if setup_required else ("Outlook 授权完成" if ok else "Outlook 授权失败")
+    setup_help = ""
+    if setup_required:
+        setup_help = """
+            <p>请由部署管理员完成以下一次性设置，再返回控制台添加邮箱：</p>
+            <ol>
+              <li>打开 <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra 管理中心</a>，在“应用注册”中新建应用，支持的账号类型选择包含个人 Microsoft 账号的选项。</li>
+              <li>在“身份验证”中添加 Web 平台，登记回调地址：<code>https://你的公网域名/api/admin/outlook/auth/callback</code>，必须与下面的配置完全一致。</li>
+              <li>在“API 权限”中添加 Microsoft Graph <strong>委托权限</strong>：<code>User.Read</code> 和 <code>Mail.ReadWrite</code>。</li>
+              <li>从“概述”复制“应用程序(客户端) ID”；在“证书和密码”中新建客户端密码，复制密码的<strong>值</strong>，不是密码 ID。</li>
+              <li>在服务器项目根目录的 <code>.env</code> 中填写下列配置，然后重启服务。</li>
+            </ol>
+            <pre>OUTLOOK_CLIENT_ID=应用程序客户端ID
+OUTLOOK_CLIENT_SECRET=客户端密码值
+OUTLOOK_TENANT=common
+OUTLOOK_OAUTH_REDIRECT_URI=https://你的公网域名/api/admin/outlook/auth/callback</pre>
+            <p>本地调试可使用 <code>http://localhost:8000/api/admin/outlook/auth/callback</code>，前提是浏览器能通过该地址访问本服务，并在 Microsoft 中登记相同地址。</p>
+            <p>无需开启 POP/IMAP。配置完成后点击“添加 Outlook”，登录目标邮箱并同意授权；程序才会开始读取验证码邮件。</p>
+            <p><a href="https://learn.microsoft.com/graph/auth-register-app-v2" target="_blank" rel="noopener noreferrer">Microsoft 官方应用注册说明</a></p>
+        """
     color = "#15803d" if ok else "#b91c1c"
     redirect_script = (
         '<script>setTimeout(() => { window.location.href = "/admin"; }, 1200);</script>'
@@ -3281,6 +3305,9 @@ def outlook_callback_page(ok: bool, message: str, status_code: int) -> HTMLRespo
             main {{ max-width: 560px; margin: 60px auto; padding: 24px; background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; }}
             h1 {{ margin: 0 0 12px; color: {color}; font-size: 22px; }}
             p {{ line-height: 1.6; }}
+            li {{ line-height: 1.6; margin-bottom: 8px; }}
+            pre {{ white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: #f5f7fa; }}
+            code {{ overflow-wrap: anywhere; }}
             a {{ color: #2563eb; }}
           </style>
         </head>
@@ -3288,6 +3315,7 @@ def outlook_callback_page(ok: bool, message: str, status_code: int) -> HTMLRespo
           <main>
             <h1>{title}</h1>
             <p>{html.escape(message)}</p>
+            {setup_help}
             <p><a href="/admin">返回账号控制台</a></p>
           </main>
           {redirect_script}

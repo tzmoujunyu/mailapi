@@ -90,7 +90,9 @@ runtime/outlook_tokens/account-N.json
 
 程序每次轮询读取收件箱和垃圾邮件文件夹各自最新的未读邮件，每个文件夹最多 `OUTLOOK_CATCHUP_LIMIT` 封（默认 30，上限 100），合并后按从旧到新的顺序处理，避免旧验证码覆盖最新验证码。超过扫描上限的历史未读邮件、其他文件夹及已读邮件不在本轮扫描范围内。继续使用与 Gmail 相同的 OpenAI 发件人白名单和中英文验证码规则，仅在验证码成功保存后将该邮件标记为已读；保存失败时保留未读状态，下次重试。启动连接和补扫遇到临时网络/API 错误时也会继续重试。MSAL 会使用缓存中的 refresh token 静默续期；失效时控制台显示“需重新授权”。
 
-若点击“添加 Outlook”提示 `缺少 OUTLOOK_CLIENT_ID` 或 `缺少 OUTLOOK_CLIENT_SECRET`，说明应用配置尚未完成，尚未进入邮箱收信阶段。请填写上述 `.env` 配置并重启服务，再完成网页授权。客户端密码应填写密码的**值**，不要填写密码 ID；不要将密钥提交到 git。
+若点击“添加 Outlook”提示 `缺少 OUTLOOK_CLIENT_ID` 或 `缺少 OUTLOOK_CLIENT_SECRET`，说明应用配置尚未完成，尚未进入邮箱收信阶段。页面会以 UTF-8 中文展示配置指引，不再直接显示 JSON 错误。请填写上述 `.env` 配置并重启服务，再完成网页授权。客户端密码应填写密码的**值**，不要填写密码 ID；不要将密钥提交到 git。
+
+Outlook 没有需要为本项目打开的“接码 API”邮箱开关，也无需开启 POP/IMAP。本项目通过 Microsoft Graph 委托授权读取邮件：应用注册和服务器配置只需做一次，每个邮箱分别登录并同意授权。个人 Outlook/Hotmail 账号需要应用支持个人 Microsoft 账号；工作或学校账号可能受组织的管理员同意策略限制。详见 [Microsoft 应用注册指南](https://learn.microsoft.com/en-us/graph/auth-register-app-v2) 和 [Graph 权限说明](https://learn.microsoft.com/en-us/graph/permissions-reference#mailreadwrite)。当前只提取符合上述 OpenAI/ChatGPT 规则的验证码，并非任意网站验证码。
 
 Graph 的时间排序查询遵循 [Microsoft 官方的 filter/orderby 约束](https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0#using-filter-and-orderby-in-the-same-query)。
 

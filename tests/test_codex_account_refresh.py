@@ -173,6 +173,45 @@ class CodexAccountRefreshTests(unittest.TestCase):
             client.headers.pop('x-access-token')
             self.assertEqual(client.get('/api/codex/auth/start?format=json').status_code, 401)
 
+    def test_outlook_missing_configuration_renders_utf8_setup_page(self):
+        with self.account_client() as (client, store), patch.dict(os.environ, {
+            'OUTLOOK_CLIENT_ID': '', 'OUTLOOK_CLIENT_SECRET': '',
+        }), patch.object(self.module, 'OutlookAuthorization') as authorization:
+            response = client.get('/api/admin/outlook/auth/start', follow_redirects=False)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers['content-type'], 'text/html; charset=utf-8')
+            self.assertIn('缺少 OUTLOOK_CLIENT_ID', response.content.decode('utf-8'))
+            self.assertIn('Outlook 配置未完成', response.text)
+            self.assertIn('OUTLOOK_CLIENT_SECRET=', response.text)
+            self.assertIn('Mail.ReadWrite', response.text)
+            self.assertIn('返回账号控制台', response.text)
+            self.assertIn('no-store', response.headers['cache-control'])
+            authorization.assert_not_called()
+
+    def test_outlook_configured_start_still_redirects_and_preserves_session(self):
+        with self.account_client() as (client, store), patch.object(self.module, 'load_outlook_settings'), \
+                patch.object(self.module, 'OutlookAuthorization') as authorization, \
+                patch.object(self.module, 'OUTLOOK_AUTH_SESSIONS', {}):
+            url = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?test=1'
+            authorization.return_value.start.return_value = {'auth_uri': url}
+            response = client.get('/api/admin/outlook/auth/start', follow_redirects=False)
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers['location'], url)
+            state = authorization.return_value.start.call_args.args[0]
+            self.assertEqual(self.module.OUTLOOK_AUTH_SESSIONS[state]['managed_action'], 'add')
+
+    def test_outlook_start_errors_render_escaped_html(self):
+        with self.account_client() as (client, store):
+            response = client.get('/api/admin/outlook/auth/start', params={'account_name': '<script>alert(1)</script>'})
+            self.assertEqual(response.status_code, 404)
+            self.assertIn('&lt;script&gt;', response.text)
+            self.assertNotIn('<script>alert(1)</script>', response.text)
+            with patch.object(self.module, 'load_outlook_settings', side_effect=RuntimeError('connection failed')):
+                response = client.get('/api/admin/outlook/auth/start')
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('text/html', response.headers['content-type'])
+                self.assertIn('connection failed', response.text)
+
     def test_manual_endpoint_forces_token_and_subscription_refresh(self):
         record = {
             "id": "account-id",
