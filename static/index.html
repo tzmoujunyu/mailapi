@@ -85,6 +85,27 @@
       let refreshing = false;
       let historyError = '';
       let historyRequest = 0;
+      const copiedTotpExpiry = new Map();
+      let serverClockOffset = 0;
+
+      function syncServerClock(response) {
+        const timestamp = Date.parse(response.headers?.get('Date') || '');
+        if (Number.isFinite(timestamp)) serverClockOffset = timestamp - Date.now();
+      }
+      function totpValidity(name) {
+        const now = (Date.now() + serverClockOffset) / 1000;
+        const copiedExpiry = copiedTotpExpiry.get(name);
+        const expiresAt = copiedExpiry ?? (Math.floor(now / 30) + 1) * 30;
+        const remaining = Math.max(0, Math.ceil(expiresAt - now));
+        return { text: remaining ? `${copiedExpiry ? '已复制码' : '当前码'}剩余 ${remaining} 秒` : '已复制码已过期，请重新复制', warning: remaining <= 5 };
+      }
+      function updateTotpCountdown() {
+        for (const node of rowsNode.querySelectorAll('[data-totp-validity]')) {
+          const validity = totpValidity(node.dataset.totpValidity);
+          node.textContent = validity.text;
+          node.className = validity.warning ? 'status-warn' : 'muted';
+        }
+      }
 
       function escapeHtml(value) { const node = document.createElement('div'); node.textContent = value === null || value === undefined ? '' : String(value); return node.innerHTML; }
       function escapeAttr(value) { return escapeHtml(value).replace(/"/g, '&quot;'); }
@@ -161,7 +182,7 @@
       function detailRow(row) {
         const credentials = row.credentials;
         const password = credentials && credentials.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(credentials.gpt_password_account)}">复制</button>` : '<span class="muted">未设置</span>';
-        const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" title="复制当前六位验证码，每30秒更新" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button>` : '<span class="muted">未配置</span>';
+        const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" title="复制当前六位验证码，每30秒更新" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button><span data-totp-validity="${escapeAttr(credentials.totp_secret_account)}"></span>` : '<span class="muted">未配置</span>';
         const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div><strong>最新验证码：</strong><span class="code">${escapeHtml(mail.last_code || '暂无')}</span></div><div><strong>主题：</strong>${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
         return `<tr class="detail-row"><td colspan="4"><div class="detail-panel"><div class="login-detail"><div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div><div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div></div>${emailLine}</div></td></tr>`;
       }
@@ -202,11 +223,12 @@
       }
       async function copySecret(button) {
         button.disabled = true; const original = button.textContent;
-        try { const path = button.dataset.copyType === 'totp' ? 'totp-code' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'code' : 'password'; const response = await fetch(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); await writeClipboard(data[field]); button.textContent = button.dataset.copyType === 'totp' ? '验证码已复制' : '已复制'; } catch (error) { button.textContent = '复制失败'; button.title = error.message; }
+        try { const path = button.dataset.copyType === 'totp' ? 'totp-code' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'code' : 'password'; const response = await fetch(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); syncServerClock(response); await writeClipboard(data[field]); if (button.dataset.copyType === 'totp' && Number.isFinite(data.expires_at)) { copiedTotpExpiry.set(button.dataset.name, data.expires_at); updateTotpCountdown(); } button.textContent = button.dataset.copyType === 'totp' ? '验证码已复制' : '已复制'; } catch (error) { button.textContent = '复制失败'; button.title = error.message; }
         setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500);
       }
       function render() {
         rowsNode.innerHTML = accountRows.length ? accountRows.map(rowHtml).join('') : '<tr><td colspan="4" class="muted">暂无账号。</td></tr>';
+        updateTotpCountdown();
       }
       async function refreshAccounts() {
         if (refreshing || rowsNode.querySelector('[data-copy-type]:disabled')) return;
@@ -214,6 +236,7 @@
         try {
           const response = await fetch('/api/accounts', { cache: 'no-store' });
           if (!response.ok) throw new Error('加载失败');
+          syncServerClock(response);
           const data = await response.json();
           accountRows = (data.items || []).map(item => ({ key: item.key, credentials: item, codex: item.codex[0] || null, codexItems: item.codex, mail: item.mail[0] || null, mails: item.mail }));
           if (expandedKey && !accountRows.some(row => row.key === expandedKey)) {
@@ -229,6 +252,7 @@
       rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
       refreshAccounts();
       setInterval(refreshAccounts, 3000);
+      setInterval(updateTotpCountdown, 1000);
     </script>
   </body>
 </html>

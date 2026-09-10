@@ -24,7 +24,7 @@ function page(file) {
   const element = () => ({
     innerHTML: '', textContent: '', dataset: {}, value: '', listeners: {},
     addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
-    querySelector() { return null; },
+    querySelector() { return null; }, querySelectorAll() { return []; },
     showModal() { this.open = true; }, close() { this.open = false; }, focus() {},
   });
   const document = { ...element(), getElementById(id) { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
@@ -65,7 +65,7 @@ test('homepage expands immediately, places history below email row, and collapse
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /654321/);
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /GPT密码/);
-  assert.equal(app.timers.size, 1);
+  assert.equal(app.timers.size, 2);
 });
 
 test('Codex-only account can copy both credentials and shows neutral email status', async () => {
@@ -88,6 +88,31 @@ test('late history response cannot reopen collapsed content', async () => {
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   resolve({ ok: true, json: async () => ({ items: [{ code: 'late-code' }] }) }); await flush();
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /late-code|历史验证码|GPT密码/);
+});
+
+test('2FA countdown tracks copied code expiry across refreshes and prompts recopy', async () => {
+  const app = page('static/index.html'); await flush();
+  let now = 65000;
+  app.context.Date = class extends Date { static now() { return now; } };
+  const name = 'email:only@example.com';
+  const validity = { dataset: { totpValidity: name } };
+  app.nodes.get('rows').querySelectorAll = () => [validity];
+  await app.click('rows', '[data-expand-key]', { expandKey: 'email:only@example.com' });
+  assert.match(app.nodes.get('rows').innerHTML, /data-copy-type="totp"[^>]*>复制<\/button><span data-totp-validity=/);
+  assert.equal(validity.textContent, '当前码剩余 25 秒');
+  app.context.fetch = async () => ({ ok: true, json: async () => ({ code: '081804', expires_at: 90 }) });
+  await app.click('rows', '[data-copy-type]', { copyType: 'totp', name });
+  assert.equal(validity.textContent, '已复制码剩余 25 秒');
+  now = 86000;
+  for (const tick of app.timers.values()) tick();
+  assert.equal(validity.textContent, '已复制码剩余 4 秒');
+  assert.equal(validity.className, 'status-warn');
+  now = 90000;
+  vm.runInContext('render()', app.context);
+  assert.equal(validity.textContent, '已复制码已过期，请重新复制');
+  app.context.fetch = async () => ({ ok: true, json: async () => ({ code: '123456', expires_at: 120 }) });
+  await app.click('rows', '[data-copy-type]', { copyType: 'totp', name });
+  assert.equal(validity.textContent, '已复制码剩余 30 秒');
 });
 
 test('refresh failure preserves current account rows and displays an error', async () => {
