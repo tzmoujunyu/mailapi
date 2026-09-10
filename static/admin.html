@@ -148,7 +148,7 @@
           <div class="section-head">
             <h2>ChatGPT账号</h2>
             <div class="actions">
-              <a class="btn btn-primary" href="/api/codex/auth/start?reason=admin-import" target="_blank" rel="noopener">添加 Codex 账号</a>
+              <button class="btn btn-primary" type="button" data-codex-auth="admin-import">添加 Codex 账号</button>
               <a class="btn btn-primary" href="/api/admin/gmail/auth/start" target="_blank" rel="noopener">添加 Gmail</a>
               <a class="btn" href="/api/admin/outlook/auth/start" target="_blank" rel="noopener">添加 Outlook</a>
             </div>
@@ -189,6 +189,20 @@
         </section>
       </main>
     </div>
+
+    <dialog id="codex-auth-dialog">
+      <div class="password-form">
+        <h2>登录 Codex</h2>
+        <p id="codex-auth-status" class="muted" role="status"></p>
+        <label>授权链接<input id="codex-auth-url" type="text" readonly autocomplete="off" /></label>
+        <p class="muted">点击下方按钮打开 OpenAI 登录页。若内置浏览器显示空白，请复制链接到 Chrome、Edge 等浏览器打开。授权结束后，可回控制台提交返回链接。</p>
+        <div class="dialog-actions">
+          <a id="codex-auth-open" class="btn btn-primary" target="_blank" rel="noopener noreferrer" hidden>打开登录页面</a>
+          <button id="codex-auth-copy" class="btn" type="button" disabled>复制授权链接</button>
+          <button id="codex-auth-close" class="btn" type="button">关闭</button>
+        </div>
+      </div>
+    </dialog>
 
     <dialog id="password-dialog">
       <form id="password-form" class="password-form">
@@ -248,6 +262,45 @@
       const totpCancel = document.getElementById('totp-cancel');
       const totpSave = document.getElementById('totp-save');
       let totpAccountName = '';
+      const codexAuthDialog = document.getElementById('codex-auth-dialog');
+      const codexAuthStatus = document.getElementById('codex-auth-status');
+      const codexAuthUrl = document.getElementById('codex-auth-url');
+      const codexAuthOpen = document.getElementById('codex-auth-open');
+      const codexAuthCopy = document.getElementById('codex-auth-copy');
+      let codexAuthRequest = 0;
+
+      async function openCodexAuth(button) {
+        const request = ++codexAuthRequest;
+        codexAuthUrl.value = ''; codexAuthOpen.hidden = true; codexAuthCopy.disabled = true;
+        codexAuthStatus.textContent = '正在准备授权链接…';
+        codexAuthDialog.showModal();
+        try {
+          let path = `/api/codex/auth/start?format=json&reason=${encodeURIComponent(button.dataset.codexAuth)}`;
+          if (button.dataset.id) path += `&account_id=${encodeURIComponent(button.dataset.id)}`;
+          const data = await api(path, { signal: AbortSignal.timeout(15000) });
+          if (request !== codexAuthRequest) return;
+          if (!data.auth_url) throw new Error('未取得授权链接，请关闭后重试。');
+          codexAuthUrl.value = data.auth_url;
+          codexAuthOpen.href = data.auth_url; codexAuthOpen.hidden = false;
+          codexAuthCopy.disabled = false;
+          codexAuthStatus.textContent = '授权链接已准备好，请点击“打开登录页面”。';
+        } catch (error) {
+          if (request === codexAuthRequest) codexAuthStatus.textContent = error.name === 'TimeoutError' ? '获取授权链接超时，请关闭后重试。' : error.message;
+        }
+      }
+      document.getElementById('codex-auth-close').addEventListener('click', () => codexAuthDialog.close());
+      codexAuthDialog.addEventListener('close', () => {
+        codexAuthRequest++; codexAuthUrl.value = ''; codexAuthOpen.href = '';
+        codexAuthOpen.hidden = true; codexAuthCopy.disabled = true;
+      });
+      codexAuthCopy.addEventListener('click', async () => {
+        try {
+          if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(codexAuthUrl.value);
+          else { codexAuthUrl.focus(); codexAuthUrl.select(); if (!document.execCommand('copy')) throw new Error('copy failed'); }
+          codexAuthStatus.textContent = '授权链接已复制，请在浏览器中打开。';
+        } catch (error) { codexAuthUrl.focus(); codexAuthUrl.select(); codexAuthStatus.textContent = '请手动复制上方已选中的授权链接。'; }
+      });
+
 
       function escapeHtml(value) {
         const node = document.createElement('div');
@@ -378,6 +431,8 @@
       });
 
       document.addEventListener('click', async (event) => {
+        const authButton = event.target.closest('[data-codex-auth]');
+        if (authButton) { await openCodexAuth(authButton); return; }
         const totpButton = event.target.closest('[data-totp-action]');
         if (totpButton) {
           const action = totpButton.dataset.totpAction;
@@ -494,7 +549,7 @@
         const mailStatuses = item.mail.map(mail => `<div class="${mail.enabled === false ? 'warn' : (/失败|异常|错误|重新授权/.test(mail.status) ? 'bad' : (/监测中|监听中/.test(mail.status) ? 'good' : 'warn'))}">${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')} <span class="plan">邮箱</span></div>`).join('');
         const codexActions = item.codex.map(account => `<div class="actions"><span class="muted">Codex${item.codex.length > 1 ? ' · ' + escapeHtml(account.workspace_id || account.id) : ''}</span>
           <button class="btn" data-codex-action="refresh" data-id="${escapeAttr(account.id)}">刷新额度</button>
-          <a class="btn" href="/api/codex/auth/start?reason=admin-reauth&amp;account_id=${encodeURIComponent(account.id)}" target="_blank" rel="noopener">重新授权</a>
+          <button class="btn" type="button" data-codex-auth="admin-reauth" data-id="${escapeAttr(account.id)}">重新授权</button>
           <button class="btn btn-danger" data-codex-action="delete" data-id="${escapeAttr(account.id)}">移除 Codex</button></div>`).join('');
         const mailActions = item.mail.map(mail => `<div class="actions"><span class="muted">${escapeHtml(mail.provider || '邮箱')}</span>
           ${['gmail', 'outlook'].includes(mail.provider) ? `<a class="btn" href="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" target="_blank" rel="noopener">重新授权</a>` : ''}

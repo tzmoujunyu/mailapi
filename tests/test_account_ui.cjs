@@ -30,7 +30,7 @@ function page(file) {
   const document = { ...element(), getElementById(id) { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
     createElement() { const node = element(); Object.defineProperty(node, 'textContent', { set(text) { this.innerHTML = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } }); return node; },
   };
-  const context = vm.createContext({ document, console, Date, Map, Set, Promise,
+  const context = vm.createContext({ document, console, Date, Map, Set, Promise, AbortSignal,
     setInterval(callback) { timers.set(++counter, callback); return counter; }, clearInterval(id) { timers.delete(id); },
     setTimeout(callback) { return ++counter; },
     navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true },
@@ -111,4 +111,27 @@ test('console uses unified rows and routes credential changes and integration de
   assert.ok(app.calls.some(([url, options]) => url === '/api/admin/accounts/email%3Aonly%40example.com/gpt-password' && options.method === 'PUT'));
   await app.click('account-rows', '[data-delete-account]', { deleteAccount: 'email:user@example.com', email: 'user@example.com' });
   assert.ok(app.calls.some(([url, options]) => url === '/api/admin/accounts/email%3Auser%40example.com' && options.method === 'DELETE'));
+});
+
+
+test('Codex login prepares a direct external URL without opening an intermediate popup', async () => {
+  const app = page('static/admin.html'); await flush();
+  const authUrl = 'https://auth.openai.com/oauth/authorize?state=test';
+  app.context.fetch = async url => { app.calls.push([url]); return { ok: true, json: async () => ({ auth_url: authUrl }) }; };
+  await app.click('account-rows', '[data-codex-auth]', { codexAuth: 'admin-reauth', id: 'codex-1' });
+  assert.equal(app.nodes.get('codex-auth-dialog').open, true);
+  assert.equal(app.nodes.get('codex-auth-open').href, authUrl);
+  assert.equal(app.nodes.get('codex-auth-open').hidden, false);
+  assert.ok(app.calls.some(([url]) => url.includes('format=json') && url.includes('account_id=codex-1')));
+  await app.nodes.get('codex-auth-copy').listeners.click[0]();
+  assert.ok(app.calls.some(([action, value]) => action === 'clipboard' && value === authUrl));
+});
+
+test('Codex login failures remain visible in the console dialog', async () => {
+  const app = page('static/admin.html'); await flush();
+  app.context.fetch = async () => ({ ok: false, status: 500, json: async () => ({ detail: '回调端口无法监听' }) });
+  await app.click('account-rows', '[data-codex-auth]', { codexAuth: 'admin-import' });
+  assert.equal(app.nodes.get('codex-auth-status').textContent, '回调端口无法监听');
+  assert.equal(app.nodes.get('codex-auth-open').hidden, true);
+  assert.equal(app.nodes.get('codex-auth-copy').disabled, true);
 });

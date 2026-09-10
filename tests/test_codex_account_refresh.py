@@ -155,6 +155,24 @@ class CodexAccountRefreshTests(unittest.TestCase):
                         self.module.refresh_all_codex_accounts_once()
                 self.assertNotIn('codex-1', self.module.CODEX_ACCOUNTS)
 
+    def test_authorization_url_can_be_fetched_without_browser_redirect(self):
+        with self.account_client() as (client, store), patch.object(self.module, 'ensure_codex_login_server'), patch.object(self.module, 'CODEX_AUTH_SESSIONS', {}):
+            response = client.get('/api/codex/auth/start?format=json&reason=admin-import')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(set(response.json()), {'auth_url'})
+            self.assertIn('no-store', response.headers['cache-control'])
+            query = self.module.urllib.parse.parse_qs(self.module.urllib.parse.urlparse(response.json()['auth_url']).query)
+            session = self.module.CODEX_AUTH_SESSIONS[query['state'][0]]
+            self.assertTrue(session['code_verifier'])
+            self.assertEqual(query['code_challenge_method'], ['S256'])
+            self.assertEqual(client.get('/api/codex/auth/start', follow_redirects=False).status_code, 302)
+            response = client.get('/api/codex/auth/start?format=json&account_id=codex-1')
+            query = self.module.urllib.parse.parse_qs(self.module.urllib.parse.urlparse(response.json()['auth_url']).query)
+            self.assertEqual(self.module.CODEX_AUTH_SESSIONS[query['state'][0]]['target_email'], 'user@example.com')
+            self.assertEqual(client.get('/api/codex/auth/start?format=json&account_id=missing').status_code, 404)
+            client.headers.pop('x-access-token')
+            self.assertEqual(client.get('/api/codex/auth/start?format=json').status_code, 401)
+
     def test_manual_endpoint_forces_token_and_subscription_refresh(self):
         record = {
             "id": "account-id",

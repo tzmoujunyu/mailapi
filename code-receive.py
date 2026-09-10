@@ -3586,7 +3586,10 @@ def start_codex_auth(request: FastAPIRequest):
         log_exception("启动 Codex OAuth 回调服务", e)
         return JSONResponse(content={"detail": str(e)}, status_code=500)
     session = create_codex_auth_session(reason, target_account)
-    return RedirectResponse(url=str(session["auth_url"]), status_code=302)
+    headers = {"Cache-Control": "no-store, private", "Pragma": "no-cache"}
+    if request.query_params.get("format") == "json":
+        return JSONResponse(content={"auth_url": session["auth_url"]}, headers=headers)
+    return RedirectResponse(url=str(session["auth_url"]), status_code=302, headers=headers)
 
 
 @app.post("/api/codex/auth/complete")
