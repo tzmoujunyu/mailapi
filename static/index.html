@@ -65,6 +65,7 @@
   <body>
     <div class="container">
       <div class="page-head"><h1>ChatGPT账号</h1><a class="small-btn" href="/admin">账号控制台</a></div>
+      <div id="load-error" class="status-bad" role="status"></div>
       <div class="table-wrap">
         <table class="account-table">
           <thead><tr><th>账号</th><th>周额度</th><th>登陆方式</th><th>状态</th></tr></thead>
@@ -80,11 +81,13 @@
       let historyItems = [];
       let historyLoading = false;
       let historyTimer = null;
+      let accountRows = [];
+      let refreshing = false;
+      let historyError = '';
+      let historyRequest = 0;
 
       function escapeHtml(value) { const node = document.createElement('div'); node.textContent = value === null || value === undefined ? '' : String(value); return node.innerHTML; }
       function escapeAttr(value) { return escapeHtml(value).replace(/"/g, '&quot;'); }
-      function emailKey(value) { return String(value || '').trim().toLowerCase(); }
-      function isRealEmail(value) { return Boolean(emailKey(value) && !['未配置', '等待授权'].includes(String(value).trim())); }
       function formatDateTime(value) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false }); }
       function formatTsSeconds(value) { return value ? formatDateTime(Number(value) * 1000) : '-'; }
       function resetRemain(value) { if (!value) return '未知'; const minutes = Math.ceil(Math.max(0, Number(value) - Date.now() / 1000) / 60); const days = Math.floor(minutes / 1440); const hours = Math.floor((minutes % 1440) / 60); return days ? `${days}d${hours}h` : (hours ? `${hours}h${minutes % 60}min` : `${minutes}min`); }
@@ -143,45 +146,49 @@
         const reason = statusReasonText(item.status_reason);
         if (item.reauth_required) return { text: '需重新授权', cls: 'status-bad', detail: reason || '授权已失效' };
         if (item.error) return { text: item.status || '异常', cls: 'status-bad', detail: reason || item.error };
-        if (item.usage && Number(item.usage.used_percent || 0) >= 99.9) return { text: '限流', cls: 'status-bad', detail: '额度已耗尽' };
-        if (item.usage_status === 'available' || item.status === '已刷新' || item.status === '已导入') return { text: '可用', cls: 'status-good', detail: '' };
+        if (item.status_reason === 'usage_limit_exhausted') return { text: '限流', cls: 'status-bad', detail: '额度已耗尽' };
+        if (item.usage_status === 'available') return { text: '可用', cls: 'status-good', detail: '' };
         if (item.usage_status === 'unavailable') return { text: '不可用', cls: 'status-bad', detail: reason };
         return { text: item.status || '未知', cls: 'status-neutral', detail: reason };
       }
       function statusLine(status, label) { return `<div class="status-line"><span class="status ${status.cls}">${escapeHtml(status.text)}</span><span class="status-tag ${label === 'Codex' ? 'tag-codex' : 'tag-email'}">${label}</span>${status.detail ? `<span class="muted">${escapeHtml(status.detail)}</span>` : ''}</div>`; }
       function historyHtml(mail) {
         if (historyName !== mail.name || historyLoading) return historyLoading && historyName === mail.name ? '<div class="history-inline muted">历史记录加载中...</div>' : '';
+        if (historyError) return `<div class="history-inline status-bad">${escapeHtml(historyError)}</div>`;
         if (!historyItems.length) return '<div class="history-inline muted">暂无历史验证码记录。</div>';
         return `<div class="history-inline"><strong>历史验证码</strong>${historyItems.map(item => `<div class="history-item"><div>验证码：<span class="history-code">${escapeHtml(item.code || '')}</span></div><div class="history-time">${escapeHtml(formatDateTime(item.created_at))}</div><div>主题：${escapeHtml(item.subject || '-')}</div></div>`).join('')}</div>`;
       }
       function detailRow(row) {
-        const mail = row.mail;
-        const password = mail && mail.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(mail.name)}">复制</button>` : '<span class="muted">未设置</span>';
-        const totp = mail && mail.has_totp_secret ? `<button class="small-btn" data-copy-type="totp" data-name="${escapeAttr(mail.name)}">复制</button>` : '<span class="muted">未配置</span>';
-        const emailLine = mail ? `<div class="email-detail"><div><strong>最新验证码：</strong><span class="code">${escapeHtml(mail.last_code || '暂无')}</span></div><div><strong>主题：</strong>${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><button class="small-btn" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>` : '<div class="muted">该账号无邮箱验证。</div>';
+        const credentials = row.credentials;
+        const password = credentials && credentials.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(credentials.gpt_password_account)}">复制</button>` : '<span class="muted">未设置</span>';
+        const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button>` : '<span class="muted">未配置</span>';
+        const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div><strong>最新验证码：</strong><span class="code">${escapeHtml(mail.last_code || '暂无')}</span></div><div><strong>主题：</strong>${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
         return `<tr class="detail-row"><td colspan="4"><div class="detail-panel"><div class="login-detail"><div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div><div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div></div>${emailLine}</div></td></tr>`;
       }
       function rowHtml(row) {
         const codex = codexStatus(row.codex);
-        const emailStatus = row.mail ? { text: row.mail.enabled === false ? '已停用' : (row.mail.status || '监测中'), cls: row.mail.enabled === false ? 'status-warn' : 'status-good', detail: '' } : { text: '无邮箱验证', cls: 'status-neutral', detail: '' };
+        const emailStatuses = row.mails.length ? row.mails.map(mail => ({ text: mail.enabled === false ? '已停用' : (mail.status || '未知'), cls: mail.enabled === false ? 'status-warn' : (/失败|异常|错误|重新授权/.test(mail.status || '') ? 'status-bad' : (/监测中|监听中/.test(mail.status || '') ? 'status-good' : 'status-warn')), detail: row.mails.length > 1 ? mail.provider : '' })) : [{ text: '无邮箱验证', cls: 'status-neutral', detail: '' }];
         const expanded = expandedKey === row.key;
-        return `<tr><td>${accountCell(row)}</td><td>${quotaCell(row.codex && row.codex.usage)}</td><td><button class="small-btn" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button></td><td><div class="status-block">${statusLine(codex, 'Codex')}${statusLine(emailStatus, '邮箱')}</div></td></tr>${expanded ? detailRow(row) : ''}`;
-      }
-      function mergeItems(mailItems, codexItems) {
-        const mailByEmail = new Map(mailItems.filter(item => isRealEmail(item.email)).map(item => [emailKey(item.email), item]));
-        const usedMail = new Set();
-        const rows = codexItems.map(item => { const mail = mailByEmail.get(emailKey(item.email)); if (mail) usedMail.add(mail.name); return { key: `codex:${item.id || item.email || item.label}`, codex: item, mail: mail || null }; });
-        mailItems.forEach(mail => { if (!usedMail.has(mail.name)) rows.push({ key: `mail:${mail.name}`, codex: null, mail }); });
-        return rows;
+        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => quotaCell(item.usage)).join('<hr>') : quotaCell(null)}</td><td><button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button></td><td><div class="status-block">${row.codexItems.length ? row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') : statusLine(codex, 'Codex')}${emailStatuses.map(status => statusLine(status, '邮箱')).join('')}</div></td></tr>${expanded ? detailRow(row) : ''}`;
       }
       async function loadHistory(name) {
-        historyName = name; historyLoading = true; historyItems = []; render();
-        try { const response = await fetch(`/api/history/${encodeURIComponent(name)}`, { cache: 'no-store' }); const data = await response.json(); if (historyName === name) historyItems = data.items || []; } catch (error) { if (historyName === name) historyItems = []; }
-        if (historyName === name) { historyLoading = false; render(); }
+        if (rowsNode.querySelector('[data-copy-type]:disabled')) return;
+        const request = ++historyRequest;
+        historyName = name; historyLoading = !historyItems.length; historyError = ''; render();
+        try {
+          const response = await fetch(`/api/history/${encodeURIComponent(name)}`, { cache: 'no-store' });
+          if (!response.ok) throw new Error('历史记录加载失败，请稍后重试。');
+          const data = await response.json();
+          if (historyName === name && request === historyRequest) historyItems = data.items || [];
+        } catch (error) {
+          if (historyName === name && request === historyRequest) historyError = error.message;
+        }
+        if (historyName === name && request === historyRequest) { historyLoading = false; if (!rowsNode.querySelector('[data-copy-type]:disabled')) render(); }
       }
       function toggleHistory(name) {
-        if (historyName === name) { historyName = ''; historyItems = []; if (historyTimer) clearInterval(historyTimer); historyTimer = null; render(); return; }
+        if (historyName === name) { historyName = ''; historyItems = []; historyError = ''; historyRequest++; if (historyTimer) clearInterval(historyTimer); historyTimer = null; render(); return; }
         if (historyTimer) clearInterval(historyTimer);
+        historyItems = [];
         loadHistory(name);
         historyTimer = setInterval(() => { if (historyName === name && !historyLoading) loadHistory(name); }, HISTORY_REFRESH_MS);
       }
@@ -195,15 +202,33 @@
       }
       async function copySecret(button) {
         button.disabled = true; const original = button.textContent;
-        try { const path = button.dataset.copyType === 'totp' ? 'totp-secret' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'secret' : 'password'; const response = await fetch(`/api/mail/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); await writeClipboard(data[field]); button.textContent = '已复制'; } catch (error) { button.textContent = '复制失败'; }
+        try { const path = button.dataset.copyType === 'totp' ? 'totp-secret' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'secret' : 'password'; const response = await fetch(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); await writeClipboard(data[field]); button.textContent = '已复制'; } catch (error) { button.textContent = '复制失败'; }
         setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500);
       }
-      async function render() {
-        try { const [mailResponse, codexResponse] = await Promise.all([fetch('/api/codes', { cache: 'no-store' }), fetch('/api/codex/accounts', { cache: 'no-store' })]); const mailItems = (await mailResponse.json()).items || []; const codexItems = (await codexResponse.json()).items || []; const merged = mergeItems(mailItems, codexItems); rowsNode.innerHTML = merged.length ? merged.map(rowHtml).join('') : '<tr><td colspan="4" class="muted">暂无账号。</td></tr>'; } catch (error) { rowsNode.innerHTML = '<tr><td colspan="4">加载失败，请检查服务是否正常启动。</td></tr>'; }
+      function render() {
+        rowsNode.innerHTML = accountRows.length ? accountRows.map(rowHtml).join('') : '<tr><td colspan="4" class="muted">暂无账号。</td></tr>';
       }
-      rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
-      render();
-      setInterval(render, 3000);
+      async function refreshAccounts() {
+        if (refreshing || rowsNode.querySelector('[data-copy-type]:disabled')) return;
+        refreshing = true;
+        try {
+          const response = await fetch('/api/accounts', { cache: 'no-store' });
+          if (!response.ok) throw new Error('加载失败');
+          const data = await response.json();
+          accountRows = (data.items || []).map(item => ({ key: item.key, credentials: item, codex: item.codex[0] || null, codexItems: item.codex, mail: item.mail[0] || null, mails: item.mail }));
+          if (expandedKey && !accountRows.some(row => row.key === expandedKey)) {
+            expandedKey = ''; historyName = ''; historyItems = []; historyRequest++;
+            clearInterval(historyTimer); historyTimer = null;
+          }
+          document.getElementById('load-error').textContent = '';
+          if (!rowsNode.querySelector('[data-copy-type]:disabled')) render();
+        } catch (error) {
+          document.getElementById('load-error').textContent = '账号刷新失败，请检查服务或重新登录。';
+        } finally { refreshing = false; }
+      }
+      rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
+      refreshAccounts();
+      setInterval(refreshAccounts, 3000);
     </script>
   </body>
 </html>

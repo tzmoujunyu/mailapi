@@ -13,7 +13,7 @@ python3 code-receive.py
 
 登录后打开 `/admin` 账号控制台，点击“添加 Gmail”即可选择新的 Google 账号。授权完成后，程序会读取实际 Gmail 地址、保存独立 token 并立即开始监听。统一邮箱账号列表暂沿用 `runtime/gmail_accounts.json` 文件名，新 token 保存在 `runtime/gmail_tokens/`。
 
-控制台支持重新授权、停用、启用和删除。删除只移出监听列表，原 token 和验证码历史仍会保留。启动时会把旧的 `runtime/token_accountN.json` 自动迁移为 `runtime/gmail_tokens/account-N.json`，并同步更新账号索引。
+控制台支持重新授权、停用、启用和删除。移除邮箱会移出监听列表，原 token 和验证码历史仍会保留；共享登录信息按下文的账号删除规则处理。启动时会把旧的 `runtime/token_accountN.json` 自动迁移为 `runtime/gmail_tokens/account-N.json`，并同步更新账号索引。
 
 程序启动时若发现已有账号缺少 token，也会在终端打印完整的 Google 授权链接。
 
@@ -162,20 +162,40 @@ python scripts/proton_relay.py --config proton-relay.env
 
 本地程序复用与 Gmail 相同的 OpenAI 发件人和验证码规则。只有服务器确认接收成功后，邮件才会标为已读；服务器暂时不可用时会保留未读并重试。完成本地部署后，应从服务器 `.env` 删除 `PROTON_PASSWORD` 和 `PROTON_TOTP_SECRET`，凭据只留在本地电脑。
 
-验证码页面可按邮箱显示并复制对应的 GPT 密码。密码不再需要按 `account-N`
-编号写入 `.env`：在 `/admin` 账号控制台找到对应邮箱，点击 GPT 密码栏的“添加”或
-“修改”即可。后端会同时校验内部账号标识与邮箱地址，避免账号编号复用时串号。
+## 统一账号主页与控制台
 
-密码独立保存在：
+主页和 `/admin` 均使用 `/api/accounts`，按去除首尾空格并转为小写后的邮箱合并为一条 ChatGPT 账号。同邮箱的多个 Codex 工作区或邮箱监听关联仍分别保留，可独立管理，不会覆盖。未完成授权的记录按原关联编号区分，避免误合并。
 
-```text
-runtime/gpt_passwords.json
+主页显示账号套餐、周额度、可展开的登录信息和带 Codex/邮箱标记的状态。登录信息支持复制 GPT 密码与 2FA 密钥；有接码邮箱时显示最新验证码及其下方可展开的历史记录。2FA 复制的是保存的密钥，不是动态验证码。
+
+控制台顶部支持添加 Codex、Gmail 和 Outlook，授权得到相同邮箱时自动归入同一账号。每一行集中提供密码和 2FA 的添加、修改、删除，Codex 额度刷新和重新授权，以及邮箱重新授权、启用/停用监听。
+
+- **移除 Codex / 移除邮箱**：仅删除该关联；有其他关联时保留共享密码和 2FA，移除最后一个关联时删除共享登录信息。
+- **删除整个账号**：删除该邮箱的全部关联、Codex 本地授权文件、密码和 2FA。邮箱 token 与验证码历史文件仍保留，便于后续恢复。
+- 删除密码或 2FA 会对同邮箱的所有关联生效。
+
+### 本地数据结构与迁移
+
+当前是单进程服务，使用 JSON 文件持久化，未使用 SQL 数据库。账号展示由后端统一汇总，避免在两个页面分别拼接和存储同一份账号数据。
+
+| 文件 | 职责 |
+| --- | --- |
+| `runtime/account_credentials.json` | 按邮箱保存共享 GPT 密码和 2FA 密钥，一次性迁移标记 |
+| `runtime/gmail_accounts.json` | 邮箱监听关联、提供商、启停及授权文件路径（兼容旧文件名） |
+| `runtime/codex_accounts.json` | Codex 工作区关联、授权与用量/套餐缓存 |
+| 各提供商 token、Codex auth、验证码历史文件 | 按各自生命周期保存授权和历史数据 |
+
+更新后首次启动会从 `gpt_passwords.json`、`totp_secrets.json` 以及 `.env` 中的 `ACCOUNT_PASSWORD_N` 迁移有效关联的登录信息。迁移校验原编号和邮箱，已有新格式数据优先；同邮箱有多条旧记录时按邮箱关联列表顺序优先，Codex 独立记录补缺。旧文件保留原样，供核对或回退。迁移完成后，不再从旧文件或环境变量补回内容，因此主动删除的信息不会在重启时重新出现。确认迁移后可自行清理旧凭据副本。
+
+新凭据文件采用原子替换写入，权限为 `600`，父目录为 `700`；仍属于服务器端明文凭据。列表接口只返回是否配置，实际内容仅通过已登录的复制接口按需读取，响应禁止缓存。现有 `/api/mail/accounts/...` 凭据接口继续兼容，统一账号接口使用 `/api/accounts/{账号标识}/...` 和 `/api/admin/accounts/{账号标识}/...`。
+
+运行验证：
+
+```bash
+pip install -r requirements-dev.txt
+python -m unittest discover -s tests -q
+node --test tests/test_account_ui.cjs
 ```
-
-该文件与原 `.env` 一样属于服务器端明文凭据，但权限固定为 `600`；内容不会写入邮箱账号列表或普通列表接口。实际密码仅在登录后的
-验证码页面点击“复制”时按需读取，并禁止响应缓存。旧版 `.env` 中已有的
-`ACCOUNT_PASSWORD_N` 会在首次启动时自动迁移到该文件，确认控制台显示“已添加”后即可
-从 `.env` 删除这些旧变量。
 
 ## 异常日志
 
@@ -189,9 +209,9 @@ runtime/logs/errors.log
 
 ## Codex 账号信息
 
-打开 `/admin` 账号控制台，点击 Codex 区域的“导入账号”或“重新授权”会打开 Codex/OpenAI 授权页面。选择账号并授权后，回调会自动保存 auth 文件并刷新账号订阅和额度信息。主页面只负责显示账号状态，不再提供修改操作。
+打开 `/admin` 账号控制台，点击顶部“添加 Codex 账号”或账号行中的“重新授权”会打开 Codex/OpenAI 授权页面。选择账号并授权后，回调会自动保存 auth 文件并刷新账号订阅和额度信息。主页面只负责显示账号状态，不再提供修改操作。
 
-如果授权完成后浏览器无法打开 `http://localhost:1455/auth/callback`，复制浏览器地址栏中包含 `code` 和 `state` 的完整链接，粘贴到控制台的“Codex 授权返回链接”输入框。必须先从目标账号所在行点击“重新授权”：服务端会通过一次性 `state` 找回目标邮箱，并在保存前核对 token 中的实际邮箱；选错账号时会拒绝覆盖原授权。“导入账号”生成的会话没有预设目标，会按 token 中的实际邮箱识别新账号。
+如果授权完成后浏览器无法打开 `http://localhost:1455/auth/callback`，复制浏览器地址栏中包含 `code` 和 `state` 的完整链接，粘贴到控制台的“Codex 授权返回链接”输入框。必须先从目标账号所在行点击“重新授权”：服务端会通过一次性 `state` 找回目标邮箱，并在保存前核对 token 中的实际邮箱；选错账号时会拒绝覆盖原授权。“添加 Codex 账号”生成的会话没有预设目标，会按 token 中的实际邮箱识别新账号。
 
 授权结果按账号分别保存在 `runtime/codex_auth/`，不再额外创建根目录兼容副本。旧的 `runtime/codex_auth.json` 会在启动时归并到对应账号文件；冲突版本保存在 `runtime/codex_auth/backups/`。账号快照保存在 `runtime/codex_accounts.json`，这些运行时文件已被 git 忽略。自动续期产生的新 token 会写回对应账号 auth 文件；明确失效的账号会停止重复刷新并显示“需重新授权”。
 

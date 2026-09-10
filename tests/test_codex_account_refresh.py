@@ -1,4 +1,7 @@
 import base64
+from contextlib import ExitStack, contextmanager
+from account_credentials import AccountCredentialStore
+from fastapi.testclient import TestClient
 import importlib.util
 import json
 import os
@@ -43,6 +46,97 @@ class CodexAccountRefreshTests(unittest.TestCase):
             handler.close()
             cls.module.ERROR_LOGGER.removeHandler(handler)
         cls.temporary_directory.cleanup()
+
+    @contextmanager
+    def account_client(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            module = self.module
+            store = AccountCredentialStore(Path(directory) / "credentials.json")
+            stack.enter_context(patch.object(module, "CREDENTIAL_STORE", store))
+            stack.enter_context(patch.object(module, "ACCOUNTS", [
+                {"name": "account-1", "email": "User@Example.com", "provider": "gmail", "enabled": True}
+            ]))
+            stack.enter_context(patch.object(module, "CODEX_ACCOUNTS", {
+                "codex-1": {"id": "codex-1", "email": "user@example.com"},
+                "codex-2": {"id": "codex-2", "email": "only@example.com"},
+            }))
+            stack.enter_context(patch.object(module, "STATE", {}))
+            stack.enter_context(patch.object(module, "CODE_HISTORY", {}))
+            for name in ("save_mail_accounts", "save_codex_accounts", "stop_mail_watcher", "delete_codex_record_auth_files"):
+                stack.enter_context(patch.object(module, name))
+            client = TestClient(module.app, headers={"x-access-token": module.ACCESS_PASSWORD})
+            yield client, store
+            client.close()
+
+    def test_unified_accounts_share_credentials_without_exposing_secrets(self):
+        with self.account_client() as (client, store):
+            store.set("user@example.com", "password", "private-value")
+            response = client.get("/api/accounts")
+            self.assertEqual(response.status_code, 200)
+            groups = response.json()["items"]
+            self.assertEqual(len(groups), 2)
+            group = next(item for item in groups if item["email"] == "user@example.com")
+            self.assertEqual(len(group["mail"]), 1)
+            self.assertEqual(len(group["codex"]), 1)
+            self.assertTrue(group["has_gpt_password"])
+            self.assertNotIn("private-value", response.text)
+            self.assertEqual(group["mail"][0]["email"], "User@Example.com")
+
+    def test_multiple_workspaces_are_preserved_in_one_email_group(self):
+        with self.account_client() as (client, store):
+            self.module.CODEX_ACCOUNTS['another-workspace'] = {
+                'id': 'another-workspace', 'email': ' User@Example.com ', 'workspace_id': 'workspace-2'
+            }
+            groups = client.get('/api/accounts').json()['items']
+            group = next(item for item in groups if item['email'] == 'user@example.com')
+            self.assertEqual(len(group['codex']), 2)
+            self.assertEqual(len(group['mail']), 1)
+            self.assertEqual(len(groups), 2)
+
+    def test_codex_only_login_credentials_crud_and_authentication(self):
+        with self.account_client() as (client, store):
+            for path, field, value in (("gpt-password", "password", "test-password"), ("totp-secret", "secret", "test-secret")):
+                endpoint = f"/api/admin/accounts/email:only@example.com/{path}"
+                self.assertEqual(client.put(endpoint, json={field: value}).status_code, 200)
+                copied = client.post(f"/api/accounts/email:only@example.com/{path}")
+                self.assertEqual(copied.json()[field], value)
+                self.assertIn("no-store", copied.headers["cache-control"])
+                self.assertEqual(client.delete(endpoint).status_code, 200)
+                self.assertEqual(client.post(f"/api/accounts/email:only@example.com/{path}").status_code, 404)
+            self.assertEqual(client.put('/api/admin/accounts/email:only@example.com/gpt-password', json={"password": ""}).status_code, 400)
+            self.assertEqual(client.post('/api/accounts/email:missing@example.com/gpt-password').status_code, 404)
+            client.headers.pop('x-access-token')
+            self.assertEqual(client.get('/api/accounts').status_code, 401)
+            self.assertEqual(client.post('/api/accounts/email:only@example.com/totp-secret').status_code, 401)
+
+    def test_removing_one_integration_preserves_shared_credentials(self):
+        with self.account_client() as (client, store):
+            store.set("user@example.com", "password", "shared-password")
+            self.assertEqual(client.delete('/api/admin/mail/accounts/account-1').status_code, 200)
+            self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password').json()['password'], 'shared-password')
+            self.assertEqual(client.delete('/api/codex/accounts/codex-1').status_code, 200)
+            self.assertIsNone(store.get('user@example.com', 'password'))
+
+    def test_deleting_group_removes_all_associations_only_for_that_email(self):
+        with self.account_client() as (client, store):
+            store.set('user@example.com', 'secret', 'shared-secret')
+            self.assertEqual(client.delete('/api/admin/accounts/email:user@example.com').status_code, 200)
+            self.assertEqual([item['email'] for item in client.get('/api/accounts').json()['items']], ['only@example.com'])
+            self.assertIsNone(store.get('user@example.com', 'secret'))
+            self.assertEqual(client.delete('/api/admin/accounts/email:user@example.com').status_code, 404)
+
+    def test_refresh_does_not_restore_a_deleted_account(self):
+        for manual in (False, True):
+            with self.subTest(manual=manual), self.account_client() as (client, store):
+                def refresh_then_delete(record, **kwargs):
+                    self.module.CODEX_ACCOUNTS.pop(record["id"], None)
+                    return record
+                with patch.object(self.module, "refresh_codex_account_record", side_effect=refresh_then_delete):
+                    if manual:
+                        self.assertEqual(client.post('/api/codex/accounts/codex-1/refresh').status_code, 404)
+                    else:
+                        self.module.refresh_all_codex_accounts_once()
+                self.assertNotIn('codex-1', self.module.CODEX_ACCOUNTS)
 
     def test_manual_endpoint_forces_token_and_subscription_refresh(self):
         record = {

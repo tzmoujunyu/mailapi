@@ -76,6 +76,7 @@ from auth_storage import (
     migrate_auth_file,
     secure_auth_file,
 )
+from account_credentials import AccountCredentialStore
 from account_passwords import (
     AccountPasswordError,
     AccountPasswordStore,
@@ -1638,7 +1639,37 @@ def load_codex_accounts() -> None:
 def save_codex_accounts() -> None:
     with CODEX_ACCOUNTS_LOCK:
         items = list(CODEX_ACCOUNTS.values())
-    write_json_atomic(CODEX_ACCOUNTS_FILE, {"items": items})
+        write_json_atomic(CODEX_ACCOUNTS_FILE, {"items": items})
+
+
+def login_credentials(email: str) -> Dict[str, Any]:
+    name = "email:" + AccountCredentialStore.email_key(email)
+    return {
+        "gpt_password_account": name,
+        "totp_secret_account": name,
+        "has_gpt_password": CREDENTIAL_STORE.get(email, "password") is not None,
+        "has_totp_secret": CREDENTIAL_STORE.get(email, "secret") is not None,
+    }
+
+
+def find_login_account(account_name: str) -> Optional[AccountConfig]:
+    if account_name.startswith("email:"):
+        email = AccountCredentialStore.email_key(account_name[6:])
+        with MAIL_ACCOUNTS_LOCK:
+            mail = next((item for item in ACCOUNTS if AccountCredentialStore.email_key(item["email"]) == email), None)
+        if mail:
+            return mail
+        with CODEX_ACCOUNTS_LOCK:
+            if any(AccountCredentialStore.email_key(item.get("email")) == email for item in CODEX_ACCOUNTS.values()):
+                return {"name": account_name, "email": email}
+        return None
+    return find_mail_account(account_name)
+
+
+def sanitize_login_account(cfg: AccountConfig) -> Dict[str, Any]:
+    if not cfg["name"].startswith("email:"):
+        return sanitize_mail_account(cfg)
+    return {"name": cfg["name"], "email": cfg["email"], **login_credentials(cfg["email"])}
 
 
 def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1656,6 +1687,7 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     if not error and status_reason in {"subscription_http_401", "subscription_http_403", "subscription_refresh_failed"}:
         status_reason = codex_usage_status_reason(usage)
     return {
+        **login_credentials(str(record.get("email") or "")),
         "id": record.get("id"),
         "label": record.get("label"),
         "email": record.get("email"),
@@ -1750,6 +1782,11 @@ def refresh_all_codex_accounts_once() -> None:
             updated["updated_at"] = now_iso()
 
         with CODEX_ACCOUNTS_LOCK:
+            if account_id not in CODEX_ACCOUNTS:
+                delete_codex_record_auth_files(updated)
+                continue
+            if CODEX_ACCOUNTS[account_id] is not record:
+                continue
             CODEX_ACCOUNTS[account_id] = updated
         changed = True
 
@@ -1945,6 +1982,7 @@ def next_outlook_account_config() -> AccountConfig:
 ACCOUNTS = load_accounts()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
 TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
+CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"))
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
@@ -2876,11 +2914,11 @@ def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
 
 
 def gpt_password_for_account(cfg: AccountConfig) -> Optional[str]:
-    return GPT_PASSWORD_STORE.get(cfg["name"], cfg["email"])
+    return CREDENTIAL_STORE.get(cfg["email"], "password")
 
 
 def totp_secret_for_account(cfg: AccountConfig) -> Optional[str]:
-    return TOTP_SECRET_STORE.get(cfg["name"], cfg["email"])
+    return CREDENTIAL_STORE.get(cfg["email"], "secret")
 
 
 @app.on_event("startup")
@@ -2889,12 +2927,13 @@ def start_watchers():
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
     print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
-    imported_passwords = GPT_PASSWORD_STORE.import_legacy_environment(ACCOUNTS, os.environ)
-    if imported_passwords:
-        print(f"已将 {imported_passwords} 个 .env GPT 密码迁移到 {GPT_PASSWORDS_FILE}")
     save_mail_accounts()
     load_histories()
     load_codex_accounts()
+    CREDENTIAL_STORE.migrate(
+        list(ACCOUNTS) + [{"name": f"codex:{item['id']}", "email": item.get("email") or ""} for item in CODEX_ACCOUNTS.values()],
+        GPT_PASSWORD_STORE, TOTP_SECRET_STORE, os.environ,
+    )
     import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
     threading.Thread(target=codex_refresh_loop, daemon=True).start()
     for cfg in ACCOUNTS:
@@ -2920,9 +2959,8 @@ def get_codes():
     with STATE_LOCK:
         data = []
         for name, cfg in accounts.items():
-            if name not in STATE:
-                continue
-            item = dict(STATE[name])
+            item = dict(STATE.get(name, {}))
+            item.update(name=name, email=cfg["email"], enabled=cfg.get("enabled", True))
             item["has_gpt_password"] = gpt_password_for_account(cfg) is not None
             item["has_totp_secret"] = totp_secret_for_account(cfg) is not None
             data.append(item)
@@ -2983,12 +3021,13 @@ async def receive_mail_relay(request: FastAPIRequest):
     )
 
 
+@app.post("/api/accounts/{account_name}/gpt-password")
 @app.post("/api/mail/accounts/{account_name}/gpt-password")
 @app.post("/api/gmail/accounts/{account_name}/gpt-password")
 def get_gpt_password(account_name: str):
-    cfg = find_mail_account(account_name)
+    cfg = find_login_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
     password = gpt_password_for_account(cfg)
     if password is None:
         return JSONResponse(content={"detail": "该账号未配置 GPT 密码"}, status_code=404)
@@ -2998,11 +3037,12 @@ def get_gpt_password(account_name: str):
     )
 
 
+@app.put("/api/admin/accounts/{account_name}/gpt-password")
 @app.put("/api/admin/mail/accounts/{account_name}/gpt-password")
 async def set_gpt_password(account_name: str, request: FastAPIRequest):
-    cfg = find_mail_account(account_name)
+    cfg = find_login_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
 
     body = await request.body()
     if len(body) > 8192:
@@ -3012,34 +3052,36 @@ async def set_gpt_password(account_name: str, request: FastAPIRequest):
         password = payload.get("password") if isinstance(payload, dict) else None
         if not isinstance(password, str):
             raise AccountPasswordError("请求缺少 GPT 密码")
-        GPT_PASSWORD_STORE.set(account_name, cfg["email"], password)
+        CREDENTIAL_STORE.set(cfg["email"], "password", password)
     except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
         return JSONResponse(content={"detail": str(error)}, status_code=400)
 
     return JSONResponse(
-        content={"ok": True, "item": sanitize_mail_account(cfg)},
+        content={"ok": True, "item": sanitize_login_account(cfg)},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
 
+@app.delete("/api/admin/accounts/{account_name}/gpt-password")
 @app.delete("/api/admin/mail/accounts/{account_name}/gpt-password")
 def delete_gpt_password(account_name: str):
-    cfg = find_mail_account(account_name)
+    cfg = find_login_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
-    GPT_PASSWORD_STORE.delete(account_name)
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+    CREDENTIAL_STORE.delete(cfg["email"], "password")
     return JSONResponse(
-        content={"ok": True, "item": sanitize_mail_account(cfg)},
+        content={"ok": True, "item": sanitize_login_account(cfg)},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
 
+@app.post("/api/accounts/{account_name}/totp-secret")
 @app.post("/api/mail/accounts/{account_name}/totp-secret")
 @app.post("/api/gmail/accounts/{account_name}/totp-secret")
 def get_totp_secret(account_name: str):
-    cfg = find_mail_account(account_name)
+    cfg = find_login_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
     secret = totp_secret_for_account(cfg)
     if secret is None:
         return JSONResponse(content={"detail": "该账号未配置身份验证器(2FA)"}, status_code=404)
@@ -3048,11 +3090,12 @@ def get_totp_secret(account_name: str):
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
+@app.put("/api/admin/accounts/{account_name}/totp-secret")
 @app.put("/api/admin/mail/accounts/{account_name}/totp-secret")
 async def set_totp_secret(account_name: str, request: FastAPIRequest):
-    cfg = find_mail_account(account_name)
+    cfg = find_login_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
     body = await request.body()
     if len(body) > 8192:
         return JSONResponse(content={"detail": "2FA 密钥内容过长"}, status_code=413)
@@ -3061,18 +3104,19 @@ async def set_totp_secret(account_name: str, request: FastAPIRequest):
         secret = normalize_totp_secret(
             payload.get("secret") if isinstance(payload, dict) else None
         )
-        TOTP_SECRET_STORE.set(account_name, cfg["email"], secret)
+        CREDENTIAL_STORE.set(cfg["email"], "secret", secret)
     except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
         return JSONResponse(content={"detail": str(error)}, status_code=400)
-    return JSONResponse(content={"ok": True, "item": sanitize_mail_account(cfg)})
+    return JSONResponse(content={"ok": True, "item": sanitize_login_account(cfg)})
 
+@app.delete("/api/admin/accounts/{account_name}/totp-secret")
 @app.delete("/api/admin/mail/accounts/{account_name}/totp-secret")
 def delete_totp_secret(account_name: str):
-    cfg = find_mail_account(account_name)
+    cfg = find_login_account(account_name)
     if not cfg:
-        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
-    TOTP_SECRET_STORE.delete(account_name)
-    return JSONResponse(content={"ok": True, "item": sanitize_mail_account(cfg)})
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+    CREDENTIAL_STORE.delete(cfg["email"], "secret")
+    return JSONResponse(content={"ok": True, "item": sanitize_login_account(cfg)})
 
 @app.get("/api/admin/mail/accounts")
 @app.get("/api/admin/gmail/accounts")
@@ -3334,15 +3378,14 @@ def delete_mail_account(account_name: str):
         STATE.pop(account_name, None)
     with HISTORY_LOCK:
         CODE_HISTORY.pop(account_name, None)
-    GPT_PASSWORD_STORE.delete(account_name)
-    TOTP_SECRET_STORE.delete(account_name)
+    credentials_deleted = delete_unlinked_credentials(cfg["email"])
     return JSONResponse(
         content={
             "ok": True,
             "account": account_name,
             "data_preserved": True,
-            "gpt_password_deleted": True,
-            "totp_secret_deleted": True,
+            "gpt_password_deleted": credentials_deleted,
+            "totp_secret_deleted": credentials_deleted,
         }
     )
 
@@ -3601,6 +3644,58 @@ def codex_callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLR
     return HTMLResponse(codex_callback_html(ok, message), status_code=status_code)
 
 
+def delete_unlinked_credentials(email: str) -> bool:
+    if find_login_account("email:" + AccountCredentialStore.email_key(email)):
+        return False
+    CREDENTIAL_STORE.delete(email)
+    return True
+
+
+def account_groups() -> List[Dict[str, Any]]:
+    # Integrations retain their own OAuth lifecycle; login information belongs to the email.
+    with MAIL_ACCOUNTS_LOCK:
+        mail_accounts = list(ACCOUNTS)
+    with CODEX_ACCOUNTS_LOCK:
+        codex_accounts = [dict(item) for item in CODEX_ACCOUNTS.values()]
+    groups = {}
+    for kind, records in (("codex", codex_accounts), ("mail", mail_accounts)):
+        for record in records:
+            email = AccountCredentialStore.email_key(record.get("email"))
+            key = "email:" + email if "@" in email else f"{kind}:{record.get('id') or record.get('name')}"
+            group = groups.setdefault(key, {"key": key, "email": email, "codex": [], "mail": [], **login_credentials(email)})
+            if kind == "codex":
+                item = sanitize_codex_account(record)
+            else:
+                with STATE_LOCK:
+                    item = dict(STATE.get(record["name"], {}))
+                item.update(sanitize_mail_account(record))
+            group[kind].append(item)
+    return list(groups.values())
+
+
+@app.get("/api/accounts")
+def get_accounts():
+    return JSONResponse(content={"items": account_groups()}, headers={"Cache-Control": "no-store, private"})
+
+
+@app.delete("/api/admin/accounts/{account_name}")
+def delete_chatgpt_account(account_name: str):
+    groups = account_groups()
+    group = next((item for item in groups if item["key"] == account_name), None)
+    if group is None:
+        return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    for item in group["mail"]:
+        response = delete_mail_account(item["name"])
+        if response.status_code != 200:
+            return response
+    for item in group["codex"]:
+        response = delete_codex_account(item["id"])
+        if response.status_code != 200:
+            return response
+    CREDENTIAL_STORE.delete(group["email"])
+    return JSONResponse(content={"ok": True})
+
+
 @app.get("/api/codex/accounts")
 def get_codex_accounts():
     with CODEX_ACCOUNTS_LOCK:
@@ -3670,6 +3765,11 @@ def refresh_codex_account(account_id: str):
         updated["updated_at"] = now_iso()
 
     with CODEX_ACCOUNTS_LOCK:
+        if account_id not in CODEX_ACCOUNTS:
+            delete_codex_record_auth_files(updated)
+            return JSONResponse(content={"detail": "账号已删除"}, status_code=404)
+        if CODEX_ACCOUNTS[account_id] is not record:
+            return JSONResponse(content={"detail": "账号信息已更新，请重新加载"}, status_code=409)
         CODEX_ACCOUNTS[account_id] = updated
     save_codex_accounts()
     return JSONResponse(content={"item": sanitize_codex_account(updated), "updated_at": now_iso()})
@@ -3684,6 +3784,7 @@ def delete_codex_account(account_id: str):
             content={"detail": f"未找到 Codex 账号：{account_id}"},
             status_code=404,
         )
+    delete_unlinked_credentials(str(existed.get("email") or ""))
     delete_codex_record_auth_files(existed)
     save_codex_accounts()
     return JSONResponse(content={"ok": True, "account": account_id})
