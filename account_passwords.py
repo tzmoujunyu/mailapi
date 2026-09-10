@@ -41,6 +41,7 @@ def generate_totp_code(secret: str, timestamp: float) -> Dict[str, Any]:
     totp = pyotp.TOTP(normalize_totp_secret(secret))
     return {
         "code": totp.at(timestamp),
+        "server_time": timestamp,
         "expires_at": (int(timestamp) // totp.interval + 1) * totp.interval,
     }
 

@@ -31,6 +31,7 @@ function page(file) {
     createElement() { const node = element(); Object.defineProperty(node, 'textContent', { set(text) { this.innerHTML = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } }); return node; },
   };
   const context = vm.createContext({ document, console, Date, Map, Set, Promise, AbortSignal,
+    performance: { now: () => Date.now() },
     setInterval(callback) { timers.set(++counter, callback); return counter; }, clearInterval(id) { timers.delete(id); },
     setTimeout(callback) { return ++counter; },
     navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true },
@@ -94,6 +95,8 @@ test('2FA countdown tracks copied code expiry across refreshes and prompts recop
   const app = page('static/index.html'); await flush();
   let now = 65000;
   app.context.Date = class extends Date { static now() { return now; } };
+  app.context.performance.now = () => now;
+  vm.runInContext('serverClockOffset = 0', app.context);
   const name = 'email:only@example.com';
   const validity = { dataset: { totpValidity: name } };
   app.nodes.get('rows').querySelectorAll = () => [validity];
@@ -122,6 +125,21 @@ test('refresh failure preserves current account rows and displays an error', asy
   await vm.runInContext('refreshAccounts()', app.context);
   assert.equal(app.nodes.get('rows').innerHTML, html);
   assert.match(app.nodes.get('load-error').textContent, /刷新失败/);
+});
+
+test('2FA clock ignores slow samples and wall-clock jumps and catches up after paused ticks', async () => {
+  const app = page('static/index.html'); await flush();
+  let elapsed = 1000;
+  app.context.performance.now = () => elapsed;
+  vm.runInContext('syncServerClock({ server_time: 65.05 }, 900)', app.context);
+  assert.equal(vm.runInContext("totpValidity('test').text", app.context), '当前码剩余 25 秒');
+  elapsed = 2000;
+  vm.runInContext('syncServerClock({ server_time: 60 }, 0)', app.context);
+  app.context.Date = class extends Date { static now() { return 9999999999999; } };
+  assert.equal(vm.runInContext("totpValidity('test').text", app.context), '当前码剩余 24 秒');
+  elapsed = 26000;
+  vm.runInContext("copiedTotpExpiry.set('test', 90)", app.context);
+  assert.equal(vm.runInContext("totpValidity('test').text", app.context), '已复制码已过期，请重新复制');
 });
 
 test('console uses unified rows and routes credential changes and integration deletion', async () => {

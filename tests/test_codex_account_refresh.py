@@ -116,7 +116,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             store.set('only@example.com', 'secret', 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ')
             with patch.object(self.module.time, 'time', return_value=1111111109):
                 response = client.post(path)
-            self.assertEqual(response.json(), {'code': '081804', 'expires_at': 1111111110})
+            self.assertEqual(response.json(), {'code': '081804', 'expires_at': 1111111110, 'server_time': 1111111109})
             self.assertIn('no-store', response.headers['cache-control'])
             store.set('only@example.com', 'secret', 'invalid-legacy-secret')
             self.assertEqual(client.post(path).status_code, 400)

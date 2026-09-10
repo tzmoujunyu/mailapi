@@ -3728,7 +3728,7 @@ def account_groups() -> List[Dict[str, Any]]:
 
 @app.get("/api/accounts")
 def get_accounts():
-    return JSONResponse(content={"items": account_groups()}, headers={"Cache-Control": "no-store, private"})
+    return JSONResponse(content={"items": account_groups(), "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
 
 
 @app.delete("/api/admin/accounts/{account_name}")

@@ -86,14 +86,18 @@
       let historyError = '';
       let historyRequest = 0;
       const copiedTotpExpiry = new Map();
-      let serverClockOffset = 0;
+      let serverClockOffset = Date.now() - performance.now();
+      let bestClockRoundTrip = Infinity;
 
-      function syncServerClock(response) {
-        const timestamp = Date.parse(response.headers?.get('Date') || '');
-        if (Number.isFinite(timestamp)) serverClockOffset = timestamp - Date.now();
+      function syncServerClock(data, startedAt) {
+        const receivedAt = performance.now();
+        const roundTrip = receivedAt - startedAt;
+        if (!Number.isFinite(data.server_time) || roundTrip > bestClockRoundTrip) return;
+        bestClockRoundTrip = roundTrip;
+        serverClockOffset = data.server_time * 1000 + roundTrip / 2 - receivedAt;
       }
       function totpValidity(name) {
-        const now = (Date.now() + serverClockOffset) / 1000;
+        const now = (performance.now() + serverClockOffset) / 1000;
         const copiedExpiry = copiedTotpExpiry.get(name);
         const expiresAt = copiedExpiry ?? (Math.floor(now / 30) + 1) * 30;
         const remaining = Math.max(0, Math.ceil(expiresAt - now));
@@ -102,7 +106,7 @@
       function updateTotpCountdown() {
         for (const node of rowsNode.querySelectorAll('[data-totp-validity]')) {
           const validity = totpValidity(node.dataset.totpValidity);
-          node.textContent = validity.text;
+          if (node.textContent !== validity.text) node.textContent = validity.text;
           node.className = validity.warning ? 'status-warn' : 'muted';
         }
       }
@@ -222,8 +226,8 @@
         if (!copied) throw new Error('浏览器拒绝访问剪贴板');
       }
       async function copySecret(button) {
-        button.disabled = true; const original = button.textContent;
-        try { const path = button.dataset.copyType === 'totp' ? 'totp-code' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'code' : 'password'; const response = await fetch(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); syncServerClock(response); await writeClipboard(data[field]); if (button.dataset.copyType === 'totp' && Number.isFinite(data.expires_at)) { copiedTotpExpiry.set(button.dataset.name, data.expires_at); updateTotpCountdown(); } button.textContent = button.dataset.copyType === 'totp' ? '验证码已复制' : '已复制'; } catch (error) { button.textContent = '复制失败'; button.title = error.message; }
+        button.disabled = true; const original = button.textContent; const startedAt = performance.now();
+        try { const path = button.dataset.copyType === 'totp' ? 'totp-code' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'code' : 'password'; const response = await fetch(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); syncServerClock(data, startedAt); await writeClipboard(data[field]); if (button.dataset.copyType === 'totp' && Number.isFinite(data.expires_at)) { copiedTotpExpiry.set(button.dataset.name, data.expires_at); updateTotpCountdown(); } button.textContent = button.dataset.copyType === 'totp' ? '验证码已复制' : '已复制'; } catch (error) { button.textContent = '复制失败'; button.title = error.message; }
         setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500);
       }
       function render() {
@@ -234,10 +238,11 @@
         if (refreshing || rowsNode.querySelector('[data-copy-type]:disabled')) return;
         refreshing = true;
         try {
+          const startedAt = performance.now();
           const response = await fetch('/api/accounts', { cache: 'no-store' });
           if (!response.ok) throw new Error('加载失败');
-          syncServerClock(response);
           const data = await response.json();
+          syncServerClock(data, startedAt);
           accountRows = (data.items || []).map(item => ({ key: item.key, credentials: item, codex: item.codex[0] || null, codexItems: item.codex, mail: item.mail[0] || null, mails: item.mail }));
           if (expandedKey && !accountRows.some(row => row.key === expandedKey)) {
             expandedKey = ''; historyName = ''; historyItems = []; historyRequest++;
@@ -252,7 +257,13 @@
       rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
       refreshAccounts();
       setInterval(refreshAccounts, 3000);
-      setInterval(updateTotpCountdown, 1000);
+      setInterval(updateTotpCountdown, 250);
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) return;
+        bestClockRoundTrip = Infinity;
+        updateTotpCountdown();
+        refreshAccounts();
+      });
     </script>
   </body>
 </html>

@@ -32,6 +32,7 @@ class TotpCredentialTests(unittest.TestCase):
             with self.subTest(timestamp=timestamp):
                 result = generate_totp_code(secret, timestamp)
                 self.assertEqual(result["code"], expected)
+                self.assertEqual(result["server_time"], timestamp)
                 self.assertEqual(result["expires_at"], (timestamp // 30 + 1) * 30)
 
     def test_period_boundary_changes_the_current_code(self):
