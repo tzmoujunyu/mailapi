@@ -6,348 +6,120 @@
     <title>ChatGPT账号</title>
     <style>
       * { box-sizing: border-box; }
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: #f5f7fa;
-        color: #1f2937;
-        margin: 0;
-        padding: 12px;
-      }
-      .container {
-        width: 100%;
-        max-width: none;
-        min-height: calc(100vh - 24px);
-        margin: 0 auto;
-        background: #fff;
-        border-radius: 8px;
-        padding: 16px;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
-      }
+      body { margin: 0; padding: 12px; background: #f5f7fa; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      .container { width: 100%; min-height: calc(100vh - 24px); padding: 16px; background: #fff; border-radius: 8px; box-shadow: 0 8px 20px rgba(0, 0, 0, .08); }
+      .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
       h1 { margin: 0; font-size: 22px; }
-      .page-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        margin-bottom: 16px;
-      }
-      h2 { margin: 28px 0 12px; font-size: 18px; }
-      .table-wrap {
-        width: 100%;
-        overflow-x: auto;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: fixed;
-      }
-      .email-table { min-width: 1060px; }
-      .codex-table { min-width: 900px; }
-      th, td {
-        border-bottom: 1px solid #e5e7eb;
-        padding: 10px;
-        text-align: left;
-        vertical-align: top;
-        overflow-wrap: anywhere;
-      }
-      tbody tr:last-child td { border-bottom: 0; }
+      .table-wrap { width: 100%; overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
+      table { width: 100%; min-width: 980px; border-collapse: collapse; table-layout: fixed; }
+      th, td { padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
       th { background: #f9fafb; }
-      .email-table th:nth-child(1) { width: 16%; }
-      .email-table th:nth-child(2) { width: 9%; }
-      .email-table th:nth-child(3) { width: 9%; }
-      .email-table th:nth-child(4) { width: 31%; }
-      .email-table th:nth-child(5) { width: 14%; }
-      .email-table th:nth-child(6) { width: 13%; }
-      .email-table th:nth-child(7) { width: 8%; }
-      .codex-table th:nth-child(1) { width: 28%; }
-      .codex-table th:nth-child(2) { width: 18%; }
-      .codex-table th:nth-child(3) { width: 18%; }
-      .codex-table th:nth-child(4) { width: 18%; }
-      .codex-table th:nth-child(5) { width: 18%; }
-      .code { font-weight: 700; color: #0ea5e9; }
+      .account-table th:nth-child(1) { width: 28%; }
+      .account-table th:nth-child(2) { width: 22%; }
+      .account-table th:nth-child(3) { width: 25%; }
+      .account-table th:nth-child(4) { width: 25%; }
+      tbody tr:last-child td { border-bottom: 0; }
       .muted { color: #6b7280; }
-      .status { font-weight: 600; }
-      .status-good { color: #15803d; font-weight: 700; }
-      .status-warn { color: #b45309; font-weight: 700; }
-      .status-bad { color: #b91c1c; font-weight: 700; }
-      .status-neutral { color: #6b7280; font-weight: 700; }
-      .small-btn {
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        background: #fff;
-        padding: 6px 10px;
-        cursor: pointer;
-      }
+      .status { font-weight: 700; }
+      .status-good { color: #15803d; }
+      .status-warn { color: #b45309; }
+      .status-bad { color: #b91c1c; }
+      .status-neutral { color: #6b7280; }
+      .small-btn { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #1f2937; cursor: pointer; }
       .small-btn:hover { background: #f8fafc; }
-      .quota-cell {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-      .quota-head {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-        font-size: 12px;
-      }
-      .quota-title { color: #6b7280; }
-      .quota-value { font-weight: 800; }
-      .quota-track {
-        width: 100%;
-        height: 5px;
-        border-radius: 999px;
-        overflow: hidden;
-      }
-      .quota-fill {
-        height: 100%;
-        border-radius: inherit;
-      }
-      .quota-week .quota-track { background: #bfdbfe; }
-      .quota-week .quota-fill { background: #3b82f6; }
-      .quota-empty .quota-fill { background: #ef4444; }
-      .account-main {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-width: 0;
-      }
-      .account-email {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .plan-pill {
-        display: inline-block;
-        flex: 0 0 auto;
-        border-radius: 6px;
-        padding: 2px 7px;
-        font-size: 11px;
-        font-weight: 700;
-        line-height: 1.4;
-      }
+      .small-btn:disabled { cursor: wait; opacity: .65; }
+      .account-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .account-email { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .plan-pill, .status-tag { display: inline-block; flex: 0 0 auto; padding: 2px 7px; border-radius: 6px; font-size: 11px; font-weight: 700; line-height: 1.4; }
       .plan-pro { background: #fee2e2; color: #991b1b; }
       .plan-plus { background: #dbeafe; color: #1d4ed8; }
       .plan-go { background: #dcfce7; color: #166534; }
-      .plan-free { background: #f3f4f6; color: #374151; }
+      .plan-free, .tag-email { background: #f3f4f6; color: #374151; }
       .plan-other { background: #fef3c7; color: #92400e; }
-      .error-text { color: #b91c1c; }
-      .history-panel {
-        margin-top: 12px;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #f9fafb;
-        padding: 10px;
-      }
-      .history-item {
-        margin-bottom: 8px;
-        border-bottom: 1px dashed #e5e7eb;
-        padding-bottom: 6px;
-      }
-      .history-item:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
-      .history-code {
-        display: inline-block;
-        margin-left: 4px;
-        padding: 2px 6px;
-        border-radius: 6px;
-        background: #fef08a;
-        color: #b45309;
-        font-weight: 700;
-        letter-spacing: 2px;
-      }
-      .history-time {
-        margin-left: 4px;
-        padding: 2px 6px;
-        border-radius: 6px;
-        background: #dcfce7;
-        color: #166534;
-        font-weight: 700;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-      pre {
-        margin: 0;
-        background: #f3f4f6;
-        border-radius: 8px;
-        padding: 8px;
-        overflow: auto;
-        max-height: 64px;
-        white-space: pre-wrap;
-      }
-      @media (max-width: 680px) {
-        table, th, td { font-size: 14px; }
-        .page-head { align-items: flex-start; }
-        body { padding: 8px; }
-        .container { min-height: calc(100vh - 16px); padding: 10px; }
-      }
+      .tag-codex { background: #dbeafe; color: #1d4ed8; }
+      .quota-cell { display: flex; flex-direction: column; gap: 6px; }
+      .quota-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+      .quota-title { color: #6b7280; }
+      .quota-value { font-weight: 800; }
+      .quota-track { width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: #bfdbfe; }
+      .quota-fill { height: 100%; border-radius: inherit; background: #3b82f6; }
+      .quota-empty .quota-track { background: #fecaca; }
+      .quota-empty .quota-fill { background: #ef4444; }
+      .status-block { display: grid; gap: 6px; }
+      .status-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+      .detail-row td { padding: 0; background: #f8fafc; }
+      .detail-panel { display: grid; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #e5e7eb; }
+      .login-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .detail-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+      .detail-label { min-width: 126px; font-weight: 700; }
+      .email-detail { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: center; padding-top: 10px; border-top: 1px dashed #d1d5db; }
+      .history-inline { grid-column: 1 / -1; margin-top: 2px; padding: 10px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+      .history-item { margin-bottom: 8px; padding-bottom: 7px; border-bottom: 1px dashed #e5e7eb; }
+      .history-item:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+      .history-code { display: inline-block; padding: 2px 6px; border-radius: 6px; background: #fef08a; color: #b45309; font-weight: 700; letter-spacing: 2px; }
+      .history-time { color: #166534; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .code { color: #0ea5e9; font-weight: 700; }
+      @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr 1fr; } }
     </style>
   </head>
   <body>
     <div class="container">
-      <div class="page-head">
-        <h1>ChatGPT账号</h1>
-        <a class="small-btn" href="/admin">账号控制台</a>
-      </div>
+      <div class="page-head"><h1>ChatGPT账号</h1><a class="small-btn" href="/admin">账号控制台</a></div>
       <div class="table-wrap">
-        <table class="email-table">
-          <thead>
-            <tr>
-              <th>账号</th>
-              <th>周额度</th>
-              <th>登陆方式</th>
-              <th>状态</th>
-            </tr>
-          </thead>
-          <tbody id="rows">
-            <tr><td colspan="4" class="muted">加载中...</td></tr>
-          </tbody>
+        <table class="account-table">
+          <thead><tr><th>账号</th><th>周额度</th><th>登陆方式</th><th>状态</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
         </table>
       </div>
-
-      <div id="history-panel" class="history-panel" hidden></div>
-
     </div>
-
     <script>
-      const historyPanel = document.getElementById('history-panel');
-      const codeRows = document.getElementById('rows');
+      const rowsNode = document.getElementById('rows');
       const HISTORY_REFRESH_MS = 3000;
+      let expandedKey = '';
+      let historyName = '';
+      let historyItems = [];
+      let historyLoading = false;
       let historyTimer = null;
-      let currentHistoryName = '';
-      let currentHistoryEmail = '';
 
-      function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text || '';
-        return div.innerHTML;
-      }
+      function escapeHtml(value) { const node = document.createElement('div'); node.textContent = value === null || value === undefined ? '' : String(value); return node.innerHTML; }
+      function escapeAttr(value) { return escapeHtml(value).replace(/"/g, '&quot;'); }
+      function emailKey(value) { return String(value || '').trim().toLowerCase(); }
+      function isRealEmail(value) { return Boolean(emailKey(value) && !['未配置', '等待授权'].includes(String(value).trim())); }
+      function formatDateTime(value) { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false }); }
+      function formatTsSeconds(value) { return value ? formatDateTime(Number(value) * 1000) : '-'; }
+      function resetRemain(value) { if (!value) return '未知'; const minutes = Math.ceil(Math.max(0, Number(value) - Date.now() / 1000) / 60); const days = Math.floor(minutes / 1440); const hours = Math.floor((minutes % 1440) / 60); return days ? `${days}d${hours}h` : (hours ? `${hours}h${minutes % 60}min` : `${minutes}min`); }
 
-      function escapeAttr(text) {
-        return String(text || '')
-          .replace(/&/g, '&amp;')
-          .replace(/"/g, '&quot;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-      }
-
-      function formatDateTime(value) {
-        if (!value) {
-          return '-';
-        }
-
-        const d = new Date(value);
-        if (Number.isNaN(d.getTime())) {
-          return escapeHtml(value);
-        }
-
-        const pad = (n) => String(n).padStart(2, '0');
-        const y = d.getFullYear();
-        const m = pad(d.getMonth() + 1);
-        const da = pad(d.getDate());
-        const h = pad(d.getHours());
-        const mi = pad(d.getMinutes());
-        const s = pad(d.getSeconds());
-        return `${y}-${m}-${da} ${h}:${mi}:${s}`;
-      }
-
-      function formatTsSeconds(value) {
-        if (!value) {
-          return '-';
-        }
-        return formatDateTime(Number(value) * 1000);
-      }
-
-      function remainPercentNumber(usedPercent) {
-        if (usedPercent === null || usedPercent === undefined) {
-          return null;
-        }
-        const used = Number(usedPercent);
-        if (Number.isNaN(used)) {
-          return null;
-        }
-        return Math.max(0, Math.min(100, Math.round(100 - used)));
-      }
-
-      function formatResetRemain(tsSeconds) {
-        if (!tsSeconds) {
-          return '未知';
-        }
-        const diff = Math.max(0, Number(tsSeconds) - Math.floor(Date.now() / 1000));
-        const totalMinutes = Math.ceil(diff / 60);
-        const days = Math.floor(totalMinutes / 1440);
-        const hours = Math.floor((totalMinutes % 1440) / 60);
-        const minutes = totalMinutes % 60;
-        if (days > 0) {
-          return `${days}d${hours}h${String(minutes).padStart(2, '0')}min`;
-        }
-        if (hours > 0) {
-          return `${hours}h${String(minutes).padStart(2, '0')}min`;
-        }
-        return `${minutes}min`;
-      }
-
-      function planValue(item) {
-        const sub = item.subscription || {};
-        if (item.reauth_required && !sub.plan_type && !sub.account_plan_type) {
-          return 'unknown';
-        }
-        const plan = item.chatgpt_plan_type || sub.account_plan_type || sub.plan_type || '-';
-        return String(plan || '-').toLowerCase();
-      }
-
-      function planBadge(item) {
+      function planValue(item) { const subscription = item.subscription || {}; if (item.reauth_required && !subscription.plan_type && !subscription.account_plan_type) return 'unknown'; return String(item.chatgpt_plan_type || subscription.account_plan_type || subscription.plan_type || '-').toLowerCase(); }
+      function planBadge(item, missing = false) {
         const plan = planValue(item);
-        const label = plan === 'unknown' ? '待确认' : (plan && plan !== '-' ? plan.toUpperCase() : 'FREE');
+        if (missing) return '<span class="plan-pill plan-free">无Codex</span>';
+        const label = plan === 'unknown' ? '待确认' : (plan === '-' ? 'FREE' : plan.toUpperCase());
         let cls = 'plan-other';
-        if (plan.includes('pro')) cls = 'plan-pro';
-        else if (plan.includes('plus')) cls = 'plan-plus';
-        else if (plan.includes('go')) cls = 'plan-go';
-        else if (plan.includes('free') || plan === '-' || plan === 'unknown') cls = 'plan-free';
+        if (plan.includes('pro')) cls = 'plan-pro'; else if (plan.includes('plus')) cls = 'plan-plus'; else if (plan.includes('go')) cls = 'plan-go'; else if (plan.includes('free') || plan === '-' || plan === 'unknown') cls = 'plan-free';
         return `<span class="plan-pill ${cls}">${escapeHtml(label)}</span>`;
       }
-
-      function accountTitle(item) {
-        const label = String(item.label || '');
-        if (item.email) return item.email;
-        if (label.includes('@')) return label;
-        if (item.subject) return item.subject;
-        return 'Codex账号';
-      }
-
-      function accountCell(item) {
-        const sub = item.subscription || {};
+      function accountCell(row) {
+        const item = row.codex || row.mail || {};
+        const email = item.email || item.label || 'Codex账号';
+        const subscription = row.codex && row.codex.subscription || {};
         const plan = planValue(item);
-        let detail = '订阅信息未刷新';
-        if (item.reauth_required) {
-          detail = '重新授权后更新订阅';
-        } else if (item.subscription_error) {
-          detail = '订阅信息暂不可用';
-        } else if (sub.has_subscription === false || plan === 'free' || plan === '-') {
-          detail = '无订阅';
-        } else if (sub.has_subscription === true) {
-          const expiresAt = sub.expires_at || sub.renews_at;
-          detail = expiresAt ? `订阅到期：${formatTsSeconds(expiresAt)}` : '订阅有效';
-        } else if (!item.subscription_error) {
-          detail = '-';
-        }
-        return `
-          <div class="account-main">
-            <span class="account-email">${escapeHtml(accountTitle(item))}</span>
-            ${planBadge(item)}
-          </div>
-          <div class="muted">${escapeHtml(detail || '-')}</div>
-        `;
+        let detail = '仅邮箱验证';
+        if (row.codex && row.codex.reauth_required) detail = '重新授权后更新订阅';
+        else if (row.codex && row.codex.subscription_error) detail = '订阅信息暂不可用';
+        else if (row.codex && (subscription.has_subscription === false || plan === 'free' || plan === '-')) detail = '无订阅';
+        else if (row.codex && subscription.has_subscription === true) { const expiresAt = subscription.expires_at || subscription.renews_at; detail = expiresAt ? `订阅到期：${formatTsSeconds(expiresAt)}` : '订阅有效'; }
+        else if (row.codex) detail = '-';
+        return `<div class="account-main"><span class="account-email">${escapeHtml(email)}</span>${planBadge(item, !row.codex)}</div><div class="muted">${escapeHtml(detail)}</div>`;
       }
-
+      function quotaCell(usage) {
+        if (!usage || usage.used_percent === null || usage.used_percent === undefined) return '<span class="muted">未提供</span>';
+        const remain = Math.max(0, Math.min(100, Math.round(100 - Number(usage.used_percent))));
+        return `<div class="quota-cell ${remain <= 0 ? 'quota-empty' : ''}"><div class="quota-head"><span class="quota-title">7天</span><span class="quota-value">${remain}%</span></div><div class="quota-track"><div class="quota-fill" style="width:${remain}%"></div></div><div class="muted">${escapeHtml(formatTsSeconds(usage.resets_at))}</div><div class="muted">${escapeHtml(resetRemain(usage.resets_at))}后刷新</div></div>`;
+      }
       function statusReasonText(reason) {
         const normalized = String(reason || '').trim().toLowerCase();
-        if (!normalized || normalized === 'usage_ok') {
-          return '';
-        }
-        if (normalized.startsWith('refresh_token_invalid')) {
-          return 'Refresh Token 失效，需要重新登录';
-        }
+        if (!normalized || normalized === 'usage_ok') return '';
+        if (normalized.startsWith('refresh_token_invalid')) return 'Refresh Token 失效，需要重新登录';
         const labels = {
           refresh_token_region_blocked: '代理地区不受支持，已暂停账号刷新',
           usage_refresh_timeout: '用量刷新超时，请检查网络或代理',
@@ -356,9 +128,6 @@
           usage_refresh_failed: '用量刷新失败，请查看后台日志',
           usage_http_401: '用量接口返回 401，账号授权失效',
           usage_http_403: '用量接口返回 403，账号权限不足或被限制',
-          subscription_refresh_failed: '订阅信息刷新失败',
-          subscription_http_401: '订阅接口返回 401，账号授权失效',
-          subscription_http_403: '订阅接口返回 403，可能被网络或 Cloudflare 拦截',
           account_deactivated: '账号已停用',
           workspace_deactivated: '工作区已停用',
           deactivated_workspace: '工作区已停用',
@@ -367,215 +136,72 @@
           usage_unknown: '用量未知',
         };
         const httpMatch = normalized.match(/^usage_http_(\d{3})$/);
-        if (httpMatch) {
-          return `用量接口返回 HTTP ${httpMatch[1]}`;
-        }
-        const subscriptionHttpMatch = normalized.match(/^subscription_http_(\d{3})$/);
-        if (subscriptionHttpMatch) {
-          return `订阅接口返回 HTTP ${subscriptionHttpMatch[1]}`;
-        }
-        return labels[normalized] || reason;
+        return httpMatch ? `用量接口返回 HTTP ${httpMatch[1]}` : (labels[normalized] || reason);
       }
-
       function codexStatus(item) {
-        const reasonText = statusReasonText(item.status_reason);
-        if (item.reauth_required) {
-          return { text: '需重新授权', detail: reasonText, cls: 'status-bad' };
-        }
-        if (item.error) {
-          return {
-            text: item.status ? `${item.status}` : '异常',
-            detail: reasonText || item.error,
-            cls: 'status-bad',
-          };
-        }
-        const usage = item.usage || {};
-        const primaryExhausted = Number(usage.used_percent || 0) >= 99.9;
-        if (primaryExhausted) {
-          return { text: '限流', detail: reasonText || '额度已耗尽', cls: 'status-bad' };
-        }
-        if (item.usage_status === 'available') {
-          return { text: '可用', detail: reasonText, cls: 'status-good' };
-        }
-        if (item.usage_status === 'unavailable') {
-          return { text: '不可用', detail: reasonText, cls: 'status-bad' };
-        }
-        if (item.status === '已刷新' || item.status === '已导入') {
-          return { text: '可用', detail: reasonText, cls: 'status-good' };
-        }
-        return { text: item.status || '未知', detail: reasonText, cls: 'status-neutral' };
+        if (!item) return { text: '未关联', cls: 'status-neutral', detail: '' };
+        const reason = statusReasonText(item.status_reason);
+        if (item.reauth_required) return { text: '需重新授权', cls: 'status-bad', detail: reason || '授权已失效' };
+        if (item.error) return { text: item.status || '异常', cls: 'status-bad', detail: reason || item.error };
+        if (item.usage && Number(item.usage.used_percent || 0) >= 99.9) return { text: '限流', cls: 'status-bad', detail: '额度已耗尽' };
+        if (item.usage_status === 'available' || item.status === '已刷新' || item.status === '已导入') return { text: '可用', cls: 'status-good', detail: '' };
+        if (item.usage_status === 'unavailable') return { text: '不可用', cls: 'status-bad', detail: reason };
+        return { text: item.status || '未知', cls: 'status-neutral', detail: reason };
       }
-
-      function usageCell(usage) {
-        if (!usage) {
-          return '-';
-        }
-        const used = usage.used_percent;
-        const resetsAt = usage.resets_at;
-        const remain = remainPercentNumber(used);
-        if (remain === null) {
-          return '<span class="muted">未提供</span>';
-        }
-        return `
-          <div class="quota-cell quota-week ${remain <= 0 ? 'quota-empty' : ''}">
-            <div class="quota-head">
-              <span class="quota-title">7天</span>
-              <span class="quota-value">${remain}%</span>
-            </div>
-            <div class="quota-track"><div class="quota-fill" style="width:${remain}%"></div></div>
-            <div class="muted">${escapeHtml(formatTsSeconds(resetsAt))}</div>
-            <div class="muted">${escapeHtml(formatResetRemain(resetsAt))}后刷新</div>
-          </div>
-        `;
+      function statusLine(status, label) { return `<div class="status-line"><span class="status ${status.cls}">${escapeHtml(status.text)}</span><span class="status-tag ${label === 'Codex' ? 'tag-codex' : 'tag-email'}">${label}</span>${status.detail ? `<span class="muted">${escapeHtml(status.detail)}</span>` : ''}</div>`; }
+      function historyHtml(mail) {
+        if (historyName !== mail.name || historyLoading) return historyLoading && historyName === mail.name ? '<div class="history-inline muted">历史记录加载中...</div>' : '';
+        if (!historyItems.length) return '<div class="history-inline muted">暂无历史验证码记录。</div>';
+        return `<div class="history-inline"><strong>历史验证码</strong>${historyItems.map(item => `<div class="history-item"><div>验证码：<span class="history-code">${escapeHtml(item.code || '')}</span></div><div class="history-time">${escapeHtml(formatDateTime(item.created_at))}</div><div>主题：${escapeHtml(item.subject || '-')}</div></div>`).join('')}</div>`;
       }
-
-      function syncHistoryButtons() {
-        const buttons = codeRows.querySelectorAll('[data-history-name]');
-        for (const button of buttons) {
-          const isActive = !historyPanel.hidden && button.dataset.historyName === currentHistoryName;
-          button.textContent = isActive ? '收起' : '查看历史';
-        }
+      function detailRow(row) {
+        const mail = row.mail;
+        const password = mail && mail.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(mail.name)}">复制</button>` : '<span class="muted">未设置</span>';
+        const totp = mail && mail.has_totp_secret ? `<button class="small-btn" data-copy-type="totp" data-name="${escapeAttr(mail.name)}">复制</button>` : '<span class="muted">未配置</span>';
+        const emailLine = mail ? `<div class="email-detail"><div><strong>最新验证码：</strong><span class="code">${escapeHtml(mail.last_code || '暂无')}</span></div><div><strong>主题：</strong>${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><button class="small-btn" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>` : '<div class="muted">该账号无邮箱验证。</div>';
+        return `<tr class="detail-row"><td colspan="4"><div class="detail-panel"><div class="login-detail"><div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div><div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div></div>${emailLine}</div></td></tr>`;
       }
-
-      async function loadHistory(name, email) {
-        try {
-          const res = await fetch(`/api/history/${encodeURIComponent(name)}`, { cache: 'no-store' });
-          const data = await res.json();
-          const items = data.items || [];
-          let html = `<h3>${escapeHtml(name)} 历史验证码</h3>`;
-          html += `<div class="muted">邮箱：${escapeHtml(email || '-')}</div>`;
-          if (!items.length) {
-            html += '<p class="muted">暂无历史验证码记录。</p>';
-          } else {
-            for (const item of items) {
-              html += '<div class="history-item">';
-              html += `<div><strong>验证码：</strong><span class="history-code">${escapeHtml(item.code || '')}</span></div>`;
-              html += `<div><strong>时间：</strong><span class="history-time">${escapeHtml(formatDateTime(item.created_at || ''))}</span></div>`;
-              html += `<div><strong>主题：</strong>${escapeHtml(item.subject || '')}</div>`;
-              html += '</div>';
-            }
-          }
-          historyPanel.innerHTML = html;
-          historyPanel.hidden = false;
-          syncHistoryButtons();
-        } catch (e) {
-          historyPanel.innerHTML = '<p class="muted">历史记录加载失败。</p>';
-          historyPanel.hidden = false;
-          syncHistoryButtons();
-        }
+      function rowHtml(row) {
+        const codex = codexStatus(row.codex);
+        const emailStatus = row.mail ? { text: row.mail.enabled === false ? '已停用' : (row.mail.status || '监测中'), cls: row.mail.enabled === false ? 'status-warn' : 'status-good', detail: '' } : { text: '无邮箱验证', cls: 'status-neutral', detail: '' };
+        const expanded = expandedKey === row.key;
+        return `<tr><td>${accountCell(row)}</td><td>${quotaCell(row.codex && row.codex.usage)}</td><td><button class="small-btn" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button></td><td><div class="status-block">${statusLine(codex, 'Codex')}${statusLine(emailStatus, '邮箱')}</div></td></tr>${expanded ? detailRow(row) : ''}`;
       }
-
-      function onHistoryClick(name, email) {
-        if (!historyPanel.hidden && currentHistoryName === name) {
-          historyPanel.hidden = true;
-          currentHistoryName = '';
-          currentHistoryEmail = '';
-          if (historyTimer) {
-            clearInterval(historyTimer);
-            historyTimer = null;
-          }
-          syncHistoryButtons();
-          return;
-        }
-        startHistoryAutoRefresh(name, email);
+      function mergeItems(mailItems, codexItems) {
+        const mailByEmail = new Map(mailItems.filter(item => isRealEmail(item.email)).map(item => [emailKey(item.email), item]));
+        const usedMail = new Set();
+        const rows = codexItems.map(item => { const mail = mailByEmail.get(emailKey(item.email)); if (mail) usedMail.add(mail.name); return { key: `codex:${item.id || item.email || item.label}`, codex: item, mail: mail || null }; });
+        mailItems.forEach(mail => { if (!usedMail.has(mail.name)) rows.push({ key: `mail:${mail.name}`, codex: null, mail }); });
+        return rows;
       }
-
-      codeRows.addEventListener('click', (event) => {
-        if (!(event.target instanceof Element)) {
-          return;
-        }
-        const passwordButton = event.target.closest('[data-password-name]');
-        if (passwordButton) {
-          copyGptPassword(passwordButton);
-          return;
-        }
-        const button = event.target.closest('[data-history-name]');
-        if (!button) {
-          return;
-        }
-        onHistoryClick(button.dataset.historyName || '', button.dataset.historyEmail || '');
-      });
-
-      async function writeClipboard(text) {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(text);
-          return;
-        }
+      async function loadHistory(name) {
+        historyName = name; historyLoading = true; historyItems = []; render();
+        try { const response = await fetch(`/api/history/${encodeURIComponent(name)}`, { cache: 'no-store' }); const data = await response.json(); if (historyName === name) historyItems = data.items || []; } catch (error) { if (historyName === name) historyItems = []; }
+        if (historyName === name) { historyLoading = false; render(); }
+      }
+      function toggleHistory(name) {
+        if (historyName === name) { historyName = ''; historyItems = []; if (historyTimer) clearInterval(historyTimer); historyTimer = null; render(); return; }
+        if (historyTimer) clearInterval(historyTimer);
+        loadHistory(name);
+        historyTimer = setInterval(() => { if (historyName === name && !historyLoading) loadHistory(name); }, HISTORY_REFRESH_MS);
+      }
+      async function writeClipboard(value) {
+        if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(value); return; }
         const input = document.createElement('textarea');
-        input.value = text;
-        input.style.position = 'fixed';
-        input.style.opacity = '0';
-        document.body.appendChild(input);
-        input.focus();
-        input.select();
-        const copied = document.execCommand('copy');
-        input.remove();
-        if (!copied) {
-          throw new Error('浏览器拒绝访问剪贴板');
-        }
+        input.value = value; input.style.position = 'fixed'; input.style.opacity = '0';
+        document.body.appendChild(input); input.focus(); input.select();
+        const copied = document.execCommand('copy'); input.remove();
+        if (!copied) throw new Error('浏览器拒绝访问剪贴板');
       }
-
-      async function copyGptPassword(button) {
-        const originalText = button.textContent;
-        button.disabled = true;
-        try {
-          const name = button.dataset.passwordName || '';
-          const res = await fetch(
-            `/api/mail/accounts/${encodeURIComponent(name)}/gpt-password`,
-            { method: 'POST', cache: 'no-store' },
-          );
-          const data = await res.json();
-          if (!res.ok || !data.password) {
-            throw new Error(data.detail || '密码读取失败');
-          }
-          await writeClipboard(data.password);
-          button.textContent = '已复制';
-        } catch (error) {
-          button.textContent = '复制失败';
-        } finally {
-          setTimeout(() => {
-            button.textContent = originalText;
-            button.disabled = false;
-          }, 1500);
-        }
-      }
-
-      function startHistoryAutoRefresh(name, email) {
-        if (!name) {
-          return;
-        }
-
-        currentHistoryName = name;
-        currentHistoryEmail = email || '';
-        if (historyPanel.hidden) {
-          historyPanel.hidden = false;
-        }
-        loadHistory(currentHistoryName, currentHistoryEmail);
-
-        if (historyTimer) {
-          clearInterval(historyTimer);
-        }
-        historyTimer = setInterval(() => {
-          if (historyPanel.hidden) {
-            return;
-          }
-          loadHistory(currentHistoryName, currentHistoryEmail);
-        }, HISTORY_REFRESH_MS);
-        syncHistoryButtons();
-      }
-
-      let expandedAccount = '';
-      function statusBadge(text, kind, label) { return `<span class="status ${kind}">${escapeHtml(text || '-')}</span> <span class="plan-pill plan-free">${label}</span>`; }
-      function mergedRow(item, codex) {
-        const status = codexStatus(codex || {});
-        const detail = expandedAccount === item.name ? `<div class="history-panel" style="margin-top:10px"><div><strong>GPT密码：</strong>${item.has_gpt_password ? `<button class="small-btn" data-password-name="${escapeAttr(item.name)}">复制</button>` : '<span class="muted">未设置</span>'}</div><div style="margin-top:8px"><strong>身份验证器(2FA)：</strong><span class="muted">未配置</span></div>${item.last_code ? `<div style="margin-top:8px"><strong>最新验证码：</strong><span class="code">${escapeHtml(item.last_code)}</span> <strong>主题：</strong>${escapeHtml(item.subject || '-')} <strong>更新时间：</strong>${escapeHtml(formatDateTime(item.updated_at))} <button class="small-btn" data-history-name="${escapeAttr(item.name)}" data-history-email="${escapeAttr(item.email)}">查看历史</button></div>` : ''}</div>` : '';
-        return `<tr><td>${accountCell(codex || {email:item.email, label:item.email})}</td><td>${usageCell(codex && codex.usage)}</td><td><button class="small-btn" data-expand-name="${escapeAttr(item.name)}">${expandedAccount === item.name ? '收起' : '展开'}</button>${detail}</td><td>${statusBadge(status.text, status.cls, 'Codex')}<br>${item.email ? statusBadge(item.status || '监测中', 'status-neutral', '邮箱') : statusBadge('无邮箱验证', 'status-neutral', '邮箱')}</td></tr>`;
+      async function copySecret(button) {
+        button.disabled = true; const original = button.textContent;
+        try { const path = button.dataset.copyType === 'totp' ? 'totp-secret' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'secret' : 'password'; const response = await fetch(`/api/mail/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); await writeClipboard(data[field]); button.textContent = '已复制'; } catch (error) { button.textContent = '复制失败'; }
+        setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500);
       }
       async function render() {
-        try { const [a,b] = await Promise.all([fetch('/api/codes',{cache:'no-store'}), fetch('/api/codex/accounts',{cache:'no-store'})]); const codes=(await a.json()).items||[]; const codex=(await b.json()).items||[]; codeRows.innerHTML=codes.length ? codes.map(item=>mergedRow(item,codex.find(c=>c.email&&c.email===item.email))).join('') : '<tr><td colspan="4" class="muted">暂无账号。</td></tr>'; syncHistoryButtons(); } catch(e) { codeRows.innerHTML='<tr><td colspan="4">加载失败，请检查服务是否正常启动。</td></tr>'; }
+        try { const [mailResponse, codexResponse] = await Promise.all([fetch('/api/codes', { cache: 'no-store' }), fetch('/api/codex/accounts', { cache: 'no-store' })]); const mailItems = (await mailResponse.json()).items || []; const codexItems = (await codexResponse.json()).items || []; const merged = mergeItems(mailItems, codexItems); rowsNode.innerHTML = merged.length ? merged.map(rowHtml).join('') : '<tr><td colspan="4" class="muted">暂无账号。</td></tr>'; } catch (error) { rowsNode.innerHTML = '<tr><td colspan="4">加载失败，请检查服务是否正常启动。</td></tr>'; }
       }
-      codeRows.addEventListener('click', event => { const button=event.target.closest('[data-expand-name]'); if(button){ expandedAccount=expandedAccount===button.dataset.expandName?'':button.dataset.expandName; render(); } });
-
+      rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
       render();
       setInterval(render, 3000);
     </script>

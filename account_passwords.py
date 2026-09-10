@@ -15,6 +15,17 @@ class AccountPasswordError(ValueError):
     pass
 
 
+def normalize_totp_secret(value: Any) -> str:
+    if not isinstance(value, str):
+        raise AccountPasswordError("请求缺少 2FA 密钥")
+    secret = value.strip()
+    if not secret:
+        raise AccountPasswordError("2FA 密钥不能为空")
+    if len(secret) > MAX_PASSWORD_LENGTH:
+        raise AccountPasswordError("2FA 密钥过长")
+    return secret
+
+
 class AccountPasswordStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)

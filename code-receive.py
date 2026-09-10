@@ -76,7 +76,11 @@ from auth_storage import (
     migrate_auth_file,
     secure_auth_file,
 )
-from account_passwords import AccountPasswordError, AccountPasswordStore
+from account_passwords import (
+    AccountPasswordError,
+    AccountPasswordStore,
+    normalize_totp_secret,
+)
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -119,6 +123,7 @@ LEGACY_CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
 CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
 GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
 GPT_PASSWORDS_FILE = os.path.join(DATA_DIR, "gpt_passwords.json")
+TOTP_SECRETS_FILE = os.path.join(DATA_DIR, "totp_secrets.json")
 GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
 GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
 OUTLOOK_TOKEN_DIR = os.path.join(DATA_DIR, "outlook_tokens")
@@ -1939,6 +1944,7 @@ def next_outlook_account_config() -> AccountConfig:
 
 ACCOUNTS = load_accounts()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
+TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
@@ -2865,11 +2871,16 @@ def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
         "status": state.get("status") or "未知",
         "updated_at": state.get("updated_at"),
         "has_gpt_password": gpt_password_for_account(cfg) is not None,
+        "has_totp_secret": totp_secret_for_account(cfg) is not None,
     }
 
 
 def gpt_password_for_account(cfg: AccountConfig) -> Optional[str]:
     return GPT_PASSWORD_STORE.get(cfg["name"], cfg["email"])
+
+
+def totp_secret_for_account(cfg: AccountConfig) -> Optional[str]:
+    return TOTP_SECRET_STORE.get(cfg["name"], cfg["email"])
 
 
 @app.on_event("startup")
@@ -2913,6 +2924,7 @@ def get_codes():
                 continue
             item = dict(STATE[name])
             item["has_gpt_password"] = gpt_password_for_account(cfg) is not None
+            item["has_totp_secret"] = totp_secret_for_account(cfg) is not None
             data.append(item)
     return JSONResponse(content={"items": data, "updated_at": now_iso()})
 
@@ -3021,6 +3033,46 @@ def delete_gpt_password(account_name: str):
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
+
+@app.post("/api/mail/accounts/{account_name}/totp-secret")
+@app.post("/api/gmail/accounts/{account_name}/totp-secret")
+def get_totp_secret(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    secret = totp_secret_for_account(cfg)
+    if secret is None:
+        return JSONResponse(content={"detail": "该账号未配置身份验证器(2FA)"}, status_code=404)
+    return JSONResponse(
+        content={"secret": secret},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+@app.put("/api/admin/mail/accounts/{account_name}/totp-secret")
+async def set_totp_secret(account_name: str, request: FastAPIRequest):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "2FA 密钥内容过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        secret = normalize_totp_secret(
+            payload.get("secret") if isinstance(payload, dict) else None
+        )
+        TOTP_SECRET_STORE.set(account_name, cfg["email"], secret)
+    except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(content={"ok": True, "item": sanitize_mail_account(cfg)})
+
+@app.delete("/api/admin/mail/accounts/{account_name}/totp-secret")
+def delete_totp_secret(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    TOTP_SECRET_STORE.delete(account_name)
+    return JSONResponse(content={"ok": True, "item": sanitize_mail_account(cfg)})
 
 @app.get("/api/admin/mail/accounts")
 @app.get("/api/admin/gmail/accounts")
@@ -3283,12 +3335,14 @@ def delete_mail_account(account_name: str):
     with HISTORY_LOCK:
         CODE_HISTORY.pop(account_name, None)
     GPT_PASSWORD_STORE.delete(account_name)
+    TOTP_SECRET_STORE.delete(account_name)
     return JSONResponse(
         content={
             "ok": True,
             "account": account_name,
             "data_preserved": True,
             "gpt_password_deleted": True,
+            "totp_secret_deleted": True,
         }
     )
 
