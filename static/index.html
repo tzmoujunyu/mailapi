@@ -137,7 +137,7 @@
         else if (row.codex && (subscription.has_subscription === false || plan === 'free' || plan === '-')) detail = '无订阅';
         else if (row.codex && subscription.has_subscription === true) { const expiresAt = subscription.expires_at || subscription.renews_at; detail = expiresAt ? `订阅到期：${formatTsSeconds(expiresAt)}` : '订阅有效'; }
         else if (row.codex) detail = '-';
-        return `<div class="account-main"><span class="account-email">${escapeHtml(email)}</span>${planBadge(item, !row.codex)}</div><div class="muted">${escapeHtml(detail)}</div>`;
+        const reset = item.reset_credits; const resetText = reset && Number.isFinite(reset.available) ? `${reset.available}张重置卡${reset.earliest_expires_at ? `（最早${formatTsSeconds(reset.earliest_expires_at)}到期）` : ''}` : ''; return `<div class="account-main"><span class="account-email">${escapeHtml(email)}</span>${planBadge(item, !row.codex)}</div><div class="muted">${escapeHtml(detail)}</div>${resetText ? `<div class="muted">${escapeHtml(resetText)}</div>` : ''}`;
       }
       function quotaCell(usage) {
         if (!usage || usage.used_percent === null || usage.used_percent === undefined) return '<span class="muted">未提供</span>';

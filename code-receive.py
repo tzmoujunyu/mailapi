@@ -170,6 +170,7 @@ CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS",
 CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS = int(
     os.getenv("CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS", "3600")
 )
+CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS", "7200"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 CODEX_EXHAUSTED_USED_PERCENT = 99.9
 AUTH_LOCK = threading.Lock()
@@ -1091,6 +1092,11 @@ def codex_usage_endpoint() -> str:
     return f"{base}/api/codex/usage"
 
 
+def codex_reset_credits_endpoint() -> str:
+    base = normalize_codex_base_url(CODEX_USAGE_BASE_URL)
+    return f"{base}/wham/rate-limit-reset-credits" if "/backend-api" in base else f"{base}/api/codex/rate-limit-reset-credits"
+
+
 def codex_accounts_check_endpoint() -> str:
     return f"{normalize_codex_base_url(CODEX_USAGE_BASE_URL)}/accounts/check/v4-2023-04-27"
 
@@ -1420,6 +1426,18 @@ def fetch_codex_usage(access_token: str, workspace_id: Optional[str]) -> Dict[st
     return parse_usage_snapshot(http_json(codex_usage_endpoint(), headers))
 
 
+def fetch_codex_reset_credits(access_token: str, workspace_id: Optional[str]) -> Dict[str, Any]:
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json", "User-Agent": "codex_cli_rs/0.0.0", "Origin": "https://chatgpt.com"}
+    if workspace_id:
+        headers["ChatGPT-Account-ID"] = workspace_id
+    value = http_json(codex_reset_credits_endpoint(), headers)
+    credits = value.get("credits") or value.get("reset_credits") or value.get("items") or value.get("data") or []
+    if isinstance(credits, dict): credits = credits.get("credits") or credits.get("items") or []
+    if not isinstance(credits, list): credits = []
+    values = [parse_subscription_timestamp(x.get("expires_at") or x.get("expiresAt") or x.get("expiration_date")) for x in credits if isinstance(x, dict)]
+    return {"available": len(credits), "earliest_expires_at": min((x for x in values if x is not None), default=None)}
+
+
 def should_refresh_codex_token(error: str) -> bool:
     detail = error.lower()
     if "unsupported_country_region_territory" in detail:
@@ -1557,6 +1575,15 @@ def refresh_codex_account_record(
             message = f"额度信息: {e}"
             usage_errors.append(message)
             errors.append(message)
+
+        last_reset_refresh = parse_iso_timestamp(updated.get("reset_credits_last_refresh_at")) or 0
+        if now_ts() - last_reset_refresh >= max(300, CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS):
+            try:
+                updated["reset_credits"] = fetch_codex_reset_credits(access_token, workspace_id)
+                updated["reset_credits_last_refresh_at"] = now_iso()
+            except Exception as e:  # noqa: BLE001
+                log_exception(f"刷新 Codex 重置卡 account={updated.get('email') or updated.get('id')}", e)
+                updated["reset_credits_error"] = str(e)
 
         if (
             usage_errors
@@ -1702,6 +1729,8 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "subscription": record.get("subscription"),
         "subscription_last_refresh_at": record.get("subscription_last_refresh_at"),
         "usage": usage,
+        "reset_credits": record.get("reset_credits"),
+        "reset_credits_error": record.get("reset_credits_error"),
         "usage_status": usage_status,
         "status_reason": status_reason,
         "status": record.get("status"),
