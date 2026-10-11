@@ -27,6 +27,57 @@ BARE_CODE_PATTERNS = [
 ]
 
 
+def _rule_values(rule: dict, key: str) -> list[str]:
+    value = rule.get(key, [])
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _matches_text(value: str, condition: str, mode: str) -> bool:
+    if not condition:
+        return True
+    terms = [item.strip().lower() for item in condition.split(",") if item.strip()]
+    if not terms:
+        return True
+    text = value.lower()
+    matches = [term in text for term in terms]
+    return all(matches) if mode == "all" else any(matches)
+
+
+def matches_mail_rule(message: "IncomingMail", rule: dict) -> bool:
+    """Apply a user-facing sender/subject/body rule to a normalized message."""
+    sender = message.sender.strip().lower()
+    senders = {item.lower() for item in _rule_values(rule, "senders")}
+    if senders and sender not in senders:
+        return False
+    conditions = []
+    subject = str(rule.get("subject") or "").strip()
+    body = str(rule.get("body") or "").strip()
+    mode = "any" if str(rule.get("match_mode") or "all").lower() == "any" else "all"
+    if subject:
+        conditions.append(_matches_text(message.subject, subject, rule.get("text_mode", "all")))
+    if body:
+        conditions.append(_matches_text(html_to_text(message.body), body, rule.get("text_mode", "all")))
+    return (any(conditions) if mode == "any" else all(conditions)) if conditions else bool(senders)
+
+
+def extract_code_for_rule(message: "IncomingMail", rule: dict) -> Optional[str]:
+    if not matches_mail_rule(message, rule):
+        return None
+    candidate_text = "\n".join([message.subject, html_to_text(message.body)])
+    expression = str(rule.get("code_pattern") or r"(?<!\d)(\d{4,8})(?!\d)").strip()
+    try:
+        match = re.search(expression, candidate_text, re.IGNORECASE | re.DOTALL)
+    except re.error:
+        return None
+    if not match:
+        return None
+    return match.group(1) if match.groups() else match.group(0)
+
+
 @dataclass(frozen=True)
 class IncomingMail:
     message_id: str

@@ -188,6 +188,19 @@
             </table>
           </div>
         </section>
+        <section class="section">
+          <div class="section-head">
+            <div><h2>收件设置</h2><p class="muted">为已授权邮箱配置验证码接收规则。OpenAI 规则固定保留，其他规则可独立修改或删除。</p></div>
+            <button class="btn btn-primary" type="button" id="add-filter">新增收件箱</button>
+          </div>
+          <div id="filter-message" class="message muted"></div>
+          <div class="table-wrap">
+            <table class="account-table filter-table">
+              <thead><tr><th>名称</th><th>发件人</th><th>主题 / 正文</th><th>匹配方式</th><th>管理</th></tr></thead>
+              <tbody id="filter-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -238,6 +251,27 @@
       </form>
     </dialog>
 
+    <dialog id="filter-dialog">
+      <form id="filter-form" class="password-form">
+        <h2 id="filter-title">新增收件箱</h2>
+        <div id="filter-error" class="bad" role="alert"></div>
+        <label>名称（可选）<input id="filter-name" maxlength="120" placeholder="例如：Siliconflow 验证码" /></label>
+        <label>发件人邮箱（必填，可填多个，用逗号分隔）<input id="filter-senders" required maxlength="1000" placeholder="no-reply@siliconflow.cn" /></label>
+        <label>主题（可选）<input id="filter-subject" maxlength="500" placeholder="Siliconflow 邮箱验证" /></label>
+        <label>正文（可选）<input id="filter-body" maxlength="500" placeholder="留空表示不限制正文" /></label>
+        <details>
+          <summary>高级筛选</summary>
+          <div class="password-form advanced-fields">
+            <label>条件关系<select id="filter-match-mode"><option value="all">全部填写条件都满足（和）</option><option value="any">任一填写条件满足（或）</option></select></label>
+            <label>同一字段多个关键词<select id="filter-text-mode"><option value="all">全部出现</option><option value="any">任一出现</option></select></label>
+            <label>验证码正则<input id="filter-code-pattern" maxlength="500" value="(?&lt;!\d)(\d{4,8})(?!\d)" /></label>
+            <span class="muted">正则需要包含一个捕获组；默认提取主题或正文中的 4–8 位数字。</span>
+          </div>
+        </details>
+        <div class="dialog-actions"><button id="filter-cancel" class="btn" type="button">取消</button><button id="filter-save" class="btn btn-primary" type="submit">保存</button></div>
+      </form>
+    </dialog>
+
     <script>
       const accountRows = document.getElementById('account-rows');
       let accountsLoading = false;
@@ -263,6 +297,11 @@
       const totpCancel = document.getElementById('totp-cancel');
       const totpSave = document.getElementById('totp-save');
       let totpAccountName = '';
+      const filterRows = document.getElementById('filter-rows');
+      const filterMessage = document.getElementById('filter-message');
+      const filterDialog = document.getElementById('filter-dialog');
+      const filterForm = document.getElementById('filter-form');
+      let editingFilterId = '';
       const codexAuthDialog = document.getElementById('codex-auth-dialog');
       const codexAuthStatus = document.getElementById('codex-auth-status');
       const codexAuthUrl = document.getElementById('codex-auth-url');
@@ -330,6 +369,67 @@
         if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
         return data;
       }
+
+      function filterRow(item) {
+        const conditions = [item.subject ? `主题：${item.subject}` : '', item.body ? `正文：${item.body}` : ''].filter(Boolean).join('；') || '仅按发件人和验证码格式';
+        const relation = item.match_mode === 'any' ? '任一条件' : '全部条件';
+        return `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.builtin ? '<div class="muted">内置，固定启用</div>' : (item.enabled === false ? '<div class="warn">已停用</div>' : '')}</td><td>${escapeHtml(item.senders.join(', '))}</td><td>${escapeHtml(conditions)}</td><td>${relation}<div class="muted">关键词：${item.text_mode === 'any' ? '任一' : '全部'}</div></td><td>${item.builtin ? '<span class="muted">不可移除</span>' : `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">修改</button><button class="btn btn-danger" data-filter-action="delete" data-id="${escapeAttr(item.id)}">删除</button>`}</td></tr>`;
+      }
+
+      async function loadFilters() {
+        try {
+          const data = await api('/api/admin/mail-filters');
+          filterRows.innerHTML = data.items.length ? data.items.map(filterRow).join('') : '<tr><td colspan="5" class="muted">暂无收件设置</td></tr>';
+        } catch (error) { setMessage(filterMessage, error.message, true); }
+      }
+
+      function openFilterDialog(item = null) {
+        editingFilterId = item ? item.id : '';
+        document.getElementById('filter-title').textContent = item ? '修改收件箱' : '新增收件箱';
+        document.getElementById('filter-name').value = item?.name || '';
+        document.getElementById('filter-senders').value = item?.senders?.join(', ') || '';
+        document.getElementById('filter-subject').value = item?.subject || '';
+        document.getElementById('filter-body').value = item?.body || '';
+        document.getElementById('filter-match-mode').value = item?.match_mode || 'all';
+        document.getElementById('filter-text-mode').value = item?.text_mode || 'all';
+        document.getElementById('filter-code-pattern').value = item?.code_pattern || String.raw`(?<!\d)(\d{4,8})(?!\d)`;
+        document.getElementById('filter-error').textContent = '';
+        filterDialog.showModal();
+      }
+
+      document.getElementById('add-filter').addEventListener('click', () => openFilterDialog());
+      document.getElementById('filter-cancel').addEventListener('click', () => filterDialog.close());
+      filterForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const payload = {
+          name: document.getElementById('filter-name').value.trim(),
+          senders: document.getElementById('filter-senders').value.split(',').map(value => value.trim()).filter(Boolean),
+          subject: document.getElementById('filter-subject').value.trim(),
+          body: document.getElementById('filter-body').value.trim(),
+          match_mode: document.getElementById('filter-match-mode').value,
+          text_mode: document.getElementById('filter-text-mode').value,
+          code_pattern: document.getElementById('filter-code-pattern').value.trim(),
+        };
+        try {
+          document.getElementById('filter-save').disabled = true;
+          await api(editingFilterId ? `/api/admin/mail-filters/${encodeURIComponent(editingFilterId)}` : '/api/admin/mail-filters', {
+            method: editingFilterId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          filterDialog.close(); setMessage(filterMessage, '收件设置已保存。'); await loadFilters();
+        } catch (error) { document.getElementById('filter-error').textContent = error.message; }
+        finally { document.getElementById('filter-save').disabled = false; }
+      });
+
+      filterRows.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-filter-action]');
+        if (!button) return;
+        const data = await api('/api/admin/mail-filters');
+        const item = data.items.find(value => value.id === button.dataset.id);
+        if (button.dataset.filterAction === 'edit') { if (item) openFilterDialog(item); return; }
+        if (!confirm(`确认删除收件设置“${item?.name || ''}”吗？`)) return;
+        try { await api(`/api/admin/mail-filters/${encodeURIComponent(button.dataset.id)}`, { method: 'DELETE' }); setMessage(filterMessage, '收件设置已删除。'); await loadFilters(); }
+        catch (error) { setMessage(filterMessage, error.message, true); }
+      });
 
       gmailCallbackForm.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -604,6 +704,7 @@
       });
 
       loadAccounts();
+      loadFilters();
       setInterval(() => loadAccounts(false), 5000);
     </script>
   </body>

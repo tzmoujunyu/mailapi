@@ -36,7 +36,11 @@ from fastapi.staticfiles import StaticFiles
 
 from typing import TypedDict
 
-from mail_messages import IncomingMail, extract_verification_code as extract_code_from_mail
+from mail_messages import (
+    IncomingMail,
+    extract_code_for_rule,
+    extract_verification_code as extract_code_from_mail,
+)
 from mail_providers.proton import (
     ProtonAuthorizationRequired,
     ProtonMailbox,
@@ -131,6 +135,7 @@ GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
 GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
 OUTLOOK_TOKEN_DIR = os.path.join(DATA_DIR, "outlook_tokens")
 PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
+MAIL_FILTERS_FILE = os.path.join(DATA_DIR, "mail_filters.json")
 PROTON_CONFIG_FILE = os.path.expanduser(
     os.getenv("PROTON_CONFIG_FILE", "~/proton/.env")
 )
@@ -651,6 +656,78 @@ def write_json_atomic(path: str, value: Any) -> None:
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
+
+
+MAIL_FILTERS_LOCK = threading.Lock()
+
+
+def default_mail_filters() -> List[Dict[str, Any]]:
+    return [{
+        "id": "openai",
+        "name": "OpenAI 验证码",
+        "builtin": True,
+        "enabled": True,
+        "senders": sorted(OPENAI_CODE_SENDERS),
+        "subject": "",
+        "body": "",
+        "match_mode": "all",
+        "text_mode": "all",
+        "code_pattern": r"(?<!\d)(\d{4,8})(?!\d)",
+    }]
+
+
+def normalize_mail_filter(value: Any, *, builtin: bool = False) -> Dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    senders = item.get("senders", item.get("sender", []))
+    if isinstance(senders, str):
+        senders = senders.split(",")
+    senders = [str(x).strip().lower() for x in (senders if isinstance(senders, list) else []) if str(x).strip()]
+    if not senders:
+        raise ValueError("至少填写一个发件人邮箱")
+    name = str(item.get("name") or senders[0]).strip()[:120]
+    if not name:
+        raise ValueError("收件箱名称不能为空")
+    code_pattern = str(item.get("code_pattern") or r"(?<!\d)(\d{4,8})(?!\d)").strip()
+    try:
+        re.compile(code_pattern)
+    except re.error as error:
+        raise ValueError(f"验证码正则无效：{error}") from error
+    return {
+        "id": str(item.get("id") or secrets.token_hex(8)),
+        "name": name,
+        "builtin": bool(builtin or item.get("builtin")),
+        "enabled": bool(item.get("enabled", True)),
+        "senders": senders,
+        "subject": str(item.get("subject") or "").strip()[:500],
+        "body": str(item.get("body") or "").strip()[:500],
+        "match_mode": "any" if str(item.get("match_mode") or "all").lower() == "any" else "all",
+        "text_mode": "any" if str(item.get("text_mode") or "all").lower() == "any" else "all",
+        "code_pattern": code_pattern[:500],
+    }
+
+
+def load_mail_filters() -> List[Dict[str, Any]]:
+    filters: List[Dict[str, Any]] = []
+    try:
+        with open(MAIL_FILTERS_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        values = payload.get("items", []) if isinstance(payload, dict) else []
+        filters = [normalize_mail_filter(value) for value in values if isinstance(value, dict)]
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        filters = []
+    builtin = normalize_mail_filter(default_mail_filters()[0], builtin=True)
+    filters = [item for item in filters if not item.get("builtin") and item["id"] != "openai"]
+    return [builtin] + filters
+
+
+def save_mail_filters() -> None:
+    with MAIL_FILTERS_LOCK:
+        write_json_atomic(MAIL_FILTERS_FILE, {"items": [dict(item) for item in MAIL_FILTERS]})
+
+
+def mail_filter_search_query() -> str:
+    senders = sorted({sender for item in MAIL_FILTERS if item.get("enabled", True) for sender in item.get("senders", [])})
+    return f"is:unread from:({' OR '.join(senders)})" if senders else "is:unread"
 
 
 def migrate_codex_auth_layout() -> None:
@@ -2011,6 +2088,7 @@ def next_outlook_account_config() -> AccountConfig:
 
 
 ACCOUNTS = load_accounts()
+MAIL_FILTERS = load_mail_filters()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
 TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
 CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"))
@@ -2377,7 +2455,20 @@ def gmail_incoming_mail(message: Dict) -> IncomingMail:
 
 
 def extract_verification_code(message: Dict) -> Optional[str]:
-    return extract_code_from_mail(gmail_incoming_mail(message), OPENAI_CODE_SENDERS)
+    return extract_configured_code(gmail_incoming_mail(message))
+
+
+def extract_configured_code(message: IncomingMail) -> Optional[str]:
+    for rule in MAIL_FILTERS:
+        if not rule.get("enabled", True):
+            continue
+        if rule.get("builtin"):
+            code = extract_code_from_mail(message, OPENAI_CODE_SENDERS)
+        else:
+            code = extract_code_for_rule(message, rule)
+        if code:
+            return code
+    return None
 
 
 def parse_subject(message: Dict) -> str:
@@ -2465,8 +2556,8 @@ def process_message(service, cfg: AccountConfig, message_id: str) -> Optional[Di
 def scan_unread_once(service, cfg: AccountConfig):
     response = service.users().messages().list(
         userId="me",
-        q=SEARCH_QUERY,
-        maxResults=20,
+        q=mail_filter_search_query(),
+        maxResults=100,
     ).execute()
     for item in response.get("messages", []):
         result = process_message(service, cfg, item["id"])
@@ -2547,7 +2638,7 @@ def process_outlook_message(
     if message.get("isRead") is True:
         return None
     incoming = outlook_incoming_mail(message)
-    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    code = extract_configured_code(incoming)
     if not code:
         return None
     return {
@@ -2663,7 +2754,7 @@ def process_proton_message(
         return None
     full_message = mailbox.read_message(message)
     incoming = proton_incoming_mail(full_message)
-    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    code = extract_configured_code(incoming)
     if not code:
         return None
     mailbox.mark_as_read(incoming.message_id)
@@ -3176,6 +3267,80 @@ def get_mail_accounts():
     with MAIL_ACCOUNTS_LOCK:
         items = [sanitize_mail_account(item) for item in ACCOUNTS]
     return JSONResponse(content={"items": items, "updated_at": now_iso()})
+
+
+@app.get("/api/admin/mail-filters")
+@app.get("/api/admin/mail/filters")
+def get_mail_filters():
+    with MAIL_FILTERS_LOCK:
+        items = [dict(item) for item in MAIL_FILTERS]
+    return JSONResponse(content={"items": items, "updated_at": now_iso()})
+
+
+async def mail_filter_payload(request: FastAPIRequest) -> Dict[str, Any]:
+    body = await request.body()
+    if len(body) > 8192:
+        raise ValueError("收件设置内容过长")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("收件设置必须是 JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("收件设置格式无效")
+    return payload
+
+
+@app.post("/api/admin/mail-filters")
+@app.post("/api/admin/mail/filters")
+async def create_mail_filter(request: FastAPIRequest):
+    global MAIL_FILTERS
+    try:
+        item = normalize_mail_filter(await mail_filter_payload(request))
+    except ValueError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    item["builtin"] = False
+    with MAIL_FILTERS_LOCK:
+        if any(existing["id"] == item["id"] for existing in MAIL_FILTERS):
+            item["id"] = secrets.token_hex(8)
+        MAIL_FILTERS = [*MAIL_FILTERS, item]
+    save_mail_filters()
+    return JSONResponse(content={"item": item}, status_code=201)
+
+
+@app.put("/api/admin/mail-filters/{filter_id}")
+@app.put("/api/admin/mail/filters/{filter_id}")
+async def update_mail_filter(filter_id: str, request: FastAPIRequest):
+    global MAIL_FILTERS
+    with MAIL_FILTERS_LOCK:
+        current = next((item for item in MAIL_FILTERS if item["id"] == filter_id), None)
+    if not current:
+        return JSONResponse(content={"detail": "未找到收件设置"}, status_code=404)
+    if current.get("builtin"):
+        return JSONResponse(content={"detail": "OpenAI 内置收件设置不可修改"}, status_code=409)
+    try:
+        item = normalize_mail_filter({**current, **(await mail_filter_payload(request)), "id": filter_id})
+    except ValueError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    item["builtin"] = False
+    with MAIL_FILTERS_LOCK:
+        MAIL_FILTERS = [item if existing["id"] == filter_id else existing for existing in MAIL_FILTERS]
+    save_mail_filters()
+    return JSONResponse(content={"item": item})
+
+
+@app.delete("/api/admin/mail-filters/{filter_id}")
+@app.delete("/api/admin/mail/filters/{filter_id}")
+def delete_mail_filter(filter_id: str):
+    global MAIL_FILTERS
+    with MAIL_FILTERS_LOCK:
+        current = next((item for item in MAIL_FILTERS if item["id"] == filter_id), None)
+        if not current:
+            return JSONResponse(content={"detail": "未找到收件设置"}, status_code=404)
+        if current.get("builtin"):
+            return JSONResponse(content={"detail": "OpenAI 内置收件设置不可删除"}, status_code=409)
+        MAIL_FILTERS = [item for item in MAIL_FILTERS if item["id"] != filter_id]
+    save_mail_filters()
+    return JSONResponse(content={"ok": True})
 
 
 @app.get("/api/admin/gmail/auth/start")
