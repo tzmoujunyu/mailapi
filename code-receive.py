@@ -38,7 +38,7 @@ from typing import TypedDict
 
 from mail_messages import (
     IncomingMail,
-    extract_code_for_rule,
+    extract_mail_result,
     extract_verification_code as extract_code_from_mail,
 )
 from mail_providers.proton import (
@@ -668,11 +668,16 @@ def default_mail_filters() -> List[Dict[str, Any]]:
         "builtin": True,
         "enabled": True,
         "senders": sorted(OPENAI_CODE_SENDERS),
+        "sender_mode": "exact",
+        "sender_pattern": "",
         "subject": "",
         "body": "",
         "match_mode": "all",
         "text_mode": "all",
         "code_pattern": r"(?<!\d)(\d{4,8})(?!\d)",
+        "extract_type": "code",
+        "link_text_pattern": r"(?i)sign\s*in|login|continue|verify",
+        "allowed_hosts": [],
     }]
 
 
@@ -682,27 +687,67 @@ def normalize_mail_filter(value: Any, *, builtin: bool = False) -> Dict[str, Any
     if isinstance(senders, str):
         senders = senders.split(",")
     senders = [str(x).strip().lower() for x in (senders if isinstance(senders, list) else []) if str(x).strip()]
-    if not senders:
+    sender_mode = str(item.get("sender_mode") or "exact").lower()
+    if sender_mode not in {"exact", "domain", "regex"}:
+        sender_mode = "exact"
+    sender_pattern = str(item.get("sender_pattern") or "").strip()
+    if len(sender_pattern) > 500:
+        raise ValueError("发件人正则最多 500 个字符")
+    if sender_mode == "regex":
+        if not sender_pattern:
+            raise ValueError("正则发件人规则不能为空")
+        try:
+            re.compile(sender_pattern)
+        except re.error as error:
+            raise ValueError(f"发件人正则无效：{error}") from error
+    elif not senders:
         raise ValueError("至少填写一个发件人邮箱")
-    name = str(item.get("name") or senders[0]).strip()[:120]
+    if sender_mode != "regex":
+        pattern = r"[^\s@(),:<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}" if sender_mode == "exact" else r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+        if any(not re.fullmatch(pattern, sender) for sender in senders):
+            raise ValueError("请填写有效的邮箱地址或域名，不支持搜索表达式")
+    name = str(item.get("name") or (senders[0] if senders else "自定义收件箱")).strip()[:120]
     if not name:
         raise ValueError("收件箱名称不能为空")
     code_pattern = str(item.get("code_pattern") or r"(?<!\d)(\d{4,8})(?!\d)").strip()
+    if len(code_pattern) > 500:
+        raise ValueError("验证码正则最多 500 个字符")
     try:
         re.compile(code_pattern)
     except re.error as error:
         raise ValueError(f"验证码正则无效：{error}") from error
+    extract_type = str(item.get("extract_type") or "code").lower()
+    if extract_type not in {"code", "link", "auto"}:
+        extract_type = "code"
+    allowed_hosts = item.get("allowed_hosts", [])
+    if isinstance(allowed_hosts, str):
+        allowed_hosts = allowed_hosts.split(",")
+    allowed_hosts = [str(x).strip().lower() for x in (allowed_hosts if isinstance(allowed_hosts, list) else []) if str(x).strip()]
+    if extract_type in {"link", "auto"} and not allowed_hosts:
+        raise ValueError("提取登录链接时必须填写允许的链接域名")
+    if any(not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", host) for host in allowed_hosts):
+        raise ValueError("链接白名单请填写完整域名，不含协议、路径或通配符")
+    link_text_pattern = str(item.get("link_text_pattern") or r"(?i)sign\s*in|login|continue|verify").strip()[:500]
+    try:
+        re.compile(link_text_pattern)
+    except re.error as error:
+        raise ValueError(f"登录按钮文字正则无效：{error}") from error
     return {
         "id": str(item.get("id") or secrets.token_hex(8)),
         "name": name,
         "builtin": bool(builtin or item.get("builtin")),
         "enabled": bool(item.get("enabled", True)),
         "senders": senders,
+        "sender_mode": sender_mode,
+        "sender_pattern": sender_pattern,
         "subject": str(item.get("subject") or "").strip()[:500],
         "body": str(item.get("body") or "").strip()[:500],
         "match_mode": "any" if str(item.get("match_mode") or "all").lower() == "any" else "all",
         "text_mode": "any" if str(item.get("text_mode") or "all").lower() == "any" else "all",
         "code_pattern": code_pattern[:500],
+        "extract_type": extract_type,
+        "link_text_pattern": link_text_pattern,
+        "allowed_hosts": allowed_hosts,
     }
 
 
@@ -726,6 +771,9 @@ def save_mail_filters() -> None:
 
 
 def mail_filter_search_query() -> str:
+    # Gmail cannot express arbitrary sender regexes; enforce them after fetching.
+    if any(item.get("enabled", True) and item.get("sender_mode") == "regex" for item in MAIL_FILTERS):
+        return "is:unread"
     senders = sorted({sender for item in MAIL_FILTERS if item.get("enabled", True) for sender in item.get("senders", [])})
     return f"is:unread from:({' OR '.join(senders)})" if senders else "is:unread"
 
@@ -2114,6 +2162,9 @@ def ensure_mail_state(cfg: AccountConfig) -> None:
             "email": cfg["email"],
             "provider": cfg.get("provider", "gmail"),
             "last_code": existing.get("last_code"),
+            "result_type": existing.get("result_type", "code"),
+            "result_value": existing.get("result_value"),
+            "rule_name": existing.get("rule_name"),
             "message_id": existing.get("message_id"),
             "subject": existing.get("subject"),
             "updated_at": existing.get("updated_at"),
@@ -2416,9 +2467,6 @@ def collect_text_from_payload(payload: Dict) -> List[str]:
     body_data = payload.get("body", {}).get("data", "")
     if body_data and (mime.startswith("text/plain") or mime.startswith("text/html")):
         raw = decode_body(body_data)
-        if mime.startswith("text/html"):
-            raw = html.unescape(raw)
-            raw = re.sub(r"<[^>]+>", " ", raw)
         texts.append(raw)
 
     return texts
@@ -2455,19 +2503,24 @@ def gmail_incoming_mail(message: Dict) -> IncomingMail:
 
 
 def extract_verification_code(message: Dict) -> Optional[str]:
-    return extract_configured_code(gmail_incoming_mail(message))
+    result = extract_configured_result(gmail_incoming_mail(message))
+    return result["value"] if result and result["type"] == "code" else None
 
 
-def extract_configured_code(message: IncomingMail) -> Optional[str]:
+def extract_configured_result(message: IncomingMail) -> Optional[Dict[str, str]]:
     for rule in MAIL_FILTERS:
         if not rule.get("enabled", True):
             continue
         if rule.get("builtin"):
             code = extract_code_from_mail(message, OPENAI_CODE_SENDERS)
+            result = {"type": "code", "value": code} if code else None
         else:
-            code = extract_code_for_rule(message, rule)
-        if code:
-            return code
+            result = extract_mail_result(message, rule)
+        if result:
+            return {**result, "code": result["value"] if result["type"] == "code" else "",
+                    "rule_id": rule["id"], "rule_name": rule["name"],
+                    "sender": message.sender, "message_id": message.message_id,
+                    "subject": message.subject or "（无主题）"}
     return None
 
 
@@ -2509,9 +2562,11 @@ def store_code_result(
     result: Dict[str, str],
     status: str = "监听中",
 ) -> bool:
+    result = {"type": "code", "value": result.get("code", ""), **result}
     inserted = append_code_record(
         cfg["name"],
         {
+            **result,
             "code": result["code"],
             "message_id": result["message_id"],
             "subject": result["subject"],
@@ -2525,6 +2580,9 @@ def store_code_result(
         cfg["name"],
         {
             "last_code": result["code"],
+            "result_type": result["type"],
+            "result_value": result["value"],
+            "rule_name": result.get("rule_name", ""),
             "message_id": result["message_id"],
             "subject": result["subject"],
             "updated_at": now_iso(),
@@ -2541,16 +2599,7 @@ def process_message(service, cfg: AccountConfig, message_id: str) -> Optional[Di
     if "UNREAD" not in labels:
         return None
 
-    code = extract_verification_code(msg)
-    if not code:
-        return None
-
-    mark_as_read(service, msg["id"])
-    return {
-        "code": code,
-        "message_id": msg["id"],
-        "subject": parse_subject(msg),
-    }
+    return extract_configured_result(gmail_incoming_mail(msg))
 
 
 def scan_unread_once(service, cfg: AccountConfig):
@@ -2562,7 +2611,8 @@ def scan_unread_once(service, cfg: AccountConfig):
     for item in response.get("messages", []):
         result = process_message(service, cfg, item["id"])
         if result:
-            store_code_result(cfg, result, status="已完成（补扫）")
+            if store_code_result(cfg, result, status="已完成（补扫）"):
+                mark_as_read(service, result["message_id"])
 
 
 def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = None):
@@ -2595,8 +2645,10 @@ def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event
                             continue
                         result = process_message(service, cfg, msg_id)
                         if result:
-                            got = True
-                            store_code_result(cfg, result)
+                            saved = store_code_result(cfg, result)
+                            got = saved or got
+                            if saved:
+                                mark_as_read(service, result["message_id"])
                 if response.get("historyId"):
                     history_id = int(response["historyId"])
                     write_history_id(cfg, history_id)
@@ -2638,14 +2690,11 @@ def process_outlook_message(
     if message.get("isRead") is True:
         return None
     incoming = outlook_incoming_mail(message)
-    code = extract_configured_code(incoming)
-    if not code:
-        return None
-    return {
-        "code": code,
-        "message_id": incoming.message_id,
-        "subject": incoming.subject or "（无主题）",
-    }
+    extractor = globals().get("extract_configured_result")
+    if extractor:
+        return extractor(incoming)
+    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    return {"code": code, "message_id": incoming.message_id, "subject": incoming.subject or "（无主题）"} if code else None
 
 
 def save_outlook_cache(mailbox: OutlookMailbox, cfg: AccountConfig) -> None:
@@ -2666,7 +2715,8 @@ def scan_outlook_unread_once(
         try:
             result = process_outlook_message(mailbox, cfg, message)
             if result:
-                got = store_code_result(cfg, result, status=status) or got
+                saved = store_code_result(cfg, result, status=status)
+                got = saved or got
                 mailbox.mark_as_read(result["message_id"])
         except (OutlookAuthorizationRequired, OutlookAPIError):
             raise
@@ -2754,15 +2804,11 @@ def process_proton_message(
         return None
     full_message = mailbox.read_message(message)
     incoming = proton_incoming_mail(full_message)
-    code = extract_configured_code(incoming)
-    if not code:
-        return None
-    mailbox.mark_as_read(incoming.message_id)
-    return {
-        "code": code,
-        "message_id": incoming.message_id,
-        "subject": incoming.subject or "（无主题）",
-    }
+    extractor = globals().get("extract_configured_result")
+    if extractor:
+        return extractor(incoming)
+    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    return {"code": code, "message_id": incoming.message_id, "subject": incoming.subject or "（无主题）"} if code else None
 
 
 def scan_proton_unread_once(mailbox: ProtonMailbox, cfg: AccountConfig) -> None:
@@ -2773,7 +2819,8 @@ def scan_proton_unread_once(mailbox: ProtonMailbox, cfg: AccountConfig) -> None:
         try:
             result = process_proton_message(mailbox, cfg, message)
             if result:
-                store_code_result(cfg, result, status="已完成（补扫）")
+                if store_code_result(cfg, result, status="已完成（补扫）"):
+                    mailbox.mark_as_read(result["message_id"])
         except Exception as e:  # noqa: BLE001
             log_exception(f"Proton 补扫 account={cfg['name']}", e)
 
@@ -2801,7 +2848,8 @@ def watch_proton_account(
                     continue
                 result = process_proton_message(mailbox, cfg, message)
                 if result:
-                    store_code_result(cfg, result)
+                    if store_code_result(cfg, result):
+                        mailbox.mark_as_read(result["message_id"])
             except Exception as e:  # noqa: BLE001
                 log_exception(f"Proton 监听 account={name}", e)
                 save_state(name, {"status": "连接异常，正在重连"})
@@ -4065,6 +4113,9 @@ def clear_history(account_name: str):
         account_name,
         {
             "last_code": None,
+            "result_type": "code",
+            "result_value": None,
+            "rule_name": None,
             "message_id": None,
             "subject": "（历史已清空）",
             "updated_at": now_iso(),

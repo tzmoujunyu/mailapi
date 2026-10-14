@@ -3,7 +3,9 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Collection, Optional
+from urllib.parse import urlparse
 
 
 VERIFICATION_TERMS = (
@@ -50,8 +52,19 @@ def _matches_text(value: str, condition: str, mode: str) -> bool:
 def matches_mail_rule(message: "IncomingMail", rule: dict) -> bool:
     """Apply a user-facing sender/subject/body rule to a normalized message."""
     sender = message.sender.strip().lower()
+    sender_mode = str(rule.get("sender_mode") or "exact").lower()
     senders = {item.lower() for item in _rule_values(rule, "senders")}
-    if senders and sender not in senders:
+    sender_pattern = str(rule.get("sender_pattern") or "").strip()
+    if sender_mode == "regex" and sender_pattern:
+        try:
+            sender_matches = bool(re.fullmatch(sender_pattern, sender, re.IGNORECASE))
+        except re.error:
+            sender_matches = False
+    elif sender_mode == "domain" and senders:
+        sender_matches = sender.rpartition("@")[2] in senders
+    else:
+        sender_matches = sender in senders
+    if not sender_matches:
         return False
     conditions = []
     subject = str(rule.get("subject") or "").strip()
@@ -61,7 +74,7 @@ def matches_mail_rule(message: "IncomingMail", rule: dict) -> bool:
         conditions.append(_matches_text(message.subject, subject, rule.get("text_mode", "all")))
     if body:
         conditions.append(_matches_text(html_to_text(message.body), body, rule.get("text_mode", "all")))
-    return (any(conditions) if mode == "any" else all(conditions)) if conditions else bool(senders)
+    return (any(conditions) if mode == "any" else all(conditions)) if conditions else bool(senders or sender_pattern)
 
 
 def extract_code_for_rule(message: "IncomingMail", rule: dict) -> Optional[str]:
@@ -76,6 +89,75 @@ def extract_code_for_rule(message: "IncomingMail", rule: dict) -> Optional[str]:
     if not match:
         return None
     return match.group(1) if match.groups() else match.group(0)
+
+
+class _LinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self.href: Optional[str] = None
+        self.text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.href = dict(attrs).get("href")
+            self.text = []
+
+    def handle_data(self, data):
+        if self.href is not None:
+            self.text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self.href is not None:
+            self.links.append((self.href, " ".join(self.text)))
+            self.href = None
+
+
+def extract_link_for_rule(message: "IncomingMail", rule: dict) -> Optional[str]:
+    allowed_hosts = {item.lower().lstrip(".") for item in _rule_values(rule, "allowed_hosts")}
+    if not allowed_hosts:
+        return None
+    anchor_pattern = str(rule.get("link_text_pattern") or r"(?i)sign\s*in|login|continue|verify").strip()
+    try:
+        matcher = re.compile(anchor_pattern, re.IGNORECASE)
+    except re.error:
+        return None
+    parser = _LinkParser()
+    parser.feed(message.body)
+    if not parser.links:
+        parser.links = [
+            (match.group(1), match.group(1))
+            for match in re.finditer(r"(?i)(https://[^\s<>\"']+)", message.body)
+        ]
+    candidates = set()
+    for href, text in parser.links:
+        href = href.strip()
+        try:
+            parsed = urlparse(href)
+            if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts
+                    or parsed.username or parsed.password or parsed.port not in (None, 443)
+                    or re.search(r"[\x00-\x20\x7f\\]", href)):
+                continue
+        except ValueError:
+            continue
+        if matcher.search(html_to_text(text)) or (text == href and matcher.search(href)):
+            candidates.add(href)
+    # Never choose an arbitrary destination when multiple login buttons disagree.
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def extract_mail_result(message: "IncomingMail", rule: dict) -> Optional[dict]:
+    if not matches_mail_rule(message, rule):
+        return None
+    extraction_type = str(rule.get("extract_type") or "code").lower()
+    if extraction_type in {"link", "auto"}:
+        link = extract_link_for_rule(message, rule)
+        if link:
+            return {"type": "link", "value": link}
+        if extraction_type == "link":
+            return None
+    code = extract_code_for_rule(message, rule)
+    return {"type": "code", "value": code} if code else None
 
 
 @dataclass(frozen=True)

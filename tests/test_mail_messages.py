@@ -1,6 +1,6 @@
 import unittest
 
-from mail_messages import IncomingMail, extract_code_for_rule, extract_verification_code, html_to_text
+from mail_messages import IncomingMail, extract_code_for_rule, extract_mail_result, extract_verification_code, html_to_text
 
 
 SENDERS = {"noreply@tm.openai.com", "noreply@tm1.openai.com"}
@@ -72,6 +72,41 @@ class MailMessageTests(unittest.TestCase):
             "subject": "Siliconflow 邮箱验证",
         }
         self.assertIsNone(extract_code_for_rule(message, rule))
+
+    def test_dynamic_anthropic_sender_extracts_sign_in_link(self):
+        message = IncomingMail(
+            message_id="seven",
+            sender="no-reply-12Y-Ka7gf0zzbXhoLnLgXg@mail.anthropic.com",
+            subject="Sign in to Claude.ai",
+            body='<a href="https://claude.ai/login?token=abc">Sign in</a>',
+        )
+        rule = {
+            "sender_mode": "regex",
+            "sender_pattern": r"no-reply(?:-[A-Za-z0-9]+)+@mail\.anthropic\.com",
+            "subject": "Sign in to Claude",
+            "extract_type": "link",
+            "link_text_pattern": r"^\s*sign\s+in\s*$",
+            "allowed_hosts": ["claude.ai"],
+        }
+        self.assertEqual(
+            extract_mail_result(message, rule),
+            {"type": "link", "value": "https://claude.ai/login?token=abc"},
+        )
+
+    def test_link_rule_rejects_untrusted_host_and_ambiguous_buttons(self):
+        message = IncomingMail(
+            message_id="eight",
+            sender="no-reply@mail.anthropic.com",
+            subject="Sign in to Claude.ai",
+            body='<a href="https://evil.example/sign">Sign in</a>',
+        )
+        rule = {
+            "senders": ["no-reply@mail.anthropic.com"],
+            "extract_type": "link",
+            "link_text_pattern": r"sign\s+in",
+            "allowed_hosts": ["claude.ai"],
+        }
+        self.assertIsNone(extract_mail_result(message, rule))
 
 
 if __name__ == "__main__":
