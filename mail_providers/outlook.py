@@ -163,7 +163,9 @@ def graph_request(
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
-        "Prefer": 'outlook.body-content-type="text"',
+        # Link rules need the original anchor href.  The text representation
+        # strips the button's destination before the local mail filter runs.
+        "Prefer": 'outlook.body-content-type="html"',
     }
     if data is not None:
         headers["Content-Type"] = "application/json"

@@ -88,6 +88,20 @@ class OutlookProviderTests(unittest.TestCase):
             "123456",
         )
 
+    def test_preserves_html_anchor_for_link_rules(self):
+        incoming = outlook_incoming_mail(
+            {
+                "id": "link-message",
+                "subject": "Secure link to log in to Claude.ai",
+                "from": {"emailAddress": {"address": "no-reply-x@mail.anthropic.com"}},
+                "body": {
+                    "contentType": "html",
+                    "content": '<a href="https://claude.ai/magic-link#token">Sign in</a>',
+                },
+            }
+        )
+        self.assertIn('href="https://claude.ai/magic-link#token"', incoming.body)
+
     def test_graph_error_does_not_expose_access_token(self):
         body = json.dumps({"error": {"message": "Access denied"}}).encode()
         error = urllib.error.HTTPError(
@@ -102,6 +116,16 @@ class OutlookProviderTests(unittest.TestCase):
                 graph_request("secret-access-token", "/me")
         self.assertEqual(raised.exception.status, 401)
         self.assertNotIn("secret-access-token", str(raised.exception))
+
+    def test_graph_requests_html_bodies_for_link_extraction(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b"{}"
+        with patch("urllib.request.urlopen", return_value=response) as opener:
+            graph_request("access-token", "/me/messages")
+        request = opener.call_args.args[0]
+        self.assertEqual(request.get_header("Prefer"), 'outlook.body-content-type="html"')
 
     def test_marks_matching_message_as_read_through_graph(self):
         mailbox = object.__new__(OutlookMailbox)
