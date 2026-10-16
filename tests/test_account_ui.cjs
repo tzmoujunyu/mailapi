@@ -127,6 +127,18 @@ test('refresh failure preserves current account rows and displays an error', asy
   assert.match(app.nodes.get('load-error').textContent, /刷新失败/);
 });
 
+test('mail links render as truncated external anchors and can be copied', async () => {
+  const app = page('static/index.html'); await flush();
+  const value = 'https://claude.ai/login?token=long-token-value';
+  const html = vm.runInContext(`mailResultHtml('link', ${JSON.stringify(value)})`, app.context);
+  assert.match(html, /class="mail-link"/);
+  assert.match(html, /href="https:\/\/claude\.ai\/login\?token=long-token-value"/);
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /data-copy-type="mail"/);
+  await app.click('rows', '[data-copy-type]', { copyType: 'mail', value });
+  assert.ok(app.calls.some(([action, copied]) => action === 'clipboard' && copied === value));
+});
+
 test('2FA clock ignores slow samples and wall-clock jumps and catches up after paused ticks', async () => {
   const app = page('static/index.html'); await flush();
   let elapsed = 1000;

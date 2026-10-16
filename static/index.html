@@ -9,7 +9,11 @@
       body { margin: 0; padding: 12px; background: #f5f7fa; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
       .container { width: 100%; min-height: calc(100vh - 24px); padding: 16px; background: #fff; border-radius: 8px; box-shadow: 0 8px 20px rgba(0, 0, 0, .08); }
       .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+      .page-title { display: grid; gap: 3px; min-width: 0; }
       h1 { margin: 0; font-size: 22px; }
+      .page-subtitle { min-width: 0; color: #6b7280; font-size: 13px; line-height: 1.4; }
+      .page-subtitle a { color: #2563eb; text-decoration: none; }
+      .page-subtitle a:hover { text-decoration: underline; }
       .table-wrap { width: 100%; overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
       table { width: 100%; min-width: 980px; border-collapse: collapse; table-layout: fixed; }
       th, td { padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
@@ -59,12 +63,16 @@
       .history-code { display: inline-block; padding: 2px 6px; border-radius: 6px; background: #fef08a; color: #b45309; font-weight: 700; letter-spacing: 2px; }
       .history-time { color: #166534; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       .code { color: #0ea5e9; font-weight: 700; }
+      .email-result-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .mail-result { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+      .mail-link { min-width: 0; overflow: hidden; color: #2563eb; text-overflow: ellipsis; white-space: nowrap; }
+      .email-detail > div { min-width: 0; }
       @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr 1fr; } }
     </style>
   </head>
   <body>
     <div class="container">
-      <div class="page-head"><h1>ChatGPT账号</h1><a class="small-btn" href="/admin">账号控制台</a></div>
+      <div class="page-head"><div class="page-title"><h1>ChatGPT账号</h1><div class="page-subtitle"><a href="https://codexradar.com/#intelligence-efficiency" target="_blank" rel="noopener noreferrer">Codex雷达</a>：查看智能与效率分析</div></div><a class="small-btn" href="/admin">账号控制台</a></div>
       <div id="load-error" class="status-bad" role="status"></div>
       <div class="table-wrap">
         <table class="account-table">
@@ -179,7 +187,11 @@
       function statusLine(status, label) { return `<div class="status-line"><span class="status ${status.cls}">${escapeHtml(status.text)}</span><span class="status-tag ${label === 'Codex' ? 'tag-codex' : 'tag-email'}">${label}</span>${status.detail ? `<span class="muted">${escapeHtml(status.detail)}</span>` : ''}</div>`; }
       function mailResultHtml(type, value) {
         if (!value) return '<span class="muted">暂无</span>';
-        if (type === 'link') return `<button class="small-btn" data-copy-type="mail" data-value="${escapeAttr(value)}">复制登录链接</button><span class="muted">一次性链接，请及时使用</span>`;
+        if (type === 'link') {
+          const link = String(value);
+          if (!/^https?:\/\//i.test(link)) return `<span class="muted">链接格式无效</span>`;
+          return `<span class="mail-result"><a class="mail-link" href="${escapeAttr(link)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(link)}">${escapeHtml(link)}</a><button class="small-btn" data-copy-type="mail" data-value="${escapeAttr(link)}">复制链接</button></span>`;
+        }
         return `<span class="code">${escapeHtml(value)}</span><button class="small-btn" data-copy-type="mail" data-value="${escapeAttr(value)}">复制</button>`;
       }
       function historyHtml(mail) {
@@ -192,7 +204,7 @@
         const credentials = row.credentials;
         const password = credentials && credentials.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(credentials.gpt_password_account)}">复制</button>` : '<span class="muted">未设置</span>';
         const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" title="复制当前六位验证码，每30秒更新" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button><span data-totp-validity="${escapeAttr(credentials.totp_secret_account)}"></span>` : '<span class="muted">未配置</span>';
-        const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div><strong>最新接收：</strong>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}</div><div><strong>主题：</strong>${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
+        const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div class="email-result-line"><strong>最新接收：</strong>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}</div><div><strong>主题：</strong>${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
         return `<tr class="detail-row"><td colspan="4"><div class="detail-panel"><div class="login-detail"><div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div><div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div></div>${emailLine}</div></td></tr>`;
       }
       function rowHtml(row) {
