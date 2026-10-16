@@ -114,6 +114,26 @@ class MailMessageTests(unittest.TestCase):
             {"type": "link", "value": "https://claude.ai/login?token=abc"},
         )
 
+    def test_anthropic_rule_accepts_underscore_sender_and_current_subject(self):
+        message = IncomingMail(
+            message_id="anthropic-current",
+            sender="no-reply-ogSKvWQVJIQy2g4n_izx2w@mail.anthropic.com",
+            subject="Secure link to log in to Claude.ai",
+            body='<a href="https://claude.ai/magic-link#token">Sign in with Claude.ai</a>',
+        )
+        rule = {
+            "sender_mode": "regex",
+            "sender_pattern": r"no-reply(?:-[A-Za-z0-9_-]+)*@mail\.anthropic\.com",
+            "subject": "Claude",
+            "extract_type": "link",
+            "link_text_pattern": r"(?i)sign\s*in|log\s*in|continue|verify",
+            "allowed_hosts": ["claude.ai"],
+        }
+        self.assertEqual(
+            extract_mail_result(message, rule),
+            {"type": "link", "value": "https://claude.ai/magic-link#token"},
+        )
+
     def test_link_rule_rejects_untrusted_host_and_ambiguous_buttons(self):
         message = IncomingMail(
             message_id="eight",
