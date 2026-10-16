@@ -28,6 +28,93 @@ BARE_CODE_PATTERNS = [
     re.compile(r"(?<!\d)(\d{7,8})(?!\d)"),
 ]
 
+CONDITION_FIELDS = {"subject", "body"}
+CONDITION_OPERATORS = {
+    "contains",
+    "not_contains",
+    "regex",
+    "not_regex",
+    "equals",
+    "starts_with",
+    "ends_with",
+}
+MAX_MAIL_CONDITIONS = 20
+MAX_CONDITION_VALUE_LENGTH = 500
+CONDITION_VALUE_MODES = {"all", "any"}
+
+
+def _condition_bool(value: object, *, default: bool = False) -> bool:
+    """Normalize a JSON boolean without treating the string ``"false"`` as true."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError("条件的 case_sensitive 必须是布尔值")
+
+
+def normalize_mail_conditions(value: object) -> list[dict]:
+    """Validate and normalize advanced subject/body conditions.
+
+    Conditions are deliberately flat.  ``condition_logic`` on the containing
+    rule decides whether all or any conditions must match, while the negative
+    operators provide exclusion without introducing an ambiguous expression
+    language.  The legacy subject/body fields remain supported separately.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("高级条件必须是数组")
+    if len(value) > MAX_MAIL_CONDITIONS:
+        raise ValueError(f"高级条件最多 {MAX_MAIL_CONDITIONS} 条")
+
+    normalized: list[dict] = []
+    for index, raw in enumerate(value, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"第 {index} 条高级条件格式无效")
+        field = str(raw.get("field") or "").strip().lower()
+        if field not in CONDITION_FIELDS:
+            raise ValueError(f"第 {index} 条高级条件字段无效")
+        operator = str(raw.get("operator") or "contains").strip().lower()
+        if operator not in CONDITION_OPERATORS:
+            raise ValueError(f"第 {index} 条高级条件运算符无效")
+        condition_value = str(raw.get("value") or "").strip()
+        if not condition_value:
+            raise ValueError(f"第 {index} 条高级条件内容不能为空")
+        if len(condition_value) > MAX_CONDITION_VALUE_LENGTH:
+            raise ValueError(
+                f"第 {index} 条高级条件内容最多 {MAX_CONDITION_VALUE_LENGTH} 个字符"
+            )
+        case_sensitive = _condition_bool(raw.get("case_sensitive"), default=False)
+        value_mode = str(raw.get("value_mode") or "all").strip().lower()
+        if value_mode not in CONDITION_VALUE_MODES:
+            raise ValueError(f"第 {index} 条高级条件关键词关系无效")
+        if operator in {"regex", "not_regex"}:
+            try:
+                re.compile(
+                    condition_value,
+                    0 if case_sensitive else re.IGNORECASE,
+                )
+            except re.error as error:
+                raise ValueError(f"第 {index} 条高级条件正则无效：{error}") from error
+        normalized.append(
+            {
+                "field": field,
+                "operator": operator,
+                "value": condition_value,
+                "case_sensitive": case_sensitive,
+                "value_mode": value_mode,
+            }
+        )
+    return normalized
+
 
 def _rule_values(rule: dict, key: str) -> list[str]:
     value = rule.get(key, [])
@@ -49,6 +136,64 @@ def _matches_text(value: str, condition: str, mode: str) -> bool:
     return all(matches) if mode == "all" else any(matches)
 
 
+def _matches_condition(value: str, condition: dict) -> bool:
+    """Evaluate one normalized text condition against a message field."""
+    operator = condition["operator"]
+    expected = condition["value"]
+    case_sensitive = bool(condition.get("case_sensitive"))
+    candidate = value or ""
+    if not case_sensitive:
+        candidate = candidate.lower()
+        expected = expected.lower()
+
+    if operator in {"contains", "not_contains"}:
+        terms = [item.strip() for item in expected.split(",") if item.strip()]
+        if not terms:
+            return True
+        matches = [term in candidate for term in terms]
+        if operator == "contains":
+            return any(matches) if condition.get("value_mode") == "any" else all(matches)
+        return not any(matches)
+    if operator == "equals":
+        return candidate == expected
+    if operator == "starts_with":
+        return candidate.startswith(expected)
+    if operator == "ends_with":
+        return candidate.endswith(expected)
+
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        matched = bool(re.search(condition["value"], value or "", flags))
+    except re.error:
+        # API normalization rejects invalid expressions.  Keep this helper
+        # safe for callers that construct an in-memory rule directly.
+        matched = False
+    return not matched if operator == "not_regex" else matched
+
+
+def _matches_advanced_conditions(message: "IncomingMail", rule: dict) -> Optional[bool]:
+    """Return advanced-condition result, or ``None`` when none were supplied."""
+    raw_conditions = rule.get("conditions")
+    if not raw_conditions:
+        return None
+    try:
+        conditions = normalize_mail_conditions(raw_conditions)
+    except ValueError:
+        return False
+    values = {
+        "subject": message.subject or "",
+        "body": html_to_text(message.body),
+    }
+    results = [
+        _matches_condition(values[item["field"]], item)
+        for item in conditions
+    ]
+    if not results:
+        return None
+    logic = str(rule.get("condition_logic") or "all").lower()
+    return any(results) if logic == "any" else all(results)
+
+
 def matches_mail_rule(message: "IncomingMail", rule: dict) -> bool:
     """Apply a user-facing sender/subject/body rule to a normalized message."""
     sender = message.sender.strip().lower()
@@ -66,6 +211,11 @@ def matches_mail_rule(message: "IncomingMail", rule: dict) -> bool:
         sender_matches = sender in senders
     if not sender_matches:
         return False
+
+    advanced_match = _matches_advanced_conditions(message, rule)
+    if advanced_match is not None:
+        return advanced_match
+
     conditions = []
     subject = str(rule.get("subject") or "").strip()
     body = str(rule.get("body") or "").strip()

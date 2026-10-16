@@ -132,6 +132,35 @@
       #filter-dialog { width: min(640px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
       .password-form select { width: 100%; padding: 9px; border: 1px solid #c7ced6; border-radius: 6px; background: white; font: inherit; }
       .advanced-fields { margin-top: 14px; }
+      .filter-form { gap: 12px; }
+      .form-section { display: grid; gap: 12px; padding-top: 4px; }
+      .form-section + .form-section { margin-top: 8px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+      .form-section h3 { margin: 0; font-size: 14px; }
+      .form-section > .muted { margin: -4px 0 0; line-height: 1.5; }
+      .field-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+      .filter-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 700; }
+      .filter-form input, .filter-form select, .filter-form textarea {
+        width: 100%; min-height: 38px; border: 1px solid #c7ced6; border-radius: 6px; padding: 7px 9px; font: inherit;
+      }
+      .filter-form textarea { min-height: 76px; resize: vertical; }
+      .filter-form input:focus, .filter-form select:focus, .filter-form textarea:focus {
+        border-color: #2563eb; outline: 2px solid #bfdbfe; outline-offset: 0;
+      }
+      .field-help { color: #6b7280; font-size: 12px; font-weight: 400; line-height: 1.45; }
+      .mode-note { grid-column: 1 / -1; margin: -6px 0 0; }
+      .condition-list { display: grid; gap: 8px; }
+      .condition-row { display: grid; grid-template-columns: 112px 132px minmax(0, 1fr) auto; gap: 7px; align-items: center; }
+      .condition-row input, .condition-row select { min-height: 34px; padding: 5px 7px; font-size: 12px; }
+      .condition-row input[type="checkbox"] { width: auto; min-height: 0; }
+      .condition-case { display: inline-flex; align-items: center; gap: 4px; color: #4b5563; font-size: 11px; font-weight: 400; white-space: nowrap; }
+      .condition-remove { min-height: 30px; padding: 4px 8px; }
+      .condition-empty { padding: 10px; border: 1px dashed #c7ced6; border-radius: 6px; color: #6b7280; font-size: 12px; }
+      .advanced-fields { display: grid; gap: 12px; }
+      .advanced-fields > .muted { line-height: 1.5; }
+      .advanced-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .advanced-actions .btn { min-height: 30px; padding: 4px 8px; font-size: 12px; }
+      .checkbox-label { display: flex !important; grid-template-columns: auto 1fr; align-items: center; gap: 7px !important; font-weight: 400 !important; }
+      .checkbox-label input { width: auto; min-height: 0; }
       summary { cursor: pointer; font-weight: 600; }
       #filter-summary { padding: 10px; background: #eff6ff; border-radius: 6px; line-height: 1.6; }
       .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -139,6 +168,11 @@
         .topbar, .section-head { align-items: flex-start; }
         .topbar, .content { padding-left: 10px; padding-right: 10px; }
         .callback-submit { grid-template-columns: 1fr; }
+        .field-grid { grid-template-columns: 1fr; }
+        .condition-row { grid-template-columns: 1fr 1fr; }
+        .condition-row input { grid-column: 1 / -1; }
+        .condition-case { grid-column: 1; }
+        .condition-remove { grid-column: 2; justify-self: end; }
         th, td { font-size: 13px; }
       }
     </style>
@@ -195,10 +229,10 @@
         </section>
         <section class="section">
           <div class="section-head">
-            <div><h2>收件设置</h2><p class="muted">为已授权邮箱配置验证码接收规则。OpenAI 规则固定保留，其他规则可独立修改或删除。</p></div>
+            <div><h2>收件设置</h2><p class="muted">为已授权邮箱配置邮件验证码或登录链接的接收规则。OpenAI 固定规则始终保留，其他规则可独立修改或删除。</p></div>
             <button class="btn btn-primary" type="button" id="add-filter">新增收件箱</button>
           </div>
-          <p class="muted">发件人始终必须匹配；主题、正文留空表示不限。多个收件箱按列表顺序匹配，优先返回首个提取成功的结果。适用于 Gmail、Outlook 和 Proton 直连；旧 Proton 本地中继仍仅接收 OpenAI 验证码。</p>
+          <p class="muted">每个收件箱先匹配发件人，再按主题、正文和高级条件筛选。条件留空表示不限；多个收件箱按列表顺序匹配，优先返回首个提取成功的结果。Gmail、Outlook 和 Proton 直连使用这些规则；旧版 Proton 本地中继仍只转发 OpenAI 验证码。</p>
           <div id="filter-message" class="message muted"></div>
           <div class="table-wrap">
             <table class="account-table filter-table">
@@ -258,28 +292,91 @@
     </dialog>
 
     <dialog id="filter-dialog">
-      <form id="filter-form" class="password-form">
+      <form id="filter-form" class="password-form filter-form">
         <h2 id="filter-title">新增收件箱</h2>
-        <button class="btn" type="button" id="filter-anthropic">填入 Anthropic / Claude 模板</button>
         <div id="filter-error" class="bad" role="alert"></div>
-        <label>名称（可选）<input id="filter-name" maxlength="120" placeholder="例如：Siliconflow 验证码" /></label>
-        <label>发件人匹配方式<select id="filter-sender-mode"><option value="exact">完整邮箱</option><option value="domain">完整域名</option><option value="regex">正则（动态发件人）</option></select></label>
-        <label>发件人邮箱 / 域名（多个用英文逗号分隔）<input id="filter-senders" maxlength="1000" placeholder="no-reply@siliconflow.cn" /></label>
-        <label id="filter-sender-pattern-label" hidden>发件人正则（匹配完整地址）<input id="filter-sender-pattern" maxlength="500" spellcheck="false" /></label>
-        <label>接收内容<select id="filter-extract-type"><option value="code">验证码</option><option value="link">登录链接</option><option value="auto">自动（优先链接，其次验证码）</option></select></label>
-        <label>主题（可选）<input id="filter-subject" maxlength="500" placeholder="Siliconflow 邮箱验证" /></label>
-        <label>正文（可选）<input id="filter-body" maxlength="500" placeholder="留空表示不限制正文" /></label>
+
+        <section class="form-section">
+          <h3>基础信息</h3>
+          <p class="muted">先填写最常用的筛选条件。发件人是必填项；主题和正文可留空。</p>
+          <label>收件箱名称（可选）
+            <input id="filter-name" maxlength="120" placeholder="例如：Siliconflow 验证码" />
+            <span class="field-help">仅用于控制台识别，不影响匹配。</span>
+          </label>
+          <div class="field-grid">
+            <label>发件人匹配方式
+              <select id="filter-sender-mode">
+                <option value="exact">完整邮箱地址</option>
+                <option value="domain">邮箱域名</option>
+                <option value="regex">发件人正则</option>
+              </select>
+            </label>
+            <label id="filter-senders-label"><span id="filter-senders-label-text">发件人邮箱</span>
+              <input id="filter-senders" maxlength="1000" placeholder="no-reply@siliconflow.cn" />
+              <span id="filter-senders-help" class="field-help">多个值用英文逗号分隔，必须是完整邮箱地址。</span>
+            </label>
+            <p id="filter-sender-mode-note" class="field-help mode-note">只匹配这个发件人地址。</p>
+            <label id="filter-sender-pattern-label" hidden>发件人正则（匹配完整地址）
+              <input id="filter-sender-pattern" maxlength="500" spellcheck="false" placeholder="例如：no-reply(?:-[a-z0-9]+)?@example.com" />
+              <span class="field-help">仅在发件人格式不固定时使用；正则会匹配完整邮箱地址。</span>
+            </label>
+          </div>
+          <label>接收内容
+            <select id="filter-extract-type">
+              <option value="code">验证码</option>
+              <option value="link">登录链接</option>
+              <option value="auto">自动识别（优先链接，其次验证码）</option>
+            </select>
+            <span class="field-help">验证码规则默认提取 4–8 位数字；登录链接只提取 HTTPS 白名单域名。</span>
+          </label>
+          <div class="field-grid">
+            <label>主题关键词（可选）
+              <input id="filter-subject" maxlength="500" placeholder="例如：Siliconflow 邮箱验证" />
+              <span class="field-help">多个关键词用英文逗号分隔，默认全部出现。</span>
+            </label>
+            <label>正文关键词（可选）
+              <textarea id="filter-body" maxlength="500" placeholder="例如：验证码,登录"></textarea>
+              <span class="field-help">正文会先去除 HTML 标签再匹配。</span>
+            </label>
+          </div>
+        </section>
+
         <p id="filter-summary" class="muted"></p>
         <details id="filter-advanced">
           <summary>高级筛选</summary>
-          <div class="password-form advanced-fields">
-            <label>条件关系<select id="filter-match-mode"><option value="all">主题与正文全部满足（和）</option><option value="any">主题或正文任一满足（或）</option></select></label>
-            <label>同一字段多个关键词<select id="filter-text-mode"><option value="all">全部出现</option><option value="any">任一出现</option></select></label>
-            <label>验证码正则<input id="filter-code-pattern" maxlength="500" value="(?&lt;!\d)(\d{4,8})(?!\d)" /></label>
-            <span class="muted">默认提取 4–8 位数字。有捕获组时返回第一组，否则返回完整匹配。主题、正文忽略大小写，多个关键词用英文逗号分隔。</span>
-            <label>登录按钮文字正则<input id="filter-link-text" maxlength="500" spellcheck="false" /></label>
-            <label>允许的登录链接域名<input id="filter-allowed-hosts" maxlength="1000" placeholder="例如 claude.ai，多个用英文逗号分隔" /></label>
-            <span class="muted">链接/自动模式必须填写域名。仅接受 HTTPS 和完整域名匹配，不自动允许子域名，不访问链接。多个不同链接同时匹配时不提取，请收紧按钮规则。</span>
+          <div class="advanced-fields">
+            <p class="muted">基础主题/正文会自动生成“包含”条件。下面可继续添加排除词、正则或更严格的字段条件；高级条件存在时，保存的数据会优先使用条件列表。</p>
+            <label>条件之间
+              <select id="filter-match-mode">
+                <option value="all">全部满足（和）</option>
+                <option value="any">任一满足（或）</option>
+              </select>
+              <span class="field-help">例如“主题包含验证”与“正文不包含营销”可设为全部满足。</span>
+            </label>
+            <div class="advanced-actions">
+              <span class="field-help">新增条件</span>
+              <button class="btn" type="button" id="condition-add">添加条件</button>
+            </div>
+            <div id="condition-list" class="condition-list" aria-live="polite"></div>
+            <label>同一基础字段的关键词
+              <select id="filter-text-mode">
+                <option value="all">全部出现</option>
+                <option value="any">任一出现</option>
+              </select>
+              <span class="field-help">只影响基础主题/正文中的逗号分隔关键词；高级条件按各自关系参与匹配。</span>
+            </label>
+            <label>验证码正则
+              <input id="filter-code-pattern" maxlength="500" value="(?&lt;!\d)(\d{4,8})(?!\d)" spellcheck="false" />
+              <span class="field-help">有捕获组时返回第一组，否则返回完整匹配。</span>
+            </label>
+            <label>登录按钮文字正则
+              <input id="filter-link-text" maxlength="500" spellcheck="false" placeholder="例如：sign\s*in|login|verify" />
+            </label>
+            <label>允许的登录链接域名
+              <input id="filter-allowed-hosts" maxlength="1000" placeholder="例如 login.example.com，多个用英文逗号分隔" />
+              <span class="field-help">链接/自动模式必须填写完整域名（不含协议、路径或通配符），只接受 HTTPS，不访问链接。</span>
+            </label>
+            <label class="checkbox-label"><input id="filter-enabled" type="checkbox" checked />启用此收件箱规则<span class="field-help">停用后保留设置，但不会参与匹配。</span></label>
           </div>
         </details>
         <div class="dialog-actions"><button id="filter-cancel" class="btn" type="button">取消</button><button id="filter-save" class="btn btn-primary" type="submit">保存</button></div>
@@ -315,6 +412,8 @@
       const filterMessage = document.getElementById('filter-message');
       const filterDialog = document.getElementById('filter-dialog');
       const filterForm = document.getElementById('filter-form');
+      const conditionList = document.getElementById('condition-list');
+      const conditionAdd = document.getElementById('condition-add');
       let editingFilterId = '';
       let filters = [];
       const codexAuthDialog = document.getElementById('codex-auth-dialog');
@@ -385,10 +484,17 @@
         return data;
       }
 
+      const senderModeLabels = { exact: '完整邮箱', domain: '域名', regex: '正则' };
+      const conditionOperatorLabels = {
+        contains: '包含', not_contains: '不包含', regex: '正则匹配', not_regex: '正则不匹配',
+        equals: '等于', starts_with: '开头是', ends_with: '结尾是',
+      };
+
       function filterRow(item) {
-        const conditions = item.builtin ? '主题或正文同时包含 ChatGPT/OpenAI 与登录、验证等关键词（固定规则）' : [item.subject ? `主题：${item.subject}` : '', item.body ? `正文：${item.body}` : ''].filter(Boolean).join('；') || '仅按发件人和验证码格式';
-        const relation = item.match_mode === 'any' ? '任一条件' : '全部条件';
-        return `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.builtin ? '<div class="muted">内置，固定启用</div>' : (item.enabled === false ? '<div class="warn">已停用</div>' : '')}</td><td>${escapeHtml(item.sender_mode === 'regex' ? item.sender_pattern : item.senders.join(', '))}<div class="muted">${escapeHtml(item.sender_mode || 'exact')} · ${item.extract_type === 'link' ? '登录链接' : item.extract_type === 'auto' ? '自动识别' : '验证码'}</div></td><td>${escapeHtml(conditions)}</td><td>${relation}<div class="muted">关键词：${item.text_mode === 'any' ? '任一' : '全部'}</div></td><td>${item.builtin ? `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">查看</button>` : `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">修改</button><button class="btn btn-danger" data-filter-action="delete" data-id="${escapeAttr(item.id)}">删除</button>`}</td></tr>`;
+        const conditionDetails = item.conditions?.slice(0, 3).map(condition => `${condition.field === 'body' ? '正文' : '主题'}${conditionOperatorLabels[condition.operator] || '匹配'}：${condition.value}`).join('；');
+        const conditions = item.builtin ? '主题或正文同时包含 ChatGPT/OpenAI 与登录、验证等关键词（固定规则）' : conditionDetails ? `${conditionDetails}${item.conditions.length > 3 ? '；…' : ''}` : [item.subject ? `主题：${item.subject}` : '', item.body ? `正文：${item.body}` : ''].filter(Boolean).join('；') || '仅按发件人和验证码格式';
+        const relation = item.condition_logic === 'any' || item.match_mode === 'any' ? '任一条件' : '全部条件';
+        return `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.builtin ? '<div class="muted">内置，固定启用</div>' : (item.enabled === false ? '<div class="warn">已停用</div>' : '')}</td><td>${escapeHtml(item.sender_mode === 'regex' ? item.sender_pattern : item.senders.join(', '))}<div class="muted">${escapeHtml(senderModeLabels[item.sender_mode] || item.sender_mode || '完整邮箱')} · ${item.extract_type === 'link' ? '登录链接' : item.extract_type === 'auto' ? '自动识别' : '验证码'}</div></td><td>${escapeHtml(conditions)}</td><td>${relation}<div class="muted">关键词：${item.text_mode === 'any' ? '任一' : '全部'}</div></td><td>${item.builtin ? `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">查看</button>` : `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">修改</button><button class="btn btn-danger" data-filter-action="delete" data-id="${escapeAttr(item.id)}">删除</button>`}</td></tr>`;
       }
 
       async function loadFilters() {
@@ -397,6 +503,65 @@
           filters = data.items;
           filterRows.innerHTML = data.items.length ? data.items.map(filterRow).join('') : '<tr><td colspan="5" class="muted">暂无收件设置</td></tr>';
         } catch (error) { setMessage(filterMessage, error.message, true); }
+      }
+
+      const conditionOperators = [
+        ['contains', '包含'], ['not_contains', '不包含'], ['regex', '正则匹配'],
+        ['not_regex', '正则不匹配'], ['equals', '完全等于'], ['starts_with', '开头是'], ['ends_with', '结尾是'],
+      ];
+
+      function conditionRowHtml(condition = {}) {
+        const field = condition.field === 'body' ? 'body' : 'subject';
+        const operator = conditionOperators.some(([value]) => value === condition.operator) ? condition.operator : 'contains';
+        const options = conditionOperators.map(([value, label]) => `<option value="${value}"${operator === value ? ' selected' : ''}>${label}</option>`).join('');
+        return `<div class="condition-row" data-condition-row>
+          <select data-condition-field aria-label="条件字段"><option value="subject"${field === 'subject' ? ' selected' : ''}>主题</option><option value="body"${field === 'body' ? ' selected' : ''}>正文</option></select>
+          <select data-condition-operator aria-label="条件方式">${options}</select>
+          <input data-condition-value maxlength="500" value="${escapeAttr(condition.value || '')}" placeholder="填写关键词或正则" aria-label="条件内容" />
+          <label class="condition-case"><input type="checkbox" data-condition-case${condition.case_sensitive ? ' checked' : ''} />区分大小写</label>
+          <button class="btn btn-danger condition-remove" type="button" data-condition-remove>移除</button>
+        </div>`;
+      }
+
+      function renderConditions(conditions = []) {
+        const rows = Array.isArray(conditions) ? conditions : [];
+        conditionList.innerHTML = rows.length ? rows.map(conditionRowHtml).join('') : '<div class="condition-empty">尚未添加高级条件。基础主题和正文条件仍会按上方设置匹配。</div>';
+        for (const field of conditionList.querySelectorAll('input, select, button')) field.disabled = Boolean(filters.find(item => item.id === editingFilterId)?.builtin);
+      }
+
+      function readConditions() {
+        return [...conditionList.querySelectorAll('[data-condition-row]')].map(row => ({
+          field: row.querySelector('[data-condition-field]').value,
+          operator: row.querySelector('[data-condition-operator]').value,
+          value: row.querySelector('[data-condition-value]').value.trim(),
+          case_sensitive: row.querySelector('[data-condition-case]').checked,
+        })).filter(condition => condition.value);
+      }
+
+      function basicConditions(subject, body) {
+        const conditions = [];
+        for (const [field, value] of [['subject', subject], ['body', body]]) {
+          if (value) conditions.push({ field, operator: 'contains', value, value_mode: document.getElementById('filter-text-mode').value, case_sensitive: false });
+        }
+        return conditions;
+      }
+
+      function advancedConditionsForEditor(item) {
+        const conditions = Array.isArray(item?.conditions) ? item.conditions.map(condition => ({ ...condition })) : [];
+        if (!conditions.length || !item) return conditions;
+        const basic = basicConditions(item.subject || '', item.body || '');
+        const used = new Set();
+        return conditions.filter(condition => {
+          const match = basic.findIndex((candidate, index) => !used.has(index)
+            && candidate.field === condition.field
+            && candidate.operator === condition.operator
+            && (candidate.value === condition.value
+              || candidate.value.split(',').map(value => value.trim()).includes(condition.value))
+            && !condition.case_sensitive);
+          if (match < 0) return true;
+          used.add(match);
+          return false;
+        });
       }
 
       function openFilterDialog(item = null) {
@@ -412,13 +577,15 @@
         document.getElementById('filter-senders').value = item?.senders?.join(', ') || '';
         document.getElementById('filter-subject').value = item?.subject || '';
         document.getElementById('filter-body').value = item?.body || '';
-        document.getElementById('filter-match-mode').value = item?.match_mode || 'all';
+        document.getElementById('filter-match-mode').value = item?.condition_logic || item?.match_mode || 'all';
         document.getElementById('filter-text-mode').value = item?.text_mode || 'all';
         document.getElementById('filter-code-pattern').value = item?.code_pattern || String.raw`(?<!\d)(\d{4,8})(?!\d)`;
+        document.getElementById('filter-enabled').checked = item?.enabled !== false;
+        renderConditions(advancedConditionsForEditor(item));
         document.getElementById('filter-error').textContent = '';
-        for (const field of filterForm.querySelectorAll('input, select')) field.disabled = Boolean(item?.builtin);
+        for (const field of filterForm.querySelectorAll('input, select, textarea')) field.disabled = Boolean(item?.builtin);
+        conditionAdd.disabled = Boolean(item?.builtin);
         document.getElementById('filter-save').hidden = Boolean(item?.builtin);
-        document.getElementById('filter-anthropic').hidden = Boolean(item?.builtin);
         updateFilterSummary();
         if (item?.builtin) document.getElementById('filter-summary').textContent = 'OpenAI 固定规则：发件人必须在允许列表；主题或正文内同时包含 ChatGPT/OpenAI 和登录、验证等关键词。优先提取关键词附近数字，强主题下回退到独立数字，优先六位。不可修改或删除。';
         filterDialog.showModal();
@@ -429,24 +596,56 @@
         document.getElementById('filter-senders').required = !regex;
         document.getElementById('filter-sender-pattern').required = regex;
         document.getElementById('filter-sender-pattern-label').hidden = !regex;
+        document.getElementById('filter-senders-label').hidden = regex;
+        const senderMode = document.getElementById('filter-sender-mode').value;
+        const sendersHelp = document.getElementById('filter-senders-help');
+        const senderNote = document.getElementById('filter-sender-mode-note');
+        if (senderMode === 'domain') {
+          document.getElementById('filter-senders-label-text').textContent = '发件人域名';
+          document.getElementById('filter-senders').placeholder = 'siliconflow.cn';
+          sendersHelp.textContent = '多个值用英文逗号分隔，仅匹配邮箱 @ 后的完整域名。';
+          senderNote.textContent = '同一域名下的所有发件人都会匹配。';
+        } else if (senderMode === 'regex') {
+          senderNote.textContent = '正则模式会匹配完整发件人地址；请优先使用完整邮箱或域名模式。';
+        } else {
+          document.getElementById('filter-senders-label-text').textContent = '发件人邮箱';
+          document.getElementById('filter-senders').placeholder = 'no-reply@siliconflow.cn';
+          sendersHelp.textContent = '多个值用英文逗号分隔，必须是完整邮箱地址。';
+          senderNote.textContent = '只匹配这些完整发件人地址。';
+        }
         const type = document.getElementById('filter-extract-type').value;
-        const relation = document.getElementById('filter-match-mode').value === 'any' ? '主题或正文任一' : '主题与正文全部';
+        const relation = document.getElementById('filter-match-mode').value === 'any' ? '任一条件' : '全部条件';
         document.getElementById('filter-summary').textContent = `必须匹配发件人；${relation}满足已填关键词，留空不限。${type === 'code' ? '提取验证码。' : '提取 HTTPS 登录按钮链接，需在高级筛选确认域名白名单。'}`;
       }
       filterForm.addEventListener('change', updateFilterSummary);
-      document.getElementById('filter-anthropic').addEventListener('click', () => {
-        openFilterDialog({ id: editingFilterId, name: 'Anthropic / Claude 登录', senders: [], sender_mode: 'regex',
-          sender_pattern: String.raw`no-reply(?:-[A-Za-z0-9]+)+@mail\.anthropic\.com`,
-          subject: 'Your secure link to Claude', body: 'Click the button below to finish signing in', extract_type: 'link',
-          link_text_pattern: String.raw`^\s*sign\s+in\s*$`, allowed_hosts: ['claude.ai'] });
-        document.getElementById('filter-advanced').open = true;
-        document.getElementById('filter-summary').textContent += ' 模板按邮件正文识别；claude.ai 仅为待确认默认值，请按真实按钮链接确认域名。';
+      document.getElementById('filter-sender-mode').addEventListener('change', updateFilterSummary);
+      conditionAdd.addEventListener('click', () => {
+        const empty = conditionList.querySelector('.condition-empty');
+        if (empty) empty.remove();
+        conditionList.innerHTML += conditionRowHtml();
+        const rows = conditionList.querySelectorAll('[data-condition-row]');
+        const input = rows[rows.length - 1]?.querySelector('[data-condition-value]');
+        if (input) input.focus();
+      });
+      conditionList.addEventListener('click', event => {
+        const remove = event.target.closest('[data-condition-remove]');
+        if (!remove) return;
+        remove.closest('[data-condition-row]')?.remove();
+        if (!conditionList.querySelector('[data-condition-row]')) renderConditions([]);
       });
 
       document.getElementById('add-filter').addEventListener('click', () => openFilterDialog());
       document.getElementById('filter-cancel').addEventListener('click', () => filterDialog.close());
       filterForm.addEventListener('submit', async (event) => {
         event.preventDefault();
+        const subject = document.getElementById('filter-subject').value.trim();
+        const body = document.getElementById('filter-body').value.trim();
+        const advancedConditions = readConditions();
+        const totalConditions = advancedConditions.length + (subject ? 1 : 0) + (body ? 1 : 0);
+        if (totalConditions > 20) {
+          document.getElementById('filter-error').textContent = '最多添加 20 条条件，请合并关键词或删除多余条件。';
+          return;
+        }
         const payload = {
           sender_mode: document.getElementById('filter-sender-mode').value,
           sender_pattern: document.getElementById('filter-sender-pattern').value.trim(),
@@ -455,12 +654,20 @@
           allowed_hosts: document.getElementById('filter-allowed-hosts').value.split(',').map(value => value.trim()).filter(Boolean),
           name: document.getElementById('filter-name').value.trim(),
           senders: document.getElementById('filter-senders').value.split(',').map(value => value.trim()).filter(Boolean),
-          subject: document.getElementById('filter-subject').value.trim(),
-          body: document.getElementById('filter-body').value.trim(),
+          subject,
+          body,
           match_mode: document.getElementById('filter-match-mode').value,
+          condition_logic: document.getElementById('filter-match-mode').value,
           text_mode: document.getElementById('filter-text-mode').value,
+          enabled: document.getElementById('filter-enabled').checked,
           code_pattern: document.getElementById('filter-code-pattern').value.trim(),
         };
+        if (advancedConditions.length) {
+          // The server treats a non-empty conditions list as the complete text
+          // rule. Convert basic comma-separated values to simple contains rows
+          // so adding one advanced row never silently drops the basic fields.
+          payload.conditions = [...basicConditions(subject, body), ...advancedConditions];
+        }
         try {
           document.getElementById('filter-save').disabled = true;
           await api(editingFilterId ? `/api/admin/mail-filters/${encodeURIComponent(editingFilterId)}` : '/api/admin/mail-filters', {

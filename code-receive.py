@@ -40,6 +40,7 @@ from mail_messages import (
     IncomingMail,
     extract_mail_result,
     extract_verification_code as extract_code_from_mail,
+    normalize_mail_conditions,
 )
 from mail_providers.proton import (
     ProtonAuthorizationRequired,
@@ -732,6 +733,10 @@ def normalize_mail_filter(value: Any, *, builtin: bool = False) -> Dict[str, Any
         re.compile(link_text_pattern)
     except re.error as error:
         raise ValueError(f"登录按钮文字正则无效：{error}") from error
+    conditions = normalize_mail_conditions(item.get("conditions"))
+    condition_logic = str(item.get("condition_logic") or "all").strip().lower()
+    if condition_logic not in {"all", "any"}:
+        raise ValueError("高级条件关系必须是全部满足或任一满足")
     return {
         "id": str(item.get("id") or secrets.token_hex(8)),
         "name": name,
@@ -744,6 +749,8 @@ def normalize_mail_filter(value: Any, *, builtin: bool = False) -> Dict[str, Any
         "body": str(item.get("body") or "").strip()[:500],
         "match_mode": "any" if str(item.get("match_mode") or "all").lower() == "any" else "all",
         "text_mode": "any" if str(item.get("text_mode") or "all").lower() == "any" else "all",
+        "conditions": conditions,
+        "condition_logic": condition_logic,
         "code_pattern": code_pattern[:500],
         "extract_type": extract_type,
         "link_text_pattern": link_text_pattern,
