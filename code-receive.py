@@ -734,7 +734,7 @@ def normalize_mail_filter(value: Any, *, builtin: bool = False) -> Dict[str, Any
     except re.error as error:
         raise ValueError(f"登录按钮文字正则无效：{error}") from error
     conditions = normalize_mail_conditions(item.get("conditions"))
-    condition_logic = str(item.get("condition_logic") or "all").strip().lower()
+    condition_logic = str(item.get("condition_logic") or item.get("match_mode") or "all").strip().lower()
     if condition_logic not in {"all", "any"}:
         raise ValueError("高级条件关系必须是全部满足或任一满足")
     return {
