@@ -437,7 +437,7 @@
       document.getElementById('filter-anthropic').addEventListener('click', () => {
         openFilterDialog({ id: editingFilterId, name: 'Anthropic / Claude 登录', senders: [], sender_mode: 'regex',
           sender_pattern: String.raw`no-reply(?:-[A-Za-z0-9]+)+@mail\.anthropic\.com`,
-          subject: '', body: 'Sign in to Claude', extract_type: 'link',
+          subject: 'Your secure link to Claude', body: 'Click the button below to finish signing in', extract_type: 'link',
           link_text_pattern: String.raw`^\s*sign\s+in\s*$`, allowed_hosts: ['claude.ai'] });
         document.getElementById('filter-advanced').open = true;
         document.getElementById('filter-summary').textContent += ' 模板按邮件正文识别；claude.ai 仅为待确认默认值，请按真实按钮链接确认域名。';
