@@ -56,18 +56,22 @@
       .login-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       .detail-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
       .detail-label { min-width: 126px; font-weight: 700; }
-      .email-detail { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: center; padding-top: 10px; border-top: 1px dashed #d1d5db; }
+      .email-detail { display: grid; grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; padding-top: 10px; border-top: 1px dashed #d1d5db; }
       .history-inline { grid-column: 1 / -1; margin-top: 2px; padding: 10px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
       .history-item { margin-bottom: 8px; padding-bottom: 7px; border-bottom: 1px dashed #e5e7eb; }
       .history-item:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
       .history-code { display: inline-block; padding: 2px 6px; border-radius: 6px; background: #fef08a; color: #b45309; font-weight: 700; letter-spacing: 2px; }
       .history-time { color: #166534; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       .code { color: #0ea5e9; font-weight: 700; }
-      .email-result-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-      .mail-result { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
-      .mail-link { min-width: 0; overflow: hidden; color: #2563eb; text-overflow: ellipsis; white-space: nowrap; }
+      .email-result-line { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px 6px; min-width: 0; }
+      .email-result-label { flex: 0 0 100%; }
+      .mail-result { display: flex; flex: 1 1 220px; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+      .mail-link { min-width: 0; flex: 1 1 220px; overflow: hidden; color: #2563eb; text-overflow: ellipsis; white-space: nowrap; }
+      .mail-source-tag { display: inline-block; margin-right: 6px; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; line-height: 1.4; vertical-align: 1px; }
+      .mail-source-openai { background: #dcfce7; color: #166534; }
+      .mail-source-anthropic { background: #ffedd5; color: #9a3412; }
       .email-detail > div { min-width: 0; }
-      @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr 1fr; } }
+      @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
@@ -185,6 +189,12 @@
         return { text: item.status || '未知', cls: 'status-neutral', detail: reason };
       }
       function statusLine(status, label) { return `<div class="status-line"><span class="status ${status.cls}">${escapeHtml(status.text)}</span><span class="status-tag ${label === 'Codex' ? 'tag-codex' : 'tag-email'}">${label}</span>${status.detail ? `<span class="muted">${escapeHtml(status.detail)}</span>` : ''}</div>`; }
+      function mailSourceTag(ruleName, subject = '') {
+        const normalized = `${ruleName || ''} ${subject || ''}`.toLowerCase();
+        if (normalized.includes('openai') || normalized.includes('chatgpt')) return '<span class="mail-source-tag mail-source-openai">OpenAI</span>';
+        if (normalized.includes('anthropic') || normalized.includes('claude')) return '<span class="mail-source-tag mail-source-anthropic">Anthropic</span>';
+        return '';
+      }
       function mailResultHtml(type, value) {
         if (!value) return '<span class="muted">暂无</span>';
         if (type === 'link') {
@@ -198,13 +208,13 @@
         if (historyName !== mail.name || historyLoading) return historyLoading && historyName === mail.name ? '<div class="history-inline muted">历史记录加载中...</div>' : '';
         if (historyError) return `<div class="history-inline status-bad">${escapeHtml(historyError)}</div>`;
         if (!historyItems.length) return '<div class="history-inline muted">暂无历史收件记录。</div>';
-        return `<div class="history-inline"><strong>历史收件记录</strong>${historyItems.map(item => `<div class="history-item"><div>${mailResultHtml(item.type, item.value || item.code)}</div><div class="history-time">${escapeHtml(formatDateTime(item.created_at))}</div><div>主题：${escapeHtml(item.subject || '-')}</div></div>`).join('')}</div>`;
+        return `<div class="history-inline"><strong>历史收件记录</strong>${historyItems.map(item => `<div class="history-item"><div>${mailResultHtml(item.type, item.value || item.code)}</div><div class="history-time">${escapeHtml(formatDateTime(item.created_at))}</div><div>主题：${mailSourceTag(item.rule_name, item.subject)}${escapeHtml(item.subject || '-')}</div></div>`).join('')}</div>`;
       }
       function detailRow(row) {
         const credentials = row.credentials;
         const password = credentials && credentials.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(credentials.gpt_password_account)}">复制</button>` : '<span class="muted">未设置</span>';
         const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" title="复制当前六位验证码，每30秒更新" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button><span data-totp-validity="${escapeAttr(credentials.totp_secret_account)}"></span>` : '<span class="muted">未配置</span>';
-        const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div class="email-result-line"><strong>最新接收：</strong>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}</div><div><strong>主题：</strong>${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
+        const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div class="email-result-line"><strong class="email-result-label">最新接收：</strong>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}</div><div class="mail-subject-line"><strong>主题：</strong>${mailSourceTag(mail.rule_name, mail.subject)}${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
         return `<tr class="detail-row"><td colspan="4"><div class="detail-panel"><div class="login-detail"><div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div><div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div></div>${emailLine}</div></td></tr>`;
       }
       function rowHtml(row) {

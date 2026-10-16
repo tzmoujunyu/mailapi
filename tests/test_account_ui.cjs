@@ -139,6 +139,20 @@ test('mail links render as truncated external anchors and can be copied', async 
   assert.ok(app.calls.some(([action, copied]) => action === 'clipboard' && copied === value));
 });
 
+test('mail results show source tags beside the subject and keep the result label separate', async () => {
+  const app = page('static/index.html'); await flush();
+  assert.match(vm.runInContext("mailSourceTag('OpenAI 验证码', '')", app.context), /mail-source-openai\">OpenAI/);
+  assert.match(vm.runInContext("mailSourceTag('', 'Your temporary ChatGPT login code')", app.context), /mail-source-openai\">OpenAI/);
+  assert.match(vm.runInContext("mailSourceTag('', 'Your secure link to Claude')", app.context), /mail-source-anthropic\">Anthropic/);
+  const html = vm.runInContext(`detailRow(${JSON.stringify({
+    credentials: {},
+    mails: [{ name: 'account-1', result_type: 'link', result_value: 'https://claude.ai/magic-link#token', rule_name: 'Anthropic / Claude 登录', subject: 'Claude', updated_at: '' }],
+  })})`, app.context);
+  assert.match(html, /class="email-result-label">最新接收：/);
+  assert.match(html, /class="mail-source-tag mail-source-anthropic">Anthropic/);
+  assert.match(html, /class="mail-subject-line"/);
+});
+
 test('2FA clock ignores slow samples and wall-clock jumps and catches up after paused ticks', async () => {
   const app = page('static/index.html'); await flush();
   let elapsed = 1000;
