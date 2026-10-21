@@ -240,7 +240,7 @@ runtime/
     └── backups/
 ```
 
-Codex 额度默认每 1 分钟后台刷新一次，网页上的账号额度显示也每 1 分钟同步一次。订阅信息默认每 1 小时刷新一次，账号栏会显示“无订阅”或订阅到期时间。可通过 `CODEX_REFRESH_INTERVAL_SECONDS` 调整额度刷新间隔，通过 `CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS` 调整订阅刷新间隔。
+Codex 额度默认每 1 分钟后台刷新一次，网页上的账号额度显示也每 1 分钟同步一次。订阅信息默认每 5 分钟刷新一次，账号栏会显示“无订阅”或订阅到期时间。可通过 `CODEX_REFRESH_INTERVAL_SECONDS` 调整额度刷新间隔，通过 `CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS` 调整订阅刷新间隔。
 
 默认 Codex 授权回调地址与 Codex CLI/Codex-Manager 保持一致，使用独立本地端口：
 
