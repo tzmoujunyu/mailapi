@@ -193,6 +193,8 @@ MAIL_RELAY_REPLAY_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
 ACCESS_PASSWORD = ""
 ACCESS_PASSWORD_FROM_ENV = False
+ADMIN_ACCESS_PASSWORD = ""
+ADMIN_ACCESS_PASSWORD_FROM_ENV = False
 ACCESS_COOKIE_NAME = "chatgpt_code_access"
 ERROR_LOGGER = logging.getLogger("mailapi.errors")
 OPENAI_CODE_SENDERS = {
@@ -242,6 +244,7 @@ def generate_access_password(length: int = 20) -> str:
 
 def init_access_password() -> None:
     global ACCESS_PASSWORD, ACCESS_PASSWORD_FROM_ENV
+    global ADMIN_ACCESS_PASSWORD, ADMIN_ACCESS_PASSWORD_FROM_ENV
     configured = os.getenv("ACCESS_PASSWORD", "").strip()
     if configured:
         ACCESS_PASSWORD = configured
@@ -249,6 +252,16 @@ def init_access_password() -> None:
     else:
         ACCESS_PASSWORD = generate_access_password()
         ACCESS_PASSWORD_FROM_ENV = False
+
+    configured_admin = os.getenv("ADMIN_ACCESS_PASSWORD", "").strip()
+    if configured_admin:
+        ADMIN_ACCESS_PASSWORD = configured_admin
+        ADMIN_ACCESS_PASSWORD_FROM_ENV = True
+    else:
+        # Keep existing deployments working until they configure a separate
+        # administrator password.
+        ADMIN_ACCESS_PASSWORD = ACCESS_PASSWORD
+        ADMIN_ACCESS_PASSWORD_FROM_ENV = False
 
 
 def should_use_console_auth() -> bool:
@@ -2232,10 +2245,7 @@ def load_histories():
         CODE_HISTORY[cfg["name"]] = load_code_history(cfg["name"])
 
 
-def request_access_ok(request: FastAPIRequest) -> bool:
-    if not ACCESS_PASSWORD:
-        return True
-
+def request_access_role(request: FastAPIRequest) -> Optional[str]:
     cookie_token = request.cookies.get(ACCESS_COOKIE_NAME, "")
     header_token = request.headers.get("x-access-token", "")
     query_token = request.query_params.get("access_token", "")
@@ -2244,10 +2254,32 @@ def request_access_ok(request: FastAPIRequest) -> bool:
     if bearer.startswith("Bearer "):
         bearer_token = bearer.split(" ", 1)[1]
 
-    token = header_token or query_token or bearer_token
-    if cookie_token == ACCESS_PASSWORD or token == ACCESS_PASSWORD:
-        return True
-    return False
+    tokens = (cookie_token, header_token, query_token, bearer_token)
+    if ADMIN_ACCESS_PASSWORD and any(token == ADMIN_ACCESS_PASSWORD for token in tokens):
+        return "admin"
+    if ACCESS_PASSWORD and any(token == ACCESS_PASSWORD for token in tokens):
+        return "user"
+    if not ACCESS_PASSWORD and not ADMIN_ACCESS_PASSWORD:
+        return "user"
+    return None
+
+
+def request_access_ok(request: FastAPIRequest) -> bool:
+    return request_access_role(request) is not None
+
+
+def requires_admin_access(request: FastAPIRequest) -> bool:
+    path = request.url.path
+    return (
+        path == "/admin"
+        or path.startswith("/admin/")
+        or path == "/static/admin.html"
+        or path == "/api/admin"
+        or path.startswith("/api/admin/")
+        or path == "/api/codex"
+        or path.startswith("/api/codex/")
+        or (path.startswith("/api/history/") and request.method != "GET")
+    )
 
 
 @app.middleware("http")
@@ -2263,8 +2295,6 @@ async def error_log_guard(request: FastAPIRequest, call_next):
 async def access_guard(request: FastAPIRequest, call_next):
     if request.url.path == "/api/internal/mail-relay":
         return await call_next(request)
-    if request_access_ok(request):
-        return await call_next(request)
 
     path = request.url.path
     if path in {
@@ -2277,6 +2307,21 @@ async def access_guard(request: FastAPIRequest, call_next):
     if path == "/" and request.query_params.get("code") and request.query_params.get("state"):
         return await call_next(request)
 
+    role = request_access_role(request)
+    if requires_admin_access(request):
+        if role == "admin":
+            return await call_next(request)
+        if path.startswith("/api/"):
+            if role == "user":
+                return JSONResponse(content={"detail": "需要管理员访问口令"}, status_code=403)
+            return JSONResponse(content={"detail": "未授权访问，请先登录"}, status_code=401)
+        if role == "user":
+            return RedirectResponse(url="/")
+        return RedirectResponse(url="/login")
+
+    if role is not None:
+        return await call_next(request)
+
     if path.startswith("/api/"):
         return JSONResponse(content={"detail": "未授权访问，请先登录"}, status_code=401)
 
@@ -2285,7 +2330,7 @@ async def access_guard(request: FastAPIRequest, call_next):
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page():
-    if not ACCESS_PASSWORD:
+    if not ACCESS_PASSWORD and not ADMIN_ACCESS_PASSWORD:
         return RedirectResponse(url="/")
 
     return """
@@ -2316,10 +2361,10 @@ def login_page():
 
 @app.post("/login")
 def login_submit(access_token: str = Form(...)):
-    if not ACCESS_PASSWORD:
+    if not ACCESS_PASSWORD and not ADMIN_ACCESS_PASSWORD:
         return RedirectResponse(url="/", status_code=302)
 
-    if access_token == ACCESS_PASSWORD:
+    if access_token == ADMIN_ACCESS_PASSWORD or access_token == ACCESS_PASSWORD:
         response = RedirectResponse(url="/", status_code=302)
         response.set_cookie(ACCESS_COOKIE_NAME, access_token, httponly=True, max_age=86400, samesite="Lax")
         return response
@@ -3105,6 +3150,12 @@ def totp_secret_for_account(cfg: AccountConfig) -> Optional[str]:
 def start_watchers():
     source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
     print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
+    admin_source = (
+        "环境变量 ADMIN_ACCESS_PASSWORD"
+        if ADMIN_ACCESS_PASSWORD_FROM_ENV
+        else "与 ACCESS_PASSWORD 相同（兼容模式）"
+    )
+    print(f"管理员访问口令来源：{admin_source}")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
     print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
     save_mail_accounts()
@@ -3124,12 +3175,20 @@ def start_watchers():
 def index(request: FastAPIRequest):
     if request.query_params.get("code") and request.query_params.get("state"):
         return complete_oauth_callback(request)
-    return FileResponse("static/index.html")
+    page = Path("static/index.html").read_text(encoding="utf-8")
+    admin_link = '<a class="small-btn" href="/admin">账号控制台</a>'
+    return HTMLResponse(
+        page.replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if request_access_role(request) == "admin" else ""),
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/admin")
 def admin_page():
-    return FileResponse("static/admin.html")
+    return FileResponse(
+        "static/admin.html",
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/api/codes")

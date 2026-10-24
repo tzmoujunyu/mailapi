@@ -109,6 +109,48 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual(client.get('/api/accounts').status_code, 401)
             self.assertEqual(client.post('/api/accounts/email:only@example.com/totp-secret').status_code, 401)
 
+    def test_separate_admin_access_password_gates_console_and_homepage_link(self):
+        with self.account_client() as (client, store), patch.object(
+            self.module, "ADMIN_ACCESS_PASSWORD", "admin-only-password"
+        ):
+            client.headers["x-access-token"] = self.module.ACCESS_PASSWORD
+            self.assertEqual(client.get("/api/accounts").status_code, 200)
+            self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 403)
+            self.assertEqual(client.get("/api/codex/accounts").status_code, 403)
+            homepage = client.get("/")
+            self.assertEqual(homepage.status_code, 200)
+            self.assertNotIn("/admin", homepage.text)
+            console = client.get("/admin", follow_redirects=False)
+            self.assertEqual(console.status_code, 307)
+            self.assertEqual(console.headers["location"], "/")
+
+            client.headers["x-access-token"] = "admin-only-password"
+            self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
+            self.assertEqual(client.get("/api/codex/accounts").status_code, 200)
+            self.assertIn('href="/admin"', client.get("/").text)
+
+    def test_login_form_accepts_both_roles(self):
+        with self.account_client() as (client, store), patch.object(
+            self.module, "ADMIN_ACCESS_PASSWORD", "admin-only-password"
+        ):
+            client.headers.pop("x-access-token")
+            user_login = client.post(
+                "/login",
+                data={"access_token": self.module.ACCESS_PASSWORD},
+                follow_redirects=False,
+            )
+            self.assertEqual(user_login.status_code, 302)
+            self.assertEqual(client.get("/api/admin/mail/accounts", follow_redirects=False).status_code, 403)
+
+            client.cookies.clear()
+            admin_login = client.post(
+                "/login",
+                data={"access_token": "admin-only-password"},
+                follow_redirects=False,
+            )
+            self.assertEqual(admin_login.status_code, 302)
+            self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
+
     def test_current_totp_endpoint_returns_code_without_secret(self):
         with self.account_client() as (client, store):
             path = '/api/accounts/email:only@example.com/totp-code'

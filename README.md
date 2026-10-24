@@ -4,14 +4,17 @@
 
 ```bash
 export ACCESS_PASSWORD='你的口令'
+export ADMIN_ACCESS_PASSWORD='你的管理员口令'
 python3 code-receive.py
 ```
+
+网页登录表单只有一个口令输入框：普通用户输入 `ACCESS_PASSWORD` 后只能进入 GPT 接码主页，管理员输入 `ADMIN_ACCESS_PASSWORD` 后会额外看到账号控制台入口。未配置 `ADMIN_ACCESS_PASSWORD` 时，为兼容已有部署会暂时沿用 `ACCESS_PASSWORD`；需要隔离普通用户和管理员时请设置不同的管理员口令。
 
 依赖可通过 `pip install -r requirements.txt` 安装。网页控制台当前支持 Gmail 和 Outlook；Proton 旧实现仍保留在代码中，但不再提供新增和登录入口。
 
 ## 缺少 Gmail Token 时授权
 
-登录后打开 `/admin` 账号控制台，点击“添加 Gmail”即可选择新的 Google 账号。授权完成后，程序会读取实际 Gmail 地址、保存独立 token 并立即开始监听。统一邮箱账号列表暂沿用 `runtime/gmail_accounts.json` 文件名，新 token 保存在 `runtime/gmail_tokens/`。
+管理员登录后打开 `/admin` 账号控制台，点击“添加 Gmail”即可选择新的 Google 账号。授权完成后，程序会读取实际 Gmail 地址、保存独立 token 并立即开始监听。统一邮箱账号列表暂沿用 `runtime/gmail_accounts.json` 文件名，新 token 保存在 `runtime/gmail_tokens/`。
 
 控制台支持重新授权、停用、启用和删除。移除邮箱会移出监听列表，原 token 和验证码历史仍会保留；共享登录信息按下文的账号删除规则处理。启动时会把旧的 `runtime/token_accountN.json` 自动迁移为 `runtime/gmail_tokens/account-N.json`，并同步更新账号索引。
 
