@@ -14,6 +14,9 @@
       .page-subtitle { min-width: 0; color: #6b7280; font-size: 13px; line-height: 1.4; }
       .page-subtitle a { color: #2563eb; text-decoration: none; }
       .page-subtitle a:hover { text-decoration: underline; }
+      .preview-banner { margin-bottom: 16px; padding: 10px 12px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #1e3a8a; line-height: 1.5; }
+      .preview-banner a { margin-left: 8px; color: #1d4ed8; font-weight: 700; text-decoration: none; }
+      .preview-banner a:hover { text-decoration: underline; }
       .table-wrap { width: 100%; overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
       table { width: 100%; min-width: 980px; border-collapse: collapse; table-layout: fixed; }
       th, td { padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
@@ -77,6 +80,7 @@
   <body>
     <div class="container">
       <div class="page-head"><div class="page-title"><h1>ChatGPT账号</h1><div class="page-subtitle"><a href="https://codexradar.com/#intelligence-efficiency" target="_blank" rel="noopener noreferrer">Codex雷达</a>：查看智能与效率分析</div><div class="page-subtitle">订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。</div></div><!-- ADMIN_CONSOLE_LINK --></div>
+      <!-- PREVIEW_BANNER -->
       <div id="load-error" class="status-bad" role="status"></div>
       <div class="table-wrap">
         <table class="account-table">
@@ -85,7 +89,10 @@
         </table>
       </div>
     </div>
+    <!-- PREVIEW_SCRIPT -->
     <script>
+      const previewMode = window.__USER_PREVIEW__ === true;
+      function previewUrl(path) { return previewMode ? `${path}${path.includes('?') ? '&' : '?'}preview=1` : path; }
       const rowsNode = document.getElementById('rows');
       const HISTORY_REFRESH_MS = 3000;
       let expandedKey = '';
@@ -228,7 +235,7 @@
         const request = ++historyRequest;
         historyName = name; historyLoading = !historyItems.length; historyError = ''; render();
         try {
-          const response = await fetch(`/api/history/${encodeURIComponent(name)}`, { cache: 'no-store' });
+          const response = await fetch(previewUrl(`/api/history/${encodeURIComponent(name)}`), { cache: 'no-store' });
           if (!response.ok) throw new Error('历史记录加载失败，请稍后重试。');
           const data = await response.json();
           if (historyName === name && request === historyRequest) historyItems = data.items || [];
@@ -254,7 +261,7 @@
       }
       async function copySecret(button) {
         button.disabled = true; const original = button.textContent; const startedAt = performance.now();
-        try { if (button.dataset.copyType === 'mail') { await writeClipboard(button.dataset.value); button.textContent = '已复制'; return; } const path = button.dataset.copyType === 'totp' ? 'totp-code' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'code' : 'password'; const response = await fetch(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`, { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); syncServerClock(data, startedAt); await writeClipboard(data[field]); if (button.dataset.copyType === 'totp' && Number.isFinite(data.expires_at)) { copiedTotpExpiry.set(button.dataset.name, data.expires_at); updateTotpCountdown(); } button.textContent = button.dataset.copyType === 'totp' ? '验证码已复制' : '已复制'; } catch (error) { button.textContent = '复制失败'; button.title = error.message; }
+        try { if (button.dataset.copyType === 'mail') { await writeClipboard(button.dataset.value); button.textContent = '已复制'; return; } const path = button.dataset.copyType === 'totp' ? 'totp-code' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'code' : 'password'; const response = await fetch(previewUrl(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`), { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); syncServerClock(data, startedAt); await writeClipboard(data[field]); if (button.dataset.copyType === 'totp' && Number.isFinite(data.expires_at)) { copiedTotpExpiry.set(button.dataset.name, data.expires_at); updateTotpCountdown(); } button.textContent = button.dataset.copyType === 'totp' ? '验证码已复制' : '已复制'; } catch (error) { button.textContent = '复制失败'; button.title = error.message; }
         finally { setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500); }
       }
       function render() {
@@ -266,7 +273,7 @@
         refreshing = true;
         try {
           const startedAt = performance.now();
-          const response = await fetch('/api/accounts', { cache: 'no-store' });
+          const response = await fetch(previewUrl('/api/accounts'), { cache: 'no-store' });
           if (!response.ok) throw new Error('加载失败');
           const data = await response.json();
           syncServerClock(data, startedAt);

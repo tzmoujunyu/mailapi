@@ -2269,7 +2269,14 @@ def request_access_ok(request: FastAPIRequest) -> bool:
 
 
 def can_access_account(request: FastAPIRequest, email: str) -> bool:
-    return request_access_role(request) == "admin" or CREDENTIAL_STORE.get(email, "listed") is not False
+    role = request_access_role(request)
+    if role == "admin" and request.query_params.get("preview") != "1":
+        return True
+    return CREDENTIAL_STORE.get(email, "listed") is not False
+
+
+def is_user_preview(request: FastAPIRequest) -> bool:
+    return request_access_role(request) == "admin" and request.query_params.get("preview") == "1"
 
 
 def requires_admin_access(request: FastAPIRequest) -> bool:
@@ -2277,6 +2284,7 @@ def requires_admin_access(request: FastAPIRequest) -> bool:
     return (
         path == "/admin"
         or path.startswith("/admin/")
+        or path == "/preview"
         or path == "/static/admin.html"
         or path == "/api/admin"
         or path.startswith("/api/admin/")
@@ -3179,10 +3187,30 @@ def start_watchers():
 def index(request: FastAPIRequest):
     if request.query_params.get("code") and request.query_params.get("state"):
         return complete_oauth_callback(request)
+    return render_index_page(request)
+
+
+@app.get("/preview")
+def preview_page(request: FastAPIRequest):
+    return render_index_page(request, preview=True)
+
+
+def render_index_page(request: FastAPIRequest, preview: bool = False):
     page = Path("static/index.html").read_text(encoding="utf-8")
+    role = request_access_role(request)
     admin_link = '<a class="small-btn" href="/admin">账号控制台</a>'
+    preview_banner = (
+        '<div class="preview-banner" role="status">用户账号主页预览：当前显示普通用户可见的账号和功能。'
+        '<a href="/admin">返回账号控制台</a></div>'
+        if preview
+        else ""
+    )
+    preview_script = '<script>window.__USER_PREVIEW__ = true;</script>' if preview else ""
     return HTMLResponse(
-        page.replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if request_access_role(request) == "admin" else ""),
+        page
+        .replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if role == "admin" and not preview else "")
+        .replace("<!-- PREVIEW_BANNER -->", preview_banner)
+        .replace("<!-- PREVIEW_SCRIPT -->", preview_script),
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
@@ -4046,7 +4074,7 @@ def account_groups() -> List[Dict[str, Any]]:
 @app.get("/api/accounts")
 def get_accounts(request: FastAPIRequest):
     items = account_groups()
-    if request_access_role(request) != "admin":
+    if request_access_role(request) != "admin" or is_user_preview(request):
         items = [item for item in items if item["listed"]]
     return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
 
@@ -4185,7 +4213,7 @@ def delete_codex_account(account_id: str):
 
 @app.get("/api/history/{account_name}")
 def get_history(account_name: str, request: FastAPIRequest):
-    if request_access_role(request) != "admin":
+    if request_access_role(request) != "admin" or is_user_preview(request):
         cfg = find_mail_account(account_name)
         if not cfg or not can_access_account(request, cfg["email"]):
             return JSONResponse(content={"detail": "未找到账号"}, status_code=404)

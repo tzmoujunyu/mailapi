@@ -130,6 +130,24 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual(client.get("/api/codex/accounts").status_code, 200)
             self.assertIn('href="/admin"', client.get("/").text)
 
+    def test_admin_preview_renders_user_view_and_can_return_to_console(self):
+        with self.account_client() as (client, store):
+            store.set('user@example.com', 'listed', False)
+            response = client.get('/preview')
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('用户账号主页预览', response.text)
+            self.assertIn('href="/admin"', response.text)
+            self.assertNotIn('href="/admin">账号控制台', response.text)
+            admin_items = client.get('/api/accounts').json()['items']
+            preview_items = client.get('/api/accounts?preview=1').json()['items']
+            self.assertEqual(len(admin_items), 2)
+            self.assertEqual([item['email'] for item in preview_items], ['only@example.com'])
+            self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password?preview=1').status_code, 404)
+            self.assertEqual(client.get('/api/history/account-1?preview=1').status_code, 404)
+            client.headers['x-access-token'] = self.module.ACCESS_PASSWORD
+            self.assertEqual(client.get('/preview', follow_redirects=False).status_code, 307)
+            self.assertEqual(client.get('/preview', follow_redirects=False).headers['location'], '/')
+
     def test_login_form_accepts_both_roles(self):
         with self.account_client() as (client, store), patch.object(
             self.module, "ADMIN_ACCESS_PASSWORD", "admin-only-password"

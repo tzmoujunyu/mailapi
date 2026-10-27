@@ -16,7 +16,7 @@ const fixture = () => [{
   codex: [{ id: 'codex-2', email: 'only@example.com', usage_status: 'unavailable', status_reason: 'usage_missing_weekly' }], mail: [],
 }];
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function page(file) {
+function page(file, preview = false) {
   const nodes = new Map();
   const calls = [];
   const timers = new Map();
@@ -34,7 +34,7 @@ function page(file) {
     performance: { now: () => Date.now() },
     setInterval(callback) { timers.set(++counter, callback); return counter; }, clearInterval(id) { timers.delete(id); },
     setTimeout(callback) { return ++counter; },
-    navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true },
+    navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true, __USER_PREVIEW__: preview },
     confirm: () => true,
     fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : fixture(), password: 'password-value', code: '081804' }) }; },
   });
@@ -125,6 +125,17 @@ test('refresh failure preserves current account rows and displays an error', asy
   await vm.runInContext('refreshAccounts()', app.context);
   assert.equal(app.nodes.get('rows').innerHTML, html);
   assert.match(app.nodes.get('load-error').textContent, /刷新失败/);
+});
+
+test('user preview uses the ordinary account API view for all interactions', async () => {
+  const app = page('static/index.html', true); await flush();
+  assert.ok(app.calls.some(([url]) => url === '/api/accounts?preview=1'));
+  await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
+  await app.click('rows', '[data-history-name]', { historyName: 'account-1' });
+  for (const type of ['password', 'totp']) await app.click('rows', '[data-copy-type]', { copyType: type, name: 'email:user@example.com' });
+  assert.ok(app.calls.some(([url]) => url === '/api/history/account-1?preview=1'));
+  assert.ok(app.calls.some(([url]) => url === '/api/accounts/email%3Auser%40example.com/gpt-password?preview=1'));
+  assert.ok(app.calls.some(([url]) => url === '/api/accounts/email%3Auser%40example.com/totp-code?preview=1'));
 });
 
 test('mail links render as truncated external anchors and can be copied', async () => {
