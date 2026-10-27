@@ -193,7 +193,7 @@
               <a class="btn" href="/api/admin/outlook/auth/start" target="_blank" rel="noopener">添加 Outlook</a>
             </div>
           </div>
-          <p class="muted">同一邮箱自动合并为一个账号，密码和 2FA 共享。可单独移除 Codex 或邮箱，也可删除整个账号。</p>
+          <p class="muted">同一邮箱自动合并为一个账号，密码和 2FA 共享。下架后仅管理员可查看和使用，可随时重新上架。可单独移除 Codex 或邮箱，也可删除整个账号。</p>
           <div id="mail-message" class="message muted"></div>
           <form id="gmail-callback-form" class="callback-submit">
             <input
@@ -900,6 +900,7 @@
 
       function accountRow(item) {
         const primary = item.codex[0];
+        const listed = item.listed !== false;
         const codexStatuses = item.codex.map(account => {
           const state = codexState(account);
           return `<div class="${state.cls}">${escapeHtml(state.text)} <span class="plan">Codex</span></div>${state.detail ? `<div class="muted">${escapeHtml(state.detail)}</div>` : ''}`;
@@ -916,8 +917,8 @@
         return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.email || '等待授权')}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? escapeHtml(subscriptionText(primary)) : '仅邮箱验证'}</div></td>
           <td>${item.codex.length ? item.codex.map(account => quotaCell(account.usage)).join('<hr>') : '<span class="muted">未提供</span>'}</td>
           <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}</td>
-          <td>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan">邮箱</span></div>'}</td>
-          <td>${codexActions}${mailActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除整个账号</button></td></tr>`;
+          <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan">邮箱</span></div>'}</td>
+          <td>${item.email && item.email.includes('@') ? `<div class="actions"><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>` : ''}${codexActions}${mailActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除整个账号</button></td></tr>`;
       }
 
       async function loadAccounts(force = true) {
@@ -930,6 +931,20 @@
           setMessage(mailMessage, error.message, true);
         } finally { accountsLoading = false; }
       }
+
+      accountRows.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-listing-account]');
+        if (!button) return;
+        const listed = button.dataset.listed === 'true';
+        try {
+          button.disabled = true;
+          await api(`/api/admin/accounts/${encodeURIComponent(button.dataset.listingAccount)}/listing`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ listed }),
+          });
+          setMessage(mailMessage, listed ? '账号已上架，普通用户可使用。' : '账号已下架，仅管理员可使用。');
+          await loadAccounts();
+        } catch (error) { setMessage(mailMessage, error.message, true); button.disabled = false; }
+      });
 
       accountRows.addEventListener('click', async (event) => {
         const button = event.target.closest('[data-delete-account]');

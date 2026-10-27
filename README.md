@@ -181,6 +181,7 @@ python scripts/proton_relay.py --config proton-relay.env
 
 控制台顶部支持添加 Codex、Gmail 和 Outlook，授权得到相同邮箱时自动归入同一账号。每一行集中提供密码和 2FA 的添加、修改、删除，Codex 额度刷新和重新授权，以及邮箱重新授权、启用/停用监听。
 
+- **下架账号 / 上架账号**：按邮箱统一控制普通用户能否使用，已有账号默认上架。下架后普通用户的主页、验证码列表、密码、2FA 和历史接口均不可访问该账号；管理员仍可查看、管理和重新上架。邮箱监听与授权刷新继续运行，状态保存在现有 `runtime/account_credentials.json` 中，重启后保留；账号配置、auth/token 和历史文件均保留，不新增独立配置文件。
 - **移除 Codex / 移除邮箱**：仅删除该关联；有其他关联时保留共享密码和 2FA，移除最后一个关联时删除共享登录信息。
 - **删除整个账号**：删除该邮箱的全部关联、Codex 本地授权文件、密码和 2FA。邮箱 token 与验证码历史文件仍保留，便于后续恢复。
 - 删除密码或 2FA 会对同邮箱的所有关联生效。
@@ -191,7 +192,7 @@ python scripts/proton_relay.py --config proton-relay.env
 
 | 文件 | 职责 |
 | --- | --- |
-| `runtime/account_credentials.json` | 按邮箱保存共享 GPT 密码和 2FA 密钥，一次性迁移标记 |
+| `runtime/account_credentials.json` | 按邮箱保存共享 GPT 密码、2FA 密钥和上架状态，一次性迁移标记 |
 | `runtime/gmail_accounts.json` | 邮箱监听关联、提供商、启停及授权文件路径（兼容旧文件名） |
 | `runtime/codex_accounts.json` | Codex 工作区关联、授权与用量/套餐缓存 |
 | 各提供商 token、Codex auth、验证码历史文件 | 按各自生命周期保存授权和历史数据 |

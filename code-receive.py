@@ -2268,6 +2268,10 @@ def request_access_ok(request: FastAPIRequest) -> bool:
     return request_access_role(request) is not None
 
 
+def can_access_account(request: FastAPIRequest, email: str) -> bool:
+    return request_access_role(request) == "admin" or CREDENTIAL_STORE.get(email, "listed") is not False
+
+
 def requires_admin_access(request: FastAPIRequest) -> bool:
     path = request.url.path
     return (
@@ -3192,18 +3196,23 @@ def admin_page():
 
 
 @app.get("/api/codes")
-def get_codes():
+def get_codes(request: FastAPIRequest):
     with MAIL_ACCOUNTS_LOCK:
         accounts = {item["name"]: item for item in ACCOUNTS}
     with STATE_LOCK:
         data = []
         for name, cfg in accounts.items():
+            if not can_access_account(request, cfg["email"]):
+                continue
             item = dict(STATE.get(name, {}))
             item.update(name=name, email=cfg["email"], enabled=cfg.get("enabled", True))
             item["has_gpt_password"] = gpt_password_for_account(cfg) is not None
             item["has_totp_secret"] = totp_secret_for_account(cfg) is not None
             data.append(item)
-    return JSONResponse(content={"items": data, "updated_at": now_iso()})
+    return JSONResponse(
+        content={"items": data, "updated_at": now_iso()},
+        headers={"Cache-Control": "no-store, private"},
+    )
 
 
 @app.post("/api/internal/mail-relay")
@@ -3263,9 +3272,9 @@ async def receive_mail_relay(request: FastAPIRequest):
 @app.post("/api/accounts/{account_name}/gpt-password")
 @app.post("/api/mail/accounts/{account_name}/gpt-password")
 @app.post("/api/gmail/accounts/{account_name}/gpt-password")
-def get_gpt_password(account_name: str):
+def get_gpt_password(account_name: str, request: FastAPIRequest):
     cfg = find_login_account(account_name)
-    if not cfg:
+    if not cfg or not can_access_account(request, cfg["email"]):
         return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
     password = gpt_password_for_account(cfg)
     if password is None:
@@ -3315,9 +3324,9 @@ def delete_gpt_password(account_name: str):
 
 
 @app.post("/api/accounts/{account_name}/totp-code")
-def get_totp_code(account_name: str):
+def get_totp_code(account_name: str, request: FastAPIRequest):
     cfg = find_login_account(account_name)
-    if not cfg:
+    if not cfg or not can_access_account(request, cfg["email"]):
         return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
     secret = totp_secret_for_account(cfg)
     if secret is None:
@@ -3335,9 +3344,9 @@ def get_totp_code(account_name: str):
 @app.post("/api/accounts/{account_name}/totp-secret")
 @app.post("/api/mail/accounts/{account_name}/totp-secret")
 @app.post("/api/gmail/accounts/{account_name}/totp-secret")
-def get_totp_secret(account_name: str):
+def get_totp_secret(account_name: str, request: FastAPIRequest):
     cfg = find_login_account(account_name)
-    if not cfg:
+    if not cfg or not can_access_account(request, cfg["email"]):
         return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
     secret = totp_secret_for_account(cfg)
     if secret is None:
@@ -4023,7 +4032,7 @@ def account_groups() -> List[Dict[str, Any]]:
         for record in records:
             email = AccountCredentialStore.email_key(record.get("email"))
             key = "email:" + email if "@" in email else f"{kind}:{record.get('id') or record.get('name')}"
-            group = groups.setdefault(key, {"key": key, "email": email, "codex": [], "mail": [], **login_credentials(email)})
+            group = groups.setdefault(key, {"key": key, "email": email, "listed": CREDENTIAL_STORE.get(email, "listed") is not False, "codex": [], "mail": [], **login_credentials(email)})
             if kind == "codex":
                 item = sanitize_codex_account(record)
             else:
@@ -4035,8 +4044,31 @@ def account_groups() -> List[Dict[str, Any]]:
 
 
 @app.get("/api/accounts")
-def get_accounts():
-    return JSONResponse(content={"items": account_groups(), "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
+def get_accounts(request: FastAPIRequest):
+    items = account_groups()
+    if request_access_role(request) != "admin":
+        items = [item for item in items if item["listed"]]
+    return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
+
+
+@app.put("/api/admin/accounts/{account_name}/listing")
+async def set_account_listing(account_name: str, request: FastAPIRequest):
+    cfg = find_login_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "请求内容过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        listed = payload.get("listed") if isinstance(payload, dict) else None
+        CREDENTIAL_STORE.set(cfg["email"], "listed", listed)
+    except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(
+        content={"ok": True, "listed": listed},
+        headers={"Cache-Control": "no-store, private"},
+    )
 
 
 @app.delete("/api/admin/accounts/{account_name}")
@@ -4152,7 +4184,11 @@ def delete_codex_account(account_id: str):
 
 
 @app.get("/api/history/{account_name}")
-def get_history(account_name: str):
+def get_history(account_name: str, request: FastAPIRequest):
+    if request_access_role(request) != "admin":
+        cfg = find_mail_account(account_name)
+        if not cfg or not can_access_account(request, cfg["email"]):
+            return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
     with HISTORY_LOCK:
         records = CODE_HISTORY.get(account_name, [])
         if not records:
@@ -4162,7 +4198,8 @@ def get_history(account_name: str):
         content={
             "account": account_name,
             "items": records,
-        }
+        },
+        headers={"Cache-Control": "no-store, private"},
     )
 
 

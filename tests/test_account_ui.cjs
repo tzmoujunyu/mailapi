@@ -182,6 +182,31 @@ test('console uses unified rows and routes credential changes and integration de
   assert.ok(app.calls.some(([url, options]) => url === '/api/admin/accounts/email%3Auser%40example.com' && options.method === 'DELETE'));
 });
 
+test('console can unlist and relist an account and preserves the row on failure', async () => {
+  const app = page('static/admin.html'); await flush();
+  const endpoint = '/api/admin/accounts/email%3Auser%40example.com/listing';
+  let listed = true;
+  app.context.fetch = async (url, options) => {
+    app.calls.push([url, options]);
+    if (url === endpoint) listed = JSON.parse(options.body).listed;
+    const items = fixture(); items[0].listed = listed;
+    return { ok: true, json: async () => ({ items }) };
+  };
+  assert.match(app.nodes.get('account-rows').innerHTML, /data-listed="false"[^>]*>下架账号/);
+  await app.click('account-rows', '[data-listing-account]', { listingAccount: 'email:user@example.com', listed: 'false' });
+  assert.ok(app.calls.some(([url, options]) => url === endpoint && options.method === 'PUT' && options.body === '{"listed":false}'));
+  assert.match(app.nodes.get('account-rows').innerHTML, /已下架/);
+  assert.match(app.nodes.get('account-rows').innerHTML, /data-listed="true"[^>]*>上架账号/);
+  await app.click('account-rows', '[data-listing-account]', { listingAccount: 'email:user@example.com', listed: 'true' });
+  assert.match(app.nodes.get('account-rows').innerHTML, /已上架/);
+  const html = app.nodes.get('account-rows').innerHTML;
+  app.context.fetch = async () => ({ ok: false, json: async () => ({ detail: '保存失败' }) });
+  const button = await app.click('account-rows', '[data-listing-account]', { listingAccount: 'email:user@example.com', listed: 'false' });
+  assert.equal(button.disabled, false);
+  assert.equal(app.nodes.get('mail-message').textContent, '保存失败');
+  assert.equal(app.nodes.get('account-rows').innerHTML, html);
+});
+
 
 test('Codex login prepares a direct external URL without opening an intermediate popup', async () => {
   const app = page('static/admin.html'); await flush();

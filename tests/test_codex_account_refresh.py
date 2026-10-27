@@ -27,6 +27,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 os.environ,
                 {
                     "ACCESS_PASSWORD": "test-access-password",
+                    "ADMIN_ACCESS_PASSWORD": "test-admin-password",
                     "MAIL_RELAY_SECRET": "test-mail-relay-secret-32-characters",
                 },
             ):
@@ -64,7 +65,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             stack.enter_context(patch.object(module, "CODE_HISTORY", {}))
             for name in ("save_mail_accounts", "save_codex_accounts", "stop_mail_watcher", "delete_codex_record_auth_files"):
                 stack.enter_context(patch.object(module, name))
-            client = TestClient(module.app, headers={"x-access-token": module.ACCESS_PASSWORD})
+            client = TestClient(module.app, headers={"x-access-token": module.ADMIN_ACCESS_PASSWORD})
             yield client, store
             client.close()
 
@@ -150,6 +151,70 @@ class CodexAccountRefreshTests(unittest.TestCase):
             )
             self.assertEqual(admin_login.status_code, 302)
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
+
+    def test_unlisting_blocks_user_reads_and_relisting_restores_them(self):
+        with self.account_client() as (client, store):
+            module = self.module
+            store.set('user@example.com', 'password', 'private-password')
+            store.set('user@example.com', 'secret', 'JBSWY3DPEHPK3PXP')
+            module.STATE['account-1'] = {'last_code': '123456'}
+            module.CODE_HISTORY['account-1'] = [{'code': '654321'}]
+            accounts_before = json.loads(json.dumps(module.ACCOUNTS))
+            codex_before = json.loads(json.dumps(module.CODEX_ACCOUNTS))
+            original_files = set(store.path.parent.iterdir())
+            endpoint = '/api/admin/accounts/email:user@example.com/listing'
+            response = client.put(endpoint, json={'listed': False})
+            self.assertEqual(response.status_code, 200)
+            self.assertIs(response.json()['listed'], False)
+            store = AccountCredentialStore(store.path)
+            self.assertIs(store.get('USER@example.com', 'listed'), False)
+            with patch.object(module, 'CREDENTIAL_STORE', store):
+                admin_groups = client.get('/api/accounts').json()['items']
+                hidden = next(item for item in admin_groups if item['email'] == 'user@example.com')
+                self.assertIs(hidden['listed'], False)
+                self.assertEqual(len(hidden['codex']), 1)
+                self.assertEqual(len(hidden['mail']), 1)
+                reads = [('GET', '/api/history/account-1')]
+                for prefix in ('/api/accounts', '/api/mail/accounts', '/api/gmail/accounts'):
+                    for name in ('email:user@example.com', 'account-1'):
+                        for field in ('gpt-password', 'totp-secret'):
+                            reads.append(('POST', f'{prefix}/{name}/{field}'))
+                reads.append(('POST', '/api/accounts/email:user@example.com/totp-code'))
+                for method, path in reads:
+                    self.assertEqual(client.request(method, path).status_code, 200, path)
+                client.headers['x-access-token'] = module.ACCESS_PASSWORD
+                self.assertEqual([item['email'] for item in client.get('/api/accounts').json()['items']], ['only@example.com'])
+                self.assertEqual(client.get('/api/codes').json()['items'], [])
+                for method, path in reads:
+                    self.assertEqual(client.request(method, path).status_code, 404, path)
+                self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 403)
+                client.headers['x-access-token'] = module.ADMIN_ACCESS_PASSWORD
+                self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 200)
+                client.headers['x-access-token'] = module.ACCESS_PASSWORD
+                self.assertEqual(len(client.get('/api/accounts').json()['items']), 2)
+                self.assertEqual(client.get('/api/codes').json()['items'][0]['last_code'], '123456')
+                self.assertEqual(client.get('/api/history/account-1').json()['items'], [{'code': '654321'}])
+                self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password').json()['password'], 'private-password')
+            self.assertEqual(module.ACCOUNTS, accounts_before)
+            self.assertEqual(module.CODEX_ACCOUNTS, codex_before)
+            self.assertEqual(set(store.path.parent.iterdir()), original_files)
+            module.stop_mail_watcher.assert_not_called()
+            module.delete_codex_record_auth_files.assert_not_called()
+            module.save_mail_accounts.assert_not_called()
+            module.save_codex_accounts.assert_not_called()
+
+    def test_listing_applies_to_codex_only_accounts_and_validates_input(self):
+        with self.account_client() as (client, store):
+            endpoint = '/api/admin/accounts/email:only@example.com/listing'
+            for payload in ({}, {'listed': 'false'}, {'listed': 0}, [], None):
+                with self.subTest(payload=payload):
+                    self.assertEqual(client.put(endpoint, json=payload).status_code, 400)
+            self.assertEqual(client.put('/api/admin/accounts/email:missing@example.com/listing', json={'listed': False}).status_code, 404)
+            self.assertEqual(client.put(endpoint, json={'listed': False}).status_code, 200)
+            client.headers['x-access-token'] = self.module.ACCESS_PASSWORD
+            self.assertEqual([item['email'] for item in client.get('/api/accounts').json()['items']], ['user@example.com'])
+            client.headers.pop('x-access-token')
+            self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 401)
 
     def test_current_totp_endpoint_returns_code_without_secret(self):
         with self.account_client() as (client, store):

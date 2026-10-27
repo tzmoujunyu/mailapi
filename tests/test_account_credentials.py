@@ -8,6 +8,21 @@ from account_passwords import AccountPasswordStore
 
 
 class AccountCredentialTests(unittest.TestCase):
+    def test_listing_survives_restart_and_credential_changes_in_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AccountCredentialStore(Path(directory) / 'credentials.json')
+            store.set('user@example.com', 'password', 'password-value')
+            original_files = set(Path(directory).iterdir())
+            store.set(' User@Example.com ', 'listed', False)
+            store.set('user@example.com', 'secret', 'secret-value')
+            store.delete('user@example.com', 'password')
+            restored = AccountCredentialStore(store.path)
+            self.assertIs(restored.get('USER@example.com', 'listed'), False)
+            self.assertEqual(restored.get('user@example.com', 'secret'), 'secret-value')
+            self.assertEqual(set(Path(directory).iterdir()), original_files)
+            restored.set('user@example.com', 'listed', True)
+            self.assertIs(AccountCredentialStore(store.path).get('user@example.com', 'listed'), True)
+
     def test_shared_identity_and_independent_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             store = AccountCredentialStore(Path(directory) / 'credentials.json')

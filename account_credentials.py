@@ -1,4 +1,4 @@
-"""ChatGPT login credentials, shared by normalized email across integrations."""
+"""ChatGPT login credentials and listing state, shared by normalized email."""
 from __future__ import annotations
 
 import json
@@ -48,9 +48,12 @@ class AccountCredentialStore:
         email = self.email_key(email)
         if not email or "@" not in email:
             raise AccountPasswordError("请先完成账号授权，获取有效邮箱")
-        if field not in {"password", "secret"}:
+        if field not in {"password", "secret", "listed"}:
             raise AccountPasswordError("未知登录信息字段")
-        if not isinstance(value, str) or not value or len(value) > MAX_PASSWORD_LENGTH:
+        if field == "listed":
+            if not isinstance(value, bool):
+                raise AccountPasswordError("上架状态必须为布尔值")
+        elif not isinstance(value, str) or not value or len(value) > MAX_PASSWORD_LENGTH:
             raise AccountPasswordError("登录信息不能为空且不能超过 4096 字符")
         with self._lock:
             data = {**self._data, "items": {**self._data["items"]}}
