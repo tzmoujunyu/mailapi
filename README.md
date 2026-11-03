@@ -1,5 +1,9 @@
 # ChatGPT 多邮箱验证码监听
 
+独立测试入口：`python code-receive-test.py`（默认端口 8001）。测试代码和页面位于
+`test_app/`，运行数据位于 `runtime/test/`。正式入口继续使用下文的启动方式。
+参见[测试开发与同步流程](docs/development.md)。
+
 ## 启动
 
 ```bash
