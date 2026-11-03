@@ -83,6 +83,27 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertNotIn("private-value", response.text)
             self.assertEqual(group["mail"][0]["email"], "User@Example.com")
 
+    def test_relay_accounts_require_url_and_keep_it_when_updating_other_fields(self):
+        from resource_accounts import ResourceStore
+
+        with self.account_client() as (client, _), tempfile.TemporaryDirectory() as directory:
+            store = ResourceStore(Path(directory) / "relays.json", "password", "密码")
+            with patch.object(self.module, "RELAY_ACCOUNT_STORE", store):
+                payload = {"name": "中转站", "account": "user", "password": "relay-password"}
+                self.assertEqual(client.post("/api/admin/relay-accounts", json=payload).status_code, 400)
+                self.assertEqual(client.post("/api/admin/relay-accounts", json={**payload, "url": "javascript:alert(1)"}).status_code, 400)
+                response = client.post("/api/admin/relay-accounts", json={**payload, "url": "https://relay.example.com/panel"})
+                self.assertEqual(response.status_code, 201, response.text)
+                item = response.json()["item"]
+                self.assertEqual(item["url"], "https://relay.example.com/panel")
+                updated = client.put("/api/admin/relay-accounts/" + item["id"], json={"note": "备用"})
+                self.assertEqual(updated.status_code, 200)
+                self.assertEqual(updated.json()["item"]["url"], item["url"])
+                self.assertEqual(store.get_secret(item["id"]), "relay-password")
+                response = client.get("/api/relay-accounts")
+                self.assertEqual(response.json()["items"][0]["url"], item["url"])
+                self.assertNotIn("relay-password", response.text)
+
     def test_multiple_workspaces_are_preserved_in_one_email_group(self):
         with self.account_client() as (client, store):
             self.module.CODEX_ACCOUNTS['another-workspace'] = {

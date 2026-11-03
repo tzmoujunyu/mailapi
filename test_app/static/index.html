@@ -10,7 +10,7 @@
       .container { width: 100%; min-height: calc(100vh - 24px); padding: 16px; background: #fff; border-radius: 8px; box-shadow: 0 8px 20px rgba(0, 0, 0, .08); }
       .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
       .page-title { display: grid; gap: 3px; min-width: 0; }
-      h1 { margin: 0; font-size: 22px; }
+      h1, .resource-head h2 { margin: 0; font-size: 22px; }
       .page-subtitle { min-width: 0; color: #6b7280; font-size: 13px; line-height: 1.4; }
       .page-subtitle a { color: #2563eb; text-decoration: none; }
       .page-subtitle a:hover { text-decoration: underline; }
@@ -76,7 +76,6 @@
       .email-detail > div { min-width: 0; }
       .resource-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid #e5e7eb; }
       .resource-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-      .resource-head h2 { margin: 0; font-size: 17px; }
       .resource-table { min-width: 620px; }
       .resource-table th:nth-child(1) { width: 32%; }
       .resource-table th:nth-child(2) { width: 42%; }
@@ -87,6 +86,8 @@
       .resource-table.relay-table th:nth-child(3) { width: 27%; }
       .resource-table.relay-table th:nth-child(4) { width: 25%; }
       .resource-name { font-weight: 700; }
+      .resource-link { color: #2563eb; text-decoration: none; }
+      .resource-link:hover { text-decoration: underline; }
       .resource-secret { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
       @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr; } }
     </style>
@@ -306,7 +307,8 @@
       }
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
-        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td><div class="resource-secret"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="relay-password" data-id="${escapeAttr(item.id || '')}">复制</button></div></td><td>${escapeHtml(item.note || '-')}</td></tr>`;
+        const name = item.url ? `<a class="resource-link" href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name || '-')}</a>` : escapeHtml(item.name || '-');
+        return `<tr><td><div class="resource-name">${name}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td><div class="resource-secret"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="relay-password" data-id="${escapeAttr(item.id || '')}">复制</button></div></td><td>${escapeHtml(item.note || '-')}</td></tr>`;
       }
       function renderResources() {
         codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="3" class="muted">暂无 Coding Plan。</td></tr>';

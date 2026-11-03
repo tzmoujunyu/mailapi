@@ -56,8 +56,8 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.relays = ResourceStore(root / "relays.json", "password", "密码")
         self.plan = self.plans.create({"name": "Team API", "api_key": "owned-api-key-secret"})
         self.other_plan = self.plans.create({"name": "Private API", "api_key": "other-api-key-secret"})
-        self.relay = self.relays.create({"name": "Team relay", "account": "relay-login", "password": "owned-relay-password"})
-        self.other_relay = self.relays.create({"name": "Private relay", "account": "other-login", "password": "other-relay-password"})
+        self.relay = self.relays.create({"name": "Team relay", "url": "https://relay.example.com", "account": "relay-login", "password": "owned-relay-password"})
+        self.other_relay = self.relays.create({"name": "Private relay", "url": "https://private.example.com", "account": "other-login", "password": "other-relay-password"})
         patches = {
             "CREDENTIAL_STORE": self.credentials, "CODING_PLAN_STORE": self.plans,
             "RELAY_ACCOUNT_STORE": self.relays,
@@ -283,6 +283,20 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.alice.get("/api/auth/me").json()["groups"], [{"id": self.group["id"], "name": "Team A"}])
         response = self.alice.get("/api/accounts")
         self.assertEqual(response.headers["cache-control"], "no-store, private")
+
+    def test_relay_url_is_required_and_shared_through_group_scoped_lists(self):
+        payload = {"name": "新中转站", "account": "user", "password": "relay-password"}
+        self.assertEqual(self.manager.post("/api/admin/relay-accounts", json=payload).status_code, 400)
+        self.assertEqual(self.manager.post("/api/admin/relay-accounts", json={**payload, "url": "javascript:alert(1)"}).status_code, 400)
+        response = self.manager.post("/api/admin/relay-accounts", json={**payload, "url": "https://new.example.com/panel"})
+        self.assertEqual(response.status_code, 201, response.text)
+        item = response.json()["item"]
+        self.assertEqual(item["url"], "https://new.example.com/panel")
+        self.assertEqual(self.manager.put("/api/admin/relay-accounts/" + item["id"], json={"note": "新备注"}).status_code, 200)
+        self.admin.put("/api/admin/groups/" + self.group["id"], json={"resource_keys": ["relay-account:" + item["id"]]})
+        visible = self.alice.get("/api/relay-accounts").json()["items"]
+        self.assertEqual([(value["name"], value["url"]) for value in visible], [("新中转站", "https://new.example.com/panel")])
+        self.assertNotIn("relay-password", self.alice.get("/api/relay-accounts").text)
 
 
 if __name__ == "__main__":

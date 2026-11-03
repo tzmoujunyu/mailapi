@@ -22,9 +22,9 @@ class ResourceStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ResourceStore(Path(directory) / "relay-accounts.json", "password", "密码")
             with self.assertRaises(ResourceStoreError):
-                store.create({"name": "中转站", "password": "secret"})
+                store.create({"name": "中转站", "url": "https://relay.example.com", "password": "secret"})
 
-            item = store.create({"name": "中转站", "account": "user", "password": "secret", "note": "备用"})
+            item = store.create({"name": "中转站", "url": "https://relay.example.com", "account": "user", "password": "secret", "note": "备用"})
             self.assertEqual(item["account"], "user")
             self.assertNotEqual(item["password"], "secret")
             self.assertEqual(store.get_secret(item["id"]), "secret")

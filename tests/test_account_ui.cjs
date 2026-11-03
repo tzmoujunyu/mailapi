@@ -249,3 +249,32 @@ test('Codex login failures remain visible in the console dialog', async () => {
   assert.equal(app.nodes.get('codex-auth-open').hidden, true);
   assert.equal(app.nodes.get('codex-auth-copy').disabled, true);
 });
+
+test('homepage and console render relay names as links and retain legacy rows without a URL', async () => {
+  const item = { id: 'relay-1', name: '中转站 <团队>', url: 'https://relay.example/panel?a=1&b=2', account: 'user', password_masked: '••••••' };
+  for (const file of ['static/index.html', 'static/admin.html']) {
+    const app = page(file); await flush();
+    const html = vm.runInContext(`relayAccountRow(${JSON.stringify(item)})`, app.context);
+    assert.match(html, /href="https:\/\/relay\.example\/panel\?a=1&amp;b=2"/);
+    assert.match(html, /target="_blank" rel="noopener noreferrer">中转站 &lt;团队&gt;<\/a>/);
+    const legacy = vm.runInContext(`relayAccountRow(${JSON.stringify({ ...item, url: '' })})`, app.context);
+    assert.doesNotMatch(legacy, /href=/);
+    assert.match(legacy, /中转站 &lt;团队&gt;/);
+  }
+});
+
+test('console loads the relay website for edits and submits it for new accounts', async () => {
+  const app = page('static/admin.html'); await flush();
+  vm.runInContext(`openRelayAccountDialog({ id: 'relay-1', name: '旧中转站', url: 'https://old.example', account: 'user' })`, app.context);
+  assert.equal(app.nodes.get('relay-account-url').value, 'https://old.example');
+  vm.runInContext('openRelayAccountDialog()', app.context);
+  assert.equal(app.nodes.get('relay-account-url').value, '');
+  app.nodes.get('relay-account-name').value = '新中转站';
+  app.nodes.get('relay-account-url').value = ' https://new.example/panel ';
+  app.nodes.get('relay-account-login').value = 'new-user';
+  app.nodes.get('relay-account-password').value = 'new-password';
+  await app.nodes.get('relay-account-form').listeners.submit[0]({ preventDefault() {} });
+  const request = app.calls.find(([url, options]) => url === '/api/admin/relay-accounts' && options.method === 'POST');
+  assert.ok(request);
+  assert.equal(JSON.parse(request[1].body).url, 'https://new.example/panel');
+});

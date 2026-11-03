@@ -75,6 +75,8 @@
       .resource-table th:nth-child(2) { width: 24%; }
       .resource-table th:nth-child(3) { width: 28%; }
       .resource-table th:nth-child(4) { width: 24%; }
+      .resource-link { color: #2563eb; text-decoration: none; }
+      .resource-link:hover { text-decoration: underline; }
       .muted { color: #6b7280; font-size: 13px; }
       .good { color: #15803d; font-weight: 700; }
       .bad { color: #b91c1c; font-weight: 700; }
@@ -249,7 +251,7 @@
         </section>
         <section class="section">
           <div class="section-head">
-            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、账号、密码和备注。列表只显示密码掩码，修改时密码留空会保留原值。</p></div>
+            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、网址、账号、密码和备注。点击名称打开网站；修改时密码留空会保留原值。</p></div>
             <button class="btn btn-primary" type="button" id="add-relay-account">添加中转站账号</button>
           </div>
           <div id="relay-account-message" class="message muted"></div>
@@ -340,6 +342,7 @@
         <h2 id="relay-account-title">添加中转站账号</h2>
         <div id="relay-account-error" class="bad" role="alert"></div>
         <label>中转站名称<input id="relay-account-name" type="text" maxlength="120" placeholder="例如：中转站 A" required /></label>
+        <label>中转站网址<input id="relay-account-url" type="url" maxlength="2048" placeholder="https://example.com" required /></label>
         <label>账号<input id="relay-account-login" type="text" maxlength="120" required /></label>
         <label>密码<input id="relay-account-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="新增时必填，修改时留空保留原值" /></label>
         <label>备注<input id="relay-account-note" type="text" maxlength="500" placeholder="可选" /></label>
@@ -479,6 +482,7 @@
       const relayAccountDialog = document.getElementById('relay-account-dialog');
       const relayAccountForm = document.getElementById('relay-account-form');
       const relayAccountName = document.getElementById('relay-account-name');
+      const relayAccountUrl = document.getElementById('relay-account-url');
       const relayAccountLogin = document.getElementById('relay-account-login');
       const relayAccountPassword = document.getElementById('relay-account-password');
       const relayAccountNote = document.getElementById('relay-account-note');
@@ -568,7 +572,8 @@
 
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
-        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong></td><td>${escapeHtml(item.account || '-')}</td><td>${escapeHtml(masked)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-relay-account-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-relay-account-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+        const name = item.url ? `<a class="resource-link" href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name || '-')}</a>` : escapeHtml(item.name || '-');
+        return `<tr><td><strong>${name}</strong></td><td>${escapeHtml(item.account || '-')}</td><td>${escapeHtml(masked)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-relay-account-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-relay-account-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
       }
 
       async function loadCodingPlans() {
@@ -603,6 +608,7 @@
         editingRelayAccountId = item?.id || '';
         document.getElementById('relay-account-title').textContent = item ? '修改中转站账号' : '添加中转站账号';
         relayAccountName.value = item?.name || '';
+        relayAccountUrl.value = item?.url || '';
         relayAccountLogin.value = item?.account || '';
         relayAccountPassword.value = '';
         relayAccountNote.value = item?.note || '';
@@ -648,7 +654,7 @@
       document.getElementById('relay-account-cancel').addEventListener('click', () => relayAccountDialog.close());
       relayAccountForm.addEventListener('submit', async (event) => {
         event.preventDefault();
-        const payload = { name: relayAccountName.value.trim(), account: relayAccountLogin.value.trim(), note: relayAccountNote.value.trim() };
+        const payload = { name: relayAccountName.value.trim(), url: relayAccountUrl.value.trim(), account: relayAccountLogin.value.trim(), note: relayAccountNote.value.trim() };
         if (relayAccountPassword.value.trim()) payload.password = relayAccountPassword.value.trim();
         try {
           relayAccountSave.disabled = true;

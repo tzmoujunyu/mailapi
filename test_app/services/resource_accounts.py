@@ -8,11 +8,13 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 
 MAX_NAME_LENGTH = 120
 MAX_NOTE_LENGTH = 500
 MAX_VALUE_LENGTH = 4096
+MAX_URL_LENGTH = 2048
 
 
 class ResourceStoreError(ValueError):
@@ -59,6 +61,10 @@ class ResourceStore:
             }
             if self.secret_field == "password":
                 item["account"] = str(raw.get("account") or "")[:MAX_NAME_LENGTH]
+                try:
+                    item["url"] = self._url(raw.get("url"))
+                except ResourceStoreError:
+                    item["url"] = ""
             items.append(item)
         try:
             os.chmod(self.path, 0o600)
@@ -100,6 +106,20 @@ class ResourceStore:
             raise ResourceStoreError(f"{label}不能超过 {maximum} 个字符")
         return result
 
+    @classmethod
+    def _url(cls, value: Any) -> str:
+        value = cls._text(value, "中转站网址", MAX_URL_LENGTH, required=True)
+        try:
+            parsed = urlsplit(value)
+            valid = parsed.scheme in {"http", "https"} and parsed.hostname and (
+                parsed.port is None or 0 < parsed.port <= 65535
+            )
+        except ValueError:
+            valid = False
+        if not valid or any(char.isspace() or ord(char) < 32 or char == "\\" for char in value):
+            raise ResourceStoreError("中转站网址须为完整的 HTTP/HTTPS 地址，例如 https://example.com")
+        return value
+
     def _record(self, payload: Any, existing: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         if not isinstance(payload, dict):
             raise ResourceStoreError(f"{self.value_label}格式无效")
@@ -123,6 +143,7 @@ class ResourceStore:
                 MAX_NAME_LENGTH,
                 required=True,
             )
+            item["url"] = self._url(payload.get("url", current.get("url")))
         return item
 
     @staticmethod
@@ -143,7 +164,7 @@ class ResourceStore:
             masked = self._mask(item["api_key"])
             result.update({"api_key": masked, "api_key_masked": masked, "has_api_key": True})
         else:
-            result.update({"account": item.get("account", "")})
+            result.update({"account": item.get("account", ""), "url": item.get("url", "")})
             masked = self._mask(item["password"])
             result.update({"password": masked, "password_masked": masked, "has_password": True})
         return result
