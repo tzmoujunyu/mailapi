@@ -89,6 +89,7 @@ from account_passwords import (
     normalize_totp_secret,
     generate_totp_code,
 )
+from resource_accounts import ResourceStore, ResourceStoreError
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -137,6 +138,8 @@ GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
 OUTLOOK_TOKEN_DIR = os.path.join(DATA_DIR, "outlook_tokens")
 PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
 MAIL_FILTERS_FILE = os.path.join(DATA_DIR, "mail_filters.json")
+CODING_PLANS_FILE = os.path.join(DATA_DIR, "coding_plans.json")
+RELAY_ACCOUNTS_FILE = os.path.join(DATA_DIR, "relay_accounts.json")
 PROTON_CONFIG_FILE = os.path.expanduser(
     os.getenv("PROTON_CONFIG_FILE", "~/proton/.env")
 )
@@ -2160,6 +2163,8 @@ MAIL_FILTERS = load_mail_filters()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
 TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
 CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"))
+CODING_PLAN_STORE = ResourceStore(CODING_PLANS_FILE, "api_key", "API key")
+RELAY_ACCOUNT_STORE = ResourceStore(RELAY_ACCOUNTS_FILE, "password", "密码")
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
@@ -4077,6 +4082,114 @@ def get_accounts(request: FastAPIRequest):
     if request_access_role(request) != "admin" or is_user_preview(request):
         items = [item for item in items if item["listed"]]
     return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
+
+
+async def resource_payload(request: FastAPIRequest, label: str) -> Dict[str, Any]:
+    body = await request.body()
+    if len(body) > 8192:
+        raise ResourceStoreError(f"{label}内容过长")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ResourceStoreError(f"{label}必须是 JSON") from error
+    if not isinstance(payload, dict):
+        raise ResourceStoreError(f"{label}格式无效")
+    return payload
+
+
+def resource_list_response(store: ResourceStore) -> JSONResponse:
+    return JSONResponse(
+        content={"items": store.list_public(), "updated_at": now_iso()},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/coding-plans")
+def get_coding_plans():
+    return resource_list_response(CODING_PLAN_STORE)
+
+
+@app.get("/api/relay-accounts")
+def get_relay_accounts():
+    return resource_list_response(RELAY_ACCOUNT_STORE)
+
+
+@app.get("/api/coding-plans/{plan_id}/api-key")
+@app.post("/api/coding-plans/{plan_id}/api-key")
+def get_coding_plan_api_key(plan_id: str):
+    value = CODING_PLAN_STORE.get_secret(plan_id)
+    if value is None:
+        return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
+    return JSONResponse(
+        content={"api_key": value},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/relay-accounts/{account_id}/password")
+@app.post("/api/relay-accounts/{account_id}/password")
+def get_relay_account_password(account_id: str):
+    value = RELAY_ACCOUNT_STORE.get_secret(account_id)
+    if value is None:
+        return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
+    return JSONResponse(
+        content={"password": value},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.post("/api/admin/coding-plans")
+async def create_coding_plan(request: FastAPIRequest):
+    try:
+        item = CODING_PLAN_STORE.create(await resource_payload(request, "Coding Plan"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(content={"item": item}, status_code=201)
+
+
+@app.put("/api/admin/coding-plans/{plan_id}")
+async def update_coding_plan(plan_id: str, request: FastAPIRequest):
+    try:
+        item = CODING_PLAN_STORE.update(plan_id, await resource_payload(request, "Coding Plan"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    if item is None:
+        return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
+    return JSONResponse(content={"item": item})
+
+
+@app.delete("/api/admin/coding-plans/{plan_id}")
+def delete_coding_plan(plan_id: str):
+    if not CODING_PLAN_STORE.delete(plan_id):
+        return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
+    return JSONResponse(content={"ok": True})
+
+
+@app.post("/api/admin/relay-accounts")
+async def create_relay_account(request: FastAPIRequest):
+    try:
+        item = RELAY_ACCOUNT_STORE.create(await resource_payload(request, "中转站账号"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(content={"item": item}, status_code=201)
+
+
+@app.put("/api/admin/relay-accounts/{account_id}")
+async def update_relay_account(account_id: str, request: FastAPIRequest):
+    try:
+        item = RELAY_ACCOUNT_STORE.update(account_id, await resource_payload(request, "中转站账号"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    if item is None:
+        return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
+    return JSONResponse(content={"item": item})
+
+
+@app.delete("/api/admin/relay-accounts/{account_id}")
+def delete_relay_account(account_id: str):
+    if not RELAY_ACCOUNT_STORE.delete(account_id):
+        return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
+    return JSONResponse(content={"ok": True})
 
 
 @app.put("/api/admin/accounts/{account_name}/listing")

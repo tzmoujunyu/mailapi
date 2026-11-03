@@ -70,6 +70,11 @@
       .account-table th:nth-child(3) { width: 22%; }
       .account-table th:nth-child(4) { width: 16%; }
       .account-table th:nth-child(5) { width: 22%; }
+      .resource-table { min-width: 760px; }
+      .resource-table th:nth-child(1) { width: 24%; }
+      .resource-table th:nth-child(2) { width: 24%; }
+      .resource-table th:nth-child(3) { width: 28%; }
+      .resource-table th:nth-child(4) { width: 24%; }
       .muted { color: #6b7280; font-size: 13px; }
       .good { color: #15803d; font-weight: 700; }
       .bad { color: #b91c1c; font-weight: 700; }
@@ -229,6 +234,32 @@
         </section>
         <section class="section">
           <div class="section-head">
+            <div><h2>国产模型Coding Plan</h2><p class="muted">维护国产模型 Coding Plan 名称、备注和 API key。列表只显示掩码，修改时 API key 留空会保留原值。</p></div>
+            <button class="btn btn-primary" type="button" id="add-coding-plan">添加 Coding Plan</button>
+          </div>
+          <div id="coding-plan-message" class="message muted"></div>
+          <div class="table-wrap">
+            <table class="resource-table">
+              <thead><tr><th>Coding Plan</th><th>API key</th><th>备注</th><th>管理</th></tr></thead>
+              <tbody id="coding-plan-rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="section">
+          <div class="section-head">
+            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、账号、密码和备注。列表只显示密码掩码，修改时密码留空会保留原值。</p></div>
+            <button class="btn btn-primary" type="button" id="add-relay-account">添加中转站账号</button>
+          </div>
+          <div id="relay-account-message" class="message muted"></div>
+          <div class="table-wrap">
+            <table class="resource-table">
+              <thead><tr><th>中转站</th><th>账号</th><th>密码</th><th>备注</th><th>管理</th></tr></thead>
+              <tbody id="relay-account-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="section">
+          <div class="section-head">
             <div><h2>收件设置</h2><p class="muted">为已授权邮箱配置邮件验证码或登录链接的接收规则。OpenAI 固定规则始终保留，其他规则可独立修改或删除。</p></div>
             <button class="btn btn-primary" type="button" id="add-filter">新增收件箱</button>
           </div>
@@ -288,6 +319,29 @@
           <button id="totp-cancel" class="btn" type="button">取消</button>
           <button id="totp-save" class="btn btn-primary" type="submit">保存</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="coding-plan-dialog">
+      <form id="coding-plan-form" class="password-form">
+        <h2 id="coding-plan-title">添加 Coding Plan</h2>
+        <div id="coding-plan-error" class="bad" role="alert"></div>
+        <label>Coding Plan 名称<input id="coding-plan-name" type="text" maxlength="120" placeholder="例如：Kimi" required /></label>
+        <label>备注<input id="coding-plan-note" type="text" maxlength="500" placeholder="可选" /></label>
+        <label>API key<input id="coding-plan-key" type="password" maxlength="4096" autocomplete="new-password" placeholder="新增时必填，修改时留空保留原值" /></label>
+        <div class="dialog-actions"><button id="coding-plan-cancel" class="btn" type="button">取消</button><button id="coding-plan-save" class="btn btn-primary" type="submit">保存</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="relay-account-dialog">
+      <form id="relay-account-form" class="password-form">
+        <h2 id="relay-account-title">添加中转站账号</h2>
+        <div id="relay-account-error" class="bad" role="alert"></div>
+        <label>中转站名称<input id="relay-account-name" type="text" maxlength="120" placeholder="例如：中转站 A" required /></label>
+        <label>账号<input id="relay-account-login" type="text" maxlength="120" required /></label>
+        <label>密码<input id="relay-account-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="新增时必填，修改时留空保留原值" /></label>
+        <label>备注<input id="relay-account-note" type="text" maxlength="500" placeholder="可选" /></label>
+        <div class="dialog-actions"><button id="relay-account-cancel" class="btn" type="button">取消</button><button id="relay-account-save" class="btn btn-primary" type="submit">保存</button></div>
       </form>
     </dialog>
 
@@ -408,6 +462,27 @@
       const totpCancel = document.getElementById('totp-cancel');
       const totpSave = document.getElementById('totp-save');
       let totpAccountName = '';
+      const codingPlanRows = document.getElementById('coding-plan-rows');
+      const codingPlanMessage = document.getElementById('coding-plan-message');
+      const codingPlanDialog = document.getElementById('coding-plan-dialog');
+      const codingPlanForm = document.getElementById('coding-plan-form');
+      const codingPlanName = document.getElementById('coding-plan-name');
+      const codingPlanNote = document.getElementById('coding-plan-note');
+      const codingPlanKey = document.getElementById('coding-plan-key');
+      const codingPlanSave = document.getElementById('coding-plan-save');
+      let editingCodingPlanId = '';
+      let codingPlans = [];
+      const relayAccountRows = document.getElementById('relay-account-rows');
+      const relayAccountMessage = document.getElementById('relay-account-message');
+      const relayAccountDialog = document.getElementById('relay-account-dialog');
+      const relayAccountForm = document.getElementById('relay-account-form');
+      const relayAccountName = document.getElementById('relay-account-name');
+      const relayAccountLogin = document.getElementById('relay-account-login');
+      const relayAccountPassword = document.getElementById('relay-account-password');
+      const relayAccountNote = document.getElementById('relay-account-note');
+      const relayAccountSave = document.getElementById('relay-account-save');
+      let editingRelayAccountId = '';
+      let relayAccounts = [];
       const filterRows = document.getElementById('filter-rows');
       const filterMessage = document.getElementById('filter-message');
       const filterDialog = document.getElementById('filter-dialog');
@@ -483,6 +558,121 @@
         if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
         return data;
       }
+
+      function codingPlanRow(item) {
+        const masked = item.api_key_masked || item.api_key || '未设置';
+        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong></td><td>${escapeHtml(masked)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-coding-plan-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-coding-plan-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+      }
+
+      function relayAccountRow(item) {
+        const masked = item.password_masked || item.password || '未设置';
+        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong></td><td>${escapeHtml(item.account || '-')}</td><td>${escapeHtml(masked)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-relay-account-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-relay-account-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+      }
+
+      async function loadCodingPlans() {
+        try {
+          const data = await api('/api/coding-plans');
+          codingPlans = data.items || [];
+          codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="4" class="muted">暂无 Coding Plan。</td></tr>';
+        } catch (error) { setMessage(codingPlanMessage, error.message, true); }
+      }
+
+      async function loadRelayAccounts() {
+        try {
+          const data = await api('/api/relay-accounts');
+          relayAccounts = data.items || [];
+          relayAccountRows.innerHTML = relayAccounts.length ? relayAccounts.map(relayAccountRow).join('') : '<tr><td colspan="5" class="muted">暂无中转站账号。</td></tr>';
+        } catch (error) { setMessage(relayAccountMessage, error.message, true); }
+      }
+
+      function openCodingPlanDialog(item = null) {
+        editingCodingPlanId = item?.id || '';
+        document.getElementById('coding-plan-title').textContent = item ? '修改 Coding Plan' : '添加 Coding Plan';
+        codingPlanName.value = item?.name || '';
+        codingPlanNote.value = item?.note || '';
+        codingPlanKey.value = '';
+        codingPlanKey.required = !item;
+        document.getElementById('coding-plan-error').textContent = '';
+        codingPlanDialog.showModal();
+        codingPlanName.focus();
+      }
+
+      function openRelayAccountDialog(item = null) {
+        editingRelayAccountId = item?.id || '';
+        document.getElementById('relay-account-title').textContent = item ? '修改中转站账号' : '添加中转站账号';
+        relayAccountName.value = item?.name || '';
+        relayAccountLogin.value = item?.account || '';
+        relayAccountPassword.value = '';
+        relayAccountNote.value = item?.note || '';
+        relayAccountPassword.required = !item;
+        document.getElementById('relay-account-error').textContent = '';
+        relayAccountDialog.showModal();
+        relayAccountName.focus();
+      }
+
+      document.getElementById('add-coding-plan').addEventListener('click', () => openCodingPlanDialog());
+      document.getElementById('coding-plan-cancel').addEventListener('click', () => codingPlanDialog.close());
+      codingPlanForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const payload = { name: codingPlanName.value.trim(), note: codingPlanNote.value.trim() };
+        if (codingPlanKey.value.trim()) payload.api_key = codingPlanKey.value.trim();
+        try {
+          codingPlanSave.disabled = true;
+          await api(editingCodingPlanId ? `/api/admin/coding-plans/${encodeURIComponent(editingCodingPlanId)}` : '/api/admin/coding-plans', {
+            method: editingCodingPlanId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          codingPlanDialog.close();
+          setMessage(codingPlanMessage, 'Coding Plan 已保存。');
+          await loadCodingPlans();
+        } catch (error) { document.getElementById('coding-plan-error').textContent = error.message; }
+        finally { codingPlanSave.disabled = false; }
+      });
+
+      codingPlanRows.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-coding-plan-action]');
+        if (!button) return;
+        const item = codingPlans.find(value => value.id === button.dataset.id);
+        if (button.dataset.codingPlanAction === 'edit') { if (item) openCodingPlanDialog(item); return; }
+        if (!confirm(`确认删除 Coding Plan“${item?.name || ''}”吗？`)) return;
+        try {
+          button.disabled = true;
+          await api(`/api/admin/coding-plans/${encodeURIComponent(button.dataset.id)}`, { method: 'DELETE' });
+          setMessage(codingPlanMessage, 'Coding Plan 已删除。');
+          await loadCodingPlans();
+        } catch (error) { setMessage(codingPlanMessage, error.message, true); button.disabled = false; }
+      });
+
+      document.getElementById('add-relay-account').addEventListener('click', () => openRelayAccountDialog());
+      document.getElementById('relay-account-cancel').addEventListener('click', () => relayAccountDialog.close());
+      relayAccountForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const payload = { name: relayAccountName.value.trim(), account: relayAccountLogin.value.trim(), note: relayAccountNote.value.trim() };
+        if (relayAccountPassword.value.trim()) payload.password = relayAccountPassword.value.trim();
+        try {
+          relayAccountSave.disabled = true;
+          await api(editingRelayAccountId ? `/api/admin/relay-accounts/${encodeURIComponent(editingRelayAccountId)}` : '/api/admin/relay-accounts', {
+            method: editingRelayAccountId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          relayAccountDialog.close();
+          setMessage(relayAccountMessage, '中转站账号已保存。');
+          await loadRelayAccounts();
+        } catch (error) { document.getElementById('relay-account-error').textContent = error.message; }
+        finally { relayAccountSave.disabled = false; }
+      });
+
+      relayAccountRows.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-relay-account-action]');
+        if (!button) return;
+        const item = relayAccounts.find(value => value.id === button.dataset.id);
+        if (button.dataset.relayAccountAction === 'edit') { if (item) openRelayAccountDialog(item); return; }
+        if (!confirm(`确认删除中转站账号“${item?.name || ''}”吗？`)) return;
+        try {
+          button.disabled = true;
+          await api(`/api/admin/relay-accounts/${encodeURIComponent(button.dataset.id)}`, { method: 'DELETE' });
+          setMessage(relayAccountMessage, '中转站账号已删除。');
+          await loadRelayAccounts();
+        } catch (error) { setMessage(relayAccountMessage, error.message, true); button.disabled = false; }
+      });
 
       const senderModeLabels = { exact: '完整邮箱', domain: '域名', regex: '正则' };
       const conditionOperatorLabels = {
@@ -976,8 +1166,10 @@
       });
 
       loadAccounts();
+      loadCodingPlans();
+      loadRelayAccounts();
       loadFilters();
-      setInterval(() => loadAccounts(false), 5000);
+      setInterval(() => { loadAccounts(false); loadCodingPlans(); loadRelayAccounts(); }, 5000);
     </script>
   </body>
 </html>
