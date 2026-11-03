@@ -1,0 +1,12 @@
+.site-session { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 9px 20px; border-bottom: 1px solid #fde68a; background: #fffbeb; color: #78350f; font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.site-session strong { background: #fef3c7; padding: 3px 7px; border-radius: 4px; }
+.site-session a { color: #1d4ed8; text-decoration: none; }
+.site-session .site-session-actions { margin-left: auto; display: flex; gap: 8px; }
+.site-session button, .site-password button { border: 1px solid #c7ced6; background: white; color: #1f2937; border-radius: 5px; padding: 5px 9px; font: inherit; cursor: pointer; }
+.site-password { width: min(400px, calc(100vw - 24px)); padding: 22px; border: 1px solid #c7ced6; border-radius: 8px; color: #1f2937; }
+.site-password::backdrop { background: #11182770; }
+.site-password h2 { font-size: 18px; margin: 0 0 16px; }
+.site-password label { display: grid; gap: 6px; margin: 12px 0; font-size: 14px; }
+.site-password input { min-width: 0; padding: 9px; border: 1px solid #c7ced6; border-radius: 5px; font: inherit; }
+.site-password .site-password-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.site-password .site-password-error { color: #b91c1c; font-size: 13px; }

@@ -16,7 +16,7 @@ const fixture = () => [{
   codex: [{ id: 'codex-2', email: 'only@example.com', usage_status: 'unavailable', status_reason: 'usage_missing_weekly' }], mail: [],
 }];
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function page(file, preview = false) {
+function page(file, preview = false, previewUserId = '') {
   const nodes = new Map();
   const calls = [];
   const timers = new Map();
@@ -34,11 +34,12 @@ function page(file, preview = false) {
     performance: { now: () => Date.now() },
     setInterval(callback) { timers.set(++counter, callback); return counter; }, clearInterval(id) { timers.delete(id); },
     setTimeout(callback) { return ++counter; },
-    navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true, __USER_PREVIEW__: preview },
+    navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true, __USER_PREVIEW__: preview, __PREVIEW_USER_ID__: previewUserId },
     confirm: () => true,
     fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : fixture(), password: 'password-value', code: '081804' }) }; },
   });
-  vm.runInContext(fs.readFileSync(file, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  const sourceFile = process.env.MAILAPI_UI_ROOT ? file.replace(/^static\//, `${process.env.MAILAPI_UI_ROOT}/`) : file;
+  vm.runInContext(fs.readFileSync(sourceFile, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1], context);
   async function click(id, selector, dataset) {
     const button = { dataset, textContent: '复制', disabled: false };
     const event = { target: { closest: query => query === selector ? button : null }, preventDefault() {} };
@@ -136,6 +137,14 @@ test('user preview uses the ordinary account API view for all interactions', asy
   assert.ok(app.calls.some(([url]) => url === '/api/history/account-1?preview=1'));
   assert.ok(app.calls.some(([url]) => url === '/api/accounts/email%3Auser%40example.com/gpt-password?preview=1'));
   assert.ok(app.calls.some(([url]) => url === '/api/accounts/email%3Auser%40example.com/totp-code?preview=1'));
+});
+
+test('test-version preview forwards its selected website user to every account interaction', { skip: !process.env.MAILAPI_UI_ROOT }, async () => {
+  const app = page('static/index.html', true, 'selected-user'); await flush();
+  await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
+  await app.click('rows', '[data-history-name]', { historyName: 'account-1' });
+  await app.click('rows', '[data-copy-type]', { copyType: 'password', name: 'email:user@example.com' });
+  for (const [url] of app.calls.filter(([url]) => url.startsWith('/api/'))) assert.match(url, /preview=1&user_id=selected-user/);
 });
 
 test('mail links render as truncated external anchors and can be copied', async () => {

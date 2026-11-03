@@ -2,7 +2,9 @@
 
 独立测试入口：`python code-receive-test.py`（默认端口 8001）。测试代码和页面位于
 `test_app/`，运行数据位于 `runtime/test/`。正式入口继续使用下文的启动方式。
-参见[测试开发与同步流程](docs/development.md)。
+首次启动前复制 `.env.test.example` 为 `.env.test` 并设置 `TEST_ADMIN_PASSWORD`，
+使用 `admin` 登录后进入 `/admin/access` 管理网站账号和分组。
+参见[权限说明及测试开发与同步流程](docs/development.md)。
 
 ## 启动
 

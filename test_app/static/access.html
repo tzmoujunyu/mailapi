@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>网站账号与分组 · 测试版</title>
+  <link rel="stylesheet" href="/static/session.css">
+  <link rel="stylesheet" href="/static/access.css">
+  <script src="/static/session.js" defer></script>
+  <script src="/static/access.js" defer></script>
+</head>
+<body>
+  <header><h1>网站账号与分组</h1><a href="/admin">资源账号控制台</a><a href="/">账号主页</a></header>
+  <main>
+    <p id="message" role="status" aria-live="polite"></p>
+    <section>
+      <div class="section-head"><h2>网站账号</h2><button id="add-user" type="button" class="primary">创建账号</button></div>
+      <p class="muted">用户按所属分组使用资源。两类管理员均可创建账号和管理分组；仅 admin 可删除账号、调整角色或重置普通管理员密码。</p>
+      <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users"></tbody></table></div>
+    </section>
+    <section>
+      <div class="section-head"><h2>Group 分组</h2><button id="add-group" type="button" class="primary">创建分组</button></div>
+      <p class="muted">一个账号或资源可以加入多个分组。用户可使用各分组分配的资源；未分配的资源仅管理员可见。GPT 账号下架后对用户隐藏。</p>
+      <div class="table-wrap"><table><thead><tr><th>分组名称</th><th>成员</th><th>资源</th><th>操作</th></tr></thead><tbody id="groups"></tbody></table></div>
+    </section>
+  </main>
+  <dialog id="user-dialog">
+    <form id="user-form">
+      <h2 id="user-title">创建账号</h2>
+      <label>用户名<input id="username" autocomplete="off" pattern="[A-Za-z0-9_.\-]{3,64}" minlength="3" maxlength="64" required><small>3–64 位字母、数字、下划线、点或短横线，登录时不区分大小写。</small></label>
+      <label>角色<select id="user-role"><option value="user">用户</option><option value="manager">普通管理员</option></select></label>
+      <label>密码<input id="user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256"><small id="password-help">密码至少 8 个字符。</small></label>
+      <p class="error" id="user-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" data-close="user-dialog">取消</button><button class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="group-dialog" class="wide-dialog">
+    <form id="group-form">
+      <h2 id="group-title">创建分组</h2>
+      <label>分组名称<input id="group-name" required maxlength="80" autocomplete="off"></label>
+      <fieldset><legend>分组成员</legend><div id="member-options" class="options"></div></fieldset>
+      <fieldset><legend>分配资源</legend><p class="muted">新资源请先到资源账号控制台添加，再返回分组进行分配。</p><div id="resource-options" class="options"></div></fieldset>
+      <p class="error" id="group-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" data-close="group-dialog">取消</button><button class="primary" type="submit">保存分组</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
