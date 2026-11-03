@@ -9,12 +9,13 @@
 ## 启动
 
 ```bash
-export ACCESS_PASSWORD='你的口令'
-export ADMIN_ACCESS_PASSWORD='你的管理员口令'
+export ADMIN_ACCESS_PASSWORD='你的管理员密码（至少 8 个字符）'
 python3 code-receive.py
 ```
 
-网页登录表单只有一个口令输入框：普通用户输入 `ACCESS_PASSWORD` 后只能进入 GPT 接码主页，管理员输入 `ADMIN_ACCESS_PASSWORD` 后会额外看到账号控制台入口。未配置 `ADMIN_ACCESS_PASSWORD` 时，为兼容已有部署会暂时沿用 `ACCESS_PASSWORD`；需要隔离普通用户和管理员时请设置不同的管理员口令。
+正式版使用用户名和密码登录。首次启用时，以现有 `ADMIN_ACCESS_PASSWORD` 初始化唯一的 `admin`；未配置该变量时，兼容使用现有 `ACCESS_PASSWORD`，密码至少 8 个字符。已有账号数据时不会重置 admin 密码，后续在页面中修改本人密码。
+
+管理员在 `/admin/access` 创建网站用户、普通管理员和分组，并分配 GPT、Coding Plan 与中转站资源。普通用户只能使用所属分组分配的资源，GPT 账号还须处于上架状态。网站账号、分组和会话保存在 `runtime/site_accounts.json`，不导入测试版账号，原有正式资源和授权文件继续使用。旧的共享口令 cookie、请求头和 URL 参数不再提供登录权限。
 
 依赖可通过 `pip install -r requirements.txt` 安装。网页控制台当前支持 Gmail 和 Outlook；Proton 旧实现仍保留在代码中，但不再提供新增和登录入口。
 
