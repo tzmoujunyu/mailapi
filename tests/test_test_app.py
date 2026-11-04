@@ -12,6 +12,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestAppIsolationTests(unittest.TestCase):
+    def test_production_and_test_import_paths_use_shared_service_modules(self):
+        import account_credentials
+        import account_passwords
+        import auth_storage
+        import mail_messages
+        import mail_providers.outlook as production_outlook
+        import resource_accounts
+        import test_app.services.account_credentials as test_credentials
+        import test_app.services.account_passwords as test_passwords
+        import test_app.services.auth_storage as test_storage
+        import test_app.services.mail_messages as test_messages
+        import test_app.services.mail_providers.outlook as test_outlook
+        import test_app.services.resource_accounts as test_resources
+
+        self.assertIs(account_credentials, test_credentials)
+        self.assertIs(account_passwords, test_passwords)
+        self.assertIs(auth_storage, test_storage)
+        self.assertIs(mail_messages, test_messages)
+        self.assertIs(production_outlook, test_outlook)
+        self.assertIs(resource_accounts, test_resources)
+
     def test_default_startup_snapshots_production_data_and_cleans_it_on_exit(self):
         environment = dict(os.environ)
         environment.pop("TEST_DATA_DIR", None)
@@ -85,7 +106,7 @@ class TestAppIsolationTests(unittest.TestCase):
                     "assert main.GMAIL_OAUTH_REDIRECT_BASE == 'http://localhost:8001'",
                     "assert main.MAIL_RELAY_SECRET != 'production-secret-must-not-be-reused'",
                     "assert main.MAIL_RELAY_SECRET_FILE.endswith('/mail_relay_secret')",
-                    "assert main.AccountCredentialStore.__module__.startswith('test_app.services.')",
+                    "assert main.AccountCredentialStore.__module__ == 'mailapi_shared.account_credentials'",
                     "assert not hasattr(main, 'CODEX_LOGIN_SERVER')",
                     "assert isinstance(main.should_use_console_auth(), bool)",
                     "assert (main.STATIC_DIR / 'index.html').is_file()",

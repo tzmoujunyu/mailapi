@@ -3,6 +3,8 @@
 独立测试入口：`python code-receive-test.py`（默认端口 8001）。测试代码和页面位于
 `test_app/`。测试进程启动时把正式 `runtime/` 的当前数据复制到系统临时目录，测试页面
 读取和修改这份副本；进程退出后临时目录自动删除。正式入口继续使用下文的启动方式。
+正式版和测试版共用的邮件、凭据、资源、授权回调和中继业务实现位于 `mailapi_shared/`；
+两边原有模块路径保留为兼容入口。
 首次启动前复制 `.env.test.example` 为 `.env.test` 并设置 `TEST_ADMIN_PASSWORD`，
 使用 `admin` 登录后进入 `/admin/access` 管理网站账号和分组。
 参见[权限说明及测试开发与同步流程](docs/development.md)。
