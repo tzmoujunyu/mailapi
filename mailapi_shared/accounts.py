@@ -115,6 +115,19 @@ def create_account_router(static_dir, resource_catalog):
         payload = await read_payload(request, {"username", "password", "role"})
         return {"item": store(request).create_user(user_id(request), payload.get("username"), payload.get("password"), payload.get("role", "user"))}
 
+    @router.post("/api/admin/users/batch", status_code=201)
+    async def create_users_batch(request: Request):
+        payload = await read_payload(request, {"usernames", "password", "role"})
+        return {
+            "items": store(request).create_users(
+                user_id(request),
+                payload.get("usernames"),
+                payload.get("password"),
+                payload.get("role", "user"),
+                admin_only=True,
+            )
+        }
+
     @router.put("/api/admin/users/{target_id}")
     async def update_user(target_id: str, request: Request):
         payload = await read_payload(request, {"role", "password"})

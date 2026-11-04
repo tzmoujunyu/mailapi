@@ -14,7 +14,7 @@
   <main>
     <p id="message" role="status" aria-live="polite"></p>
     <section>
-      <div class="section-head"><h2>网站账号</h2><button id="add-user" type="button" class="primary">创建账号</button></div>
+      <div class="section-head"><h2>网站账号</h2><div class="actions"><button id="add-user" type="button" class="primary">创建账号</button><button id="batch-users" type="button">批量</button></div></div>
       <p class="muted">用户按所属分组使用资源。两类管理员均可创建账号和管理分组；仅 admin 可删除账号、调整角色或重置普通管理员密码。</p>
       <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users"></tbody></table></div>
     </section>
@@ -32,6 +32,16 @@
       <label>密码<input id="user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256"><small id="password-help">密码至少 8 个字符。</small></label>
       <p class="error" id="user-error" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close="user-dialog">取消</button><button class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="batch-user-dialog">
+    <form id="batch-user-form">
+      <h2>批量创建账号</h2>
+      <label>用户名<textarea id="batch-usernames" rows="7" maxlength="4096" placeholder="例如：\nalice\nbob\ncharlie"></textarea><small>每行一个，也可以用空格、逗号或分号分隔；一次最多 100 个。</small></label>
+      <label>统一角色<select id="batch-user-role"><option value="user">用户</option><option value="manager">普通管理员</option></select></label>
+      <label>统一初始密码<input id="batch-user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256" required><small>所有新账号使用此密码首次登录，登录后可自行修改。</small></label>
+      <p class="error" id="batch-user-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" data-close="batch-user-dialog">取消</button><button class="primary" type="submit">添加</button></div>
     </form>
   </dialog>
   <dialog id="group-dialog" class="wide-dialog">

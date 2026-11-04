@@ -16,6 +16,8 @@ import time
 SESSION_SECONDS = 86400
 PASSWORD_ITERATIONS = 600_000
 ADMIN_ROLES = {"manager", "admin"}
+MAX_BATCH_USERS = 100
+USERNAME_PATTERN = re.compile(r"[a-z0-9_.-]{3,64}")
 
 
 class SiteAccountError(ValueError):
@@ -114,22 +116,44 @@ class SiteAccountStore:
             return self._public(user) if user else None
 
     def create_user(self, actor_id, username, password, role="user"):
-        username = username.strip().lower() if isinstance(username, str) else ""
-        if not re.fullmatch(r"[a-z0-9_.-]{3,64}", username):
-            raise SiteAccountError("用户名须为 3–64 位字母、数字、下划线、点或短横线")
-        if username == "admin" or not isinstance(role, str) or role not in {"user", "manager"}:
+        return self.create_users(actor_id, [username], password, role)[0]
+
+    def create_users(self, actor_id, usernames, password, role="user", *, admin_only=False):
+        if not isinstance(usernames, list) or not usernames:
+            raise SiteAccountError("至少需要一个用户名")
+        if len(usernames) > MAX_BATCH_USERS:
+            raise SiteAccountError(f"一次最多创建 {MAX_BATCH_USERS} 个账号")
+        if not isinstance(role, str) or role not in {"user", "manager"}:
             raise SiteAccountError("admin 为唯一保留账号，新增角色只能是用户或普通管理员")
+        normalized = []
+        seen = set()
+        for value in usernames:
+            username = value.strip().lower() if isinstance(value, str) else ""
+            if not USERNAME_PATTERN.fullmatch(username):
+                raise SiteAccountError("用户名须为 3–64 位字母、数字、下划线、点或短横线")
+            if username == "admin":
+                raise SiteAccountError("admin 为唯一保留账号，不能批量创建")
+            if username in seen:
+                raise SiteAccountError(f"批量用户名重复：{username}", 409)
+            seen.add(username)
+            normalized.append(username)
         with self._edit() as data:
-            self._administrator(data, actor_id)
-            if any(user["username"] == username for user in data["users"].values()):
-                raise SiteAccountError("用户名已存在", 409)
-            user_id = secrets.token_hex(16)
-            user = {
-                "id": user_id, "username": username, "role": role,
-                "password_hash": password_hash(password), "created_at": int(time.time()),
-            }
-            data["users"][user_id] = user
-        return self._public(user)
+            self._administrator(data, actor_id, admin_only=admin_only)
+            existing = {user["username"] for user in data["users"].values()}
+            conflicts = [username for username in normalized if username in existing]
+            if conflicts:
+                raise SiteAccountError(f"用户名已存在：{', '.join(conflicts)}", 409)
+            created = []
+            created_at = int(time.time())
+            for username in normalized:
+                user_id = secrets.token_hex(16)
+                user = {
+                    "id": user_id, "username": username, "role": role,
+                    "password_hash": password_hash(password), "created_at": created_at,
+                }
+                data["users"][user_id] = user
+                created.append(self._public(user))
+        return created
 
     @staticmethod
     def _revoke_user_sessions(data, user_id):

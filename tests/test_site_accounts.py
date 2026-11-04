@@ -133,6 +133,35 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.assertEqual(self.admin.delete("/api/admin/users/" + target_id).status_code, 200)
         self.assertEqual(self.admin.delete("/api/admin/users/" + self.identities["admin"]["id"]).status_code, 403)
 
+    def test_admin_can_batch_create_users_with_one_initial_password(self):
+        response = self.admin.post(
+            "/api/admin/users/batch",
+            json={"usernames": ["Batch-Alice", "batch-bob"], "password": "batch-password", "role": "user"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        items = response.json()["items"]
+        self.assertEqual([item["username"] for item in items], ["batch-alice", "batch-bob"])
+        self.assertTrue(all(item["role"] == "user" for item in items))
+        self.assertNotIn("batch-password", response.text)
+        self.assertTrue(all(self.store.login(item["username"], "batch-password") for item in items))
+        hashes = [user["password_hash"] for user in self.store._data["users"].values() if user["username"].startswith("batch-")]
+        self.assertEqual(len(hashes), len(set(hashes)))
+
+        before = {item["username"] for item in self.admin.get("/api/admin/users").json()["items"]}
+        duplicate = self.admin.post(
+            "/api/admin/users/batch",
+            json={"usernames": ["atomic-new", "alice"], "password": "batch-password", "role": "user"},
+        )
+        self.assertEqual(duplicate.status_code, 409)
+        after = {item["username"] for item in self.admin.get("/api/admin/users").json()["items"]}
+        self.assertEqual(after, before)
+
+        manager_response = self.manager.post(
+            "/api/admin/users/batch",
+            json={"usernames": ["manager-batch"], "password": "batch-password", "role": "user"},
+        )
+        self.assertEqual(manager_response.status_code, 403)
+
     def test_user_cannot_reach_management_or_mutation_endpoints(self):
         for path in ("/api/admin/users", "/api/admin/groups", "/api/admin/resources", "/api/admin/mail/accounts", "/api/codex/accounts"):
             self.assertEqual(self.alice.get(path).status_code, 403, path)

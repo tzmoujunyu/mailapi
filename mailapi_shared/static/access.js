@@ -44,6 +44,8 @@ async function load() {
     resources = resourceData.items;
     render();
     byId('add-user').disabled = false;
+    byId('batch-users').disabled = currentUser.role !== 'admin';
+    byId('batch-users').hidden = currentUser.role !== 'admin';
     byId('add-group').disabled = false;
   } catch (error) { byId('message').textContent = error.message; byId('message').className = 'error'; }
   finally { loading = false; }
@@ -74,6 +76,16 @@ function openGroup(group = null) {
   byId('group-dialog').showModal();
 }
 
+function openBatchUsers() {
+  byId('batch-user-form').reset();
+  byId('batch-user-error').textContent = '';
+  byId('batch-user-dialog').showModal();
+}
+
+function batchUsernames(value) {
+  return [...new Set(value.split(/[\s,，;；]+/).map(item => item.trim().toLowerCase()).filter(Boolean))];
+}
+
 async function submitForm(event, errorId, action) {
   event.preventDefault();
   const button = event.target.querySelector('[type="submit"]');
@@ -102,6 +114,18 @@ byId('group-form').addEventListener('submit', event => submitForm(event, 'group-
   byId('group-dialog').close();
   byId('message').className = '';
   byId('message').textContent = '分组已保存';
+}));
+
+byId('batch-user-form').addEventListener('submit', event => submitForm(event, 'batch-user-error', async () => {
+  const usernames = batchUsernames(byId('batch-usernames').value);
+  await api('/api/admin/users/batch', jsonRequest('POST', {
+    usernames,
+    role: byId('batch-user-role').value,
+    password: byId('batch-user-password').value,
+  }));
+  byId('batch-user-dialog').close();
+  byId('message').className = '';
+  byId('message').textContent = `已添加 ${usernames.length} 个账号`;
 }));
 
 async function remove(button, url, description) {
@@ -136,6 +160,7 @@ byId('groups').addEventListener('click', event => {
 });
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => byId(button.dataset.close).close()));
 byId('add-user').addEventListener('click', () => openUser());
+byId('batch-users').addEventListener('click', openBatchUsers);
 byId('add-group').addEventListener('click', () => openGroup());
 byId('add-user').disabled = true;
 byId('add-group').disabled = true;

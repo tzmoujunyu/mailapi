@@ -91,6 +91,7 @@ runtime/                    正式运行数据（不提交）
 | `GET /api/auth/me` | 当前账号和所属分组 |
 | `POST /api/auth/logout`、`POST /api/auth/password` | 退出、修改本人密码 |
 | `GET/POST /api/admin/users` | 列表、创建网站账号 |
+| `POST /api/admin/users/batch` | 仅 admin 批量创建用户或普通管理员，共用一个初始密码 |
 | `PUT/DELETE /api/admin/users/{id}` | 重置密码、调整角色、删除网站账号 |
 | `GET/POST /api/admin/groups` | 列表、创建分组 |
 | `PUT/DELETE /api/admin/groups/{id}` | 编辑、删除分组 |
@@ -101,6 +102,10 @@ runtime/                    正式运行数据（不提交）
 ```json
 {"name":"研发组","member_ids":["网站账号ID"],"resource_keys":["gpt:email:example@example.com"]}
 ```
+
+账号控制台的“批量”按钮支持每行一个用户名，也支持空格、逗号或分号分隔。admin 选择统一
+角色和初始密码后一次提交；后端会先校验整批用户名，遇到重复或已存在账号时整批拒绝，
+不会产生部分成功的结果。一次最多创建 100 个账号，每个账号仍使用独立密码哈希。
 
 ## 授权配置
 

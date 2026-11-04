@@ -70,6 +70,17 @@ test('homepage expands immediately, places history below email row, and collapse
   assert.equal(app.timers.size, 2);
 });
 
+test('website account console exposes the admin-only batch user form', () => {
+  const root = process.env.MAILAPI_UI_ROOT || 'static';
+  const html = fs.readFileSync(`${root}/access.html`, 'utf8');
+  const script = fs.readFileSync(`${root}/access.js`, 'utf8');
+  assert.match(html, /id="batch-users"[^>]*>批量/);
+  assert.match(html, /id="batch-user-names|id="batch-usernames/);
+  assert.match(html, /统一初始密码/);
+  assert.match(script, /\/api\/admin\/users\/batch/);
+  assert.match(script, /currentUser\.role !== 'admin'/);
+});
+
 test('Codex-only account can copy both credentials and shows neutral email status', async () => {
   const app = page('static/index.html'); await flush();
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:only@example.com' });
