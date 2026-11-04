@@ -1,10 +1,16 @@
-"""Run the isolated test version; production still uses code-receive.py."""
+"""Run the shared application in test mode."""
+import importlib
 import os
 
-import uvicorn
+os.environ.setdefault("MAILAPI_MODE", "test")
+from mailapi_shared import application as app_module
 
-from test_app.main import TEST_PORT, app
+if app_module.APP_MODE != "test":
+    os.environ["MAILAPI_MODE"] = "test"
+    app_module = importlib.reload(app_module)
 
+TEST_PORT = app_module.APP_PORT
+app = app_module.app
 
 if __name__ == "__main__":
-    uvicorn.run(app, host=os.getenv("TEST_HOST", "127.0.0.1"), port=TEST_PORT)
+    app_module.run()

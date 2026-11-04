@@ -13,8 +13,8 @@
     const { user, groups } = await response.json();
     const bar = document.createElement('nav');
     bar.className = 'site-session';
-    bar.setAttribute('aria-label', '测试版会话');
-    bar.innerHTML = '<strong>测试版</strong><span data-identity></span><span data-groups></span><a href="/admin/access" data-management hidden>网站账号与分组</a><div class="site-session-actions"><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>';
+    bar.setAttribute('aria-label', '网站会话');
+    bar.innerHTML = '<strong>账号中心</strong><span data-identity></span><span data-groups></span><a href="/admin/access" data-management hidden>网站账号与分组</a><div class="site-session-actions"><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>';
     bar.querySelector('[data-identity]').textContent = `${user.username} · ${roleNames[user.role]}`;
     bar.querySelector('[data-groups]').textContent = groups.length ? `分组：${groups.map(group => group.name).join('、')}` : '暂未加入分组';
     bar.querySelector('[data-management]').hidden = user.role === 'user';

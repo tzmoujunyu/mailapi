@@ -107,7 +107,7 @@ class TestAppIsolationTests(unittest.TestCase):
                     "assert main.MAIL_RELAY_SECRET != 'production-secret-must-not-be-reused'",
                     "assert main.MAIL_RELAY_SECRET_FILE.endswith('/mail_relay_secret')",
                     "assert main.AccountCredentialStore.__module__ == 'mailapi_shared.account_credentials'",
-                    "assert not hasattr(main, 'CODEX_LOGIN_SERVER')",
+                    "assert main.CODEX_LOGIN_SERVER is None",
                     "assert isinstance(main.should_use_console_auth(), bool)",
                     "assert (main.STATIC_DIR / 'index.html').is_file()",
                 ])],

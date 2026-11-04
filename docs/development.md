@@ -1,8 +1,9 @@
 # 正式版与测试版
 
-正式入口继续使用 `python code-receive.py`，默认端口 8000。
-测试入口使用 `python code-receive-test.py`，默认监听 `127.0.0.1:8001`。
-在远程开发环境中转发 8001 端口；需要直接通过服务器地址访问时设置 `TEST_HOST=0.0.0.0`。
+正式入口 `python code-receive.py` 和测试入口 `python code-receive-test.py` 都加载
+`mailapi_shared.application`。入口文件只选择运行模式；登录、路由、网站账号、资源聚合、
+邮件监听和授权流程由同一份应用实现。正式版默认端口 8000，测试版默认端口 8001；测试版
+默认监听 `127.0.0.1`，需要直接通过服务器地址访问时设置 `TEST_HOST=0.0.0.0`。
 
 测试版首次启动：
 
@@ -13,27 +14,28 @@ chmod 600 .env.test
 python code-receive-test.py
 ```
 
-访问 `http://localhost:8001/login`，用户名为 `admin`，密码为上述独立密码。
+访问 `http://localhost:8001/login`，用户名为 `admin`，密码为上述独立密码。正式版也使用
+相同的用户名加密码登录；首次创建正式版 admin 时使用 `ADMIN_ACCESS_PASSWORD`，未设置时
+回退到现有 `ACCESS_PASSWORD`。
 默认会为本次进程创建临时数据快照；测试版 admin 写入临时目录中的
 `site_accounts.json`，进程退出后随快照一起删除。初始化完成后可从配置中移除初始密码。
 
 ## 文件职责
 
 ```text
-code-receive.py             正式入口和现有路由
-mailapi_shared/             正式版与测试版共用的业务模块
-  *.py                      凭据、资源、邮件、授权回调和中继逻辑
-static/                     正式页面
+code-receive.py             正式入口，只设置 MAILAPI_MODE=production
+code-receive-test.py        测试入口，只设置 MAILAPI_MODE=test
+mailapi_shared/application.py
+                            共用 FastAPI 应用、登录中间件和所有业务路由
+mailapi_shared/accounts.py  用户名密码登录、会话和网站账号 API
+mailapi_shared/site_accounts.py
+                            密码哈希、会话、角色和分组授权存储
+mailapi_shared/static/      共用页面、脚本和样式
+static -> mailapi_shared/static
+test_app/static -> ../mailapi_shared/static
+                            历史路径兼容链接
 *.py、mail_providers/        正式版兼容入口，实际实现来自 mailapi_shared/
-code-receive-test.py        测试入口
-test_app/
-  main.py                   测试版邮件、资源和授权路由
-  accounts.py               登录、网站账号和分组 API
-  site_accounts.py          密码哈希、会话、角色和分组授权存储
-  services/                 测试版独立服务模块
-                             兼容入口，实际业务实现来自 mailapi_shared/
-    mail_providers/         邮箱提供商
-  static/                   测试页面
+test_app/services/           测试版历史导入路径，实际实现来自 mailapi_shared/
 scripts/                    运维、授权与旧中继脚本
 tests/                      Python 与前端回归测试
 docs/                       开发流程
@@ -41,15 +43,16 @@ runtime/                    正式运行数据（不提交）
   test/                     仅供显式 TEST_DATA_DIR 场景使用的测试数据（不提交）
 ```
 
-两版的共用业务实现集中在 `mailapi_shared/`。根目录模块和
-`test_app/services/` 只保留原有导入路径的兼容入口，正式版和测试版因此调用同一份
-邮件解析、凭据、资源存储、授权回调和中继实现。数据目录、登录方式、页面路由和监听开关
-由各自入口保留差异；共用逻辑改动应先在测试版验证，再分别检查两版入口。
+两版的共用应用实现集中在 `mailapi_shared/`。根目录模块和 `test_app/services/` 只保留
+原有导入路径的兼容入口。两版只通过运行模式选择数据目录、初始登录配置和外部监听开关；
+页面、登录接口和业务路由不再分叉。
 
 测试版只加载根目录 `.env.test`，不会读取正式 `.env`。启动时会复制正式 `runtime/` 中的资源、
 邮箱、Codex、凭据、历史和规则数据，网站登录控制数据、`runtime/test/` 和正式邮件中继密钥
 会被跳过。测试版首次启动自己的 admin。测试模式默认不连接外部邮箱或 Codex 接口，测试页面
-的修改只写临时副本；需要测试外部监听时才设置 `TEST_EXTERNAL_WATCHERS=1`。
+的修改只写临时副本；需要测试外部监听时才设置 `TEST_EXTERNAL_WATCHERS=1`。正式版默认
+使用 `runtime/`，也可通过 `MAILAPI_DATA_DIR` 指定独立目录；正式外部监听默认开启，使用
+`MAILAPI_EXTERNAL_WATCHERS=0` 可暂时关闭。
 自动测试可通过 `TEST_DATA_DIR` 使用指定的独立目录；该变量不能指向正式运行目录，指定目录由
 测试调用方负责清理。
 
@@ -104,22 +107,21 @@ Gmail 可以复用根目录 `credentials.json` 中的 OAuth 客户端配置；�
 Outlook 在 `.env.test` 配置 `OUTLOOK_CLIENT_ID`、`OUTLOOK_CLIENT_SECRET` 和独立的
 `OUTLOOK_OAUTH_REDIRECT_URI`，指向测试服务的 `/api/admin/outlook/auth/callback`。
 
-Codex 测试沿用原授权回调 URI `http://localhost:1455/auth/callback`，测试版不占用该端口。
-完成登录后，把浏览器的完整返回链接粘贴到**测试版**控制台的“Codex 授权返回链接”。
-链接中的一次性 state 仅由发起授权的版本识别；正式版不会处理测试版会话。
+Codex 回调监听也由共享应用实现。测试版默认关闭外部监听，因此不会启动回调监听或刷新
+外部账号；正式版默认按 `CODEX_LOGIN_ADDR`（默认 `localhost:1455`）启动。测试时若显式
+设置 `TEST_EXTERNAL_WATCHERS=1`，应使用独立的回调地址和资源，避免与正式版同时刷新同一授权。
 
 用独立的资源账号测试邮箱监听和授权，避免两个服务同时消费同一邮箱或刷新同一授权。
 
 ## 开发与同步
 
-1. 共用业务逻辑修改 `mailapi_shared/`；测试页面、账号权限和测试配置修改 `test_app/`。
-2. 启动测试服务，使用正式数据快照验收界面、权限、资源和授权流程。
-3. 运行两版回归测试，确认兼容入口都指向同一共享实现；正式版只接收已验证的共用代码和
-   明确需要发布的正式页面或路由改动。不要整目录覆盖正式运行数据。
+1. 修改 `mailapi_shared/`，保持入口、静态资源和兼容导入路径只承担模式选择或转发。
+2. 先启动测试入口，使用正式数据快照验收登录、页面、权限、资源和路由；测试默认不连接外部服务。
+3. 运行两版回归测试，确认测试和正式入口都加载同一应用；不要把测试运行目录覆盖到正式 `runtime/`。
 4. 提交一个可独立回退的 Git 检查点，同步服务器，再按正式服务的配置和数据目录重启检查。
 
 ```bash
 python -m unittest discover -s tests -q
 node --test tests/test_account_ui.cjs
-MAILAPI_UI_ROOT=test_app/static node --test tests/test_account_ui.cjs
+MAILAPI_UI_ROOT=mailapi_shared/static node --test tests/test_account_ui.cjs
 ```

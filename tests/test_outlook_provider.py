@@ -143,7 +143,7 @@ class OutlookProviderTests(unittest.TestCase):
 class OutlookWatcherTests(unittest.TestCase):
     def setUp(self):
         # Load just the watcher functions, without starting the app or reading runtime secrets.
-        source = Path(__file__).resolve().parents[1] / "code-receive.py"
+        source = Path(__file__).resolve().parents[1] / "mailapi_shared" / "application.py"
         tree = ast.parse(source.read_text())
         names = {"process_outlook_message", "save_outlook_cache", "scan_outlook_unread_once",
                  "watch_outlook_account", "append_code_record"}

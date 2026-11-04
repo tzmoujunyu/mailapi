@@ -1,0 +1,4490 @@
+import atexit
+import base64
+import glob
+import hashlib
+import html
+import http.server
+import json
+import logging
+import os
+import secrets
+import re
+import shutil
+import threading
+import tempfile
+import time
+import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from google.auth.transport.requests import Request as GoogleRequest
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from fastapi import FastAPI, Request as FastAPIRequest
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
+from fastapi.staticfiles import StaticFiles
+
+from typing import TypedDict
+
+from .mail_messages import (
+    IncomingMail,
+    extract_mail_result,
+    extract_verification_code as extract_code_from_mail,
+    normalize_mail_conditions,
+)
+from .mail_providers.proton import (
+    ProtonAuthorizationRequired,
+    ProtonMailbox,
+    load_proton_credentials,
+)
+from .mail_providers.outlook import (
+    OutlookAPIError,
+    OutlookAuthorization,
+    OutlookAuthorizationRequired,
+    OutlookConfigurationError,
+    OutlookMailbox,
+    fetch_outlook_profile,
+    load_outlook_settings,
+    outlook_incoming_mail,
+)
+from .mail_relay import (
+    RelayAuthenticationError,
+    RelayValidationError,
+    ReplayGuard,
+    parse_message as parse_relay_message,
+    verify_request as verify_relay_request,
+)
+from .google_oauth_callback import (
+    GoogleCallbackLink,
+    GoogleCallbackLinkError,
+    authorization_response_for_redirect,
+    parse_google_callback_link,
+)
+from .codex_oauth_callback import (
+    CodexCallbackLinkError,
+    parse_codex_callback_link,
+    validate_codex_account_email,
+)
+from .auth_storage import (
+    archive_auth_file,
+    ensure_private_directory,
+    files_are_identical,
+    migrate_auth_file,
+    secure_auth_file,
+)
+from .account_credentials import AccountCredentialStore
+from .account_passwords import (
+    AccountPasswordError,
+    AccountPasswordStore,
+    normalize_totp_secret,
+    generate_totp_code,
+)
+from .resource_accounts import ResourceStore, ResourceStoreError
+from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
+from .accounts import SESSION_COOKIE, create_account_router
+
+
+def load_dotenv_file(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
+    except Exception as e:  # noqa: BLE001
+        print(f".env 加载失败：{e}")
+
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+APP_MODE = os.getenv("MAILAPI_MODE", "test").strip().lower()
+if APP_MODE not in {"test", "production"}:
+    raise RuntimeError("MAILAPI_MODE 必须是 test 或 production")
+IS_TEST = APP_MODE == "test"
+STATIC_DIR = BASE_DIR / "mailapi_shared" / "static"
+load_dotenv_file(BASE_DIR / (".env.test" if IS_TEST else ".env"))
+APP_PORT = int(os.getenv("TEST_PORT" if IS_TEST else "PORT", "8001" if IS_TEST else "8000"))
+TEST_PORT = APP_PORT if IS_TEST else 8001
+
+CHECK_INTERVAL_SECONDS = 3
+MAX_POLL_RESULTS = 100
+MAX_HISTORY_RECORDS = 30
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+_production_data = (BASE_DIR / "runtime").resolve()
+
+
+def _setting(name: str, test_name: Optional[str] = None, default: str = "") -> str:
+    key = test_name if IS_TEST and test_name else name
+    value = os.getenv(key, default)
+    return str(value).strip() if value is not None else ""
+
+
+APP_HOST = _setting(
+    "MAILAPI_HOST",
+    "TEST_HOST",
+    "127.0.0.1" if IS_TEST else "0.0.0.0",
+)
+
+
+def _parse_bool(value: str, default: bool = False) -> bool:
+    if not value:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_configured_test_data(path: Path) -> Path:
+    default_data = _production_data / "test"
+    if path == _production_data or (
+        _production_data in path.parents
+        and path != default_data
+        and default_data not in path.parents
+    ):
+        raise RuntimeError("TEST_DATA_DIR 必须使用 runtime/test 或正式 runtime 以外的独立目录")
+    return path
+
+
+def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
+    if Path(directory).resolve() == _production_data:
+        return {
+            name
+            for name in names
+            if name in {"test", "site_accounts.json", "mail_relay_secret"}
+        }
+    return set()
+
+
+def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, bool]:
+    configured = os.getenv("TEST_DATA_DIR", "").strip()
+    if configured:
+        path = Path(os.path.abspath(os.path.expanduser(configured)))
+        _validate_configured_test_data(path.resolve())
+        path.mkdir(parents=True, exist_ok=True)
+        return None, path, False
+
+    owner = tempfile.TemporaryDirectory(prefix="mailapi-test-")
+    path = Path(owner.name)
+    if _production_data.is_dir():
+        shutil.copytree(
+            _production_data,
+            path,
+            dirs_exist_ok=True,
+            ignore=_snapshot_ignore,
+        )
+    os.chmod(path, 0o700)
+    return owner, path, True
+
+
+if IS_TEST:
+    _TEST_DATA_OWNER, _test_data, TEST_DATA_EPHEMERAL = _prepare_test_data()
+    DATA_DIR = str(_test_data)
+    TEST_DATA_SOURCE = str(_production_data)
+else:
+    _TEST_DATA_OWNER = None
+    TEST_DATA_EPHEMERAL = False
+    TEST_DATA_SOURCE = str(_production_data)
+    configured_data = Path(os.getenv("MAILAPI_DATA_DIR", "runtime")).expanduser()
+    DATA_DIR = str(configured_data if configured_data.is_absolute() else BASE_DIR / configured_data)
+
+
+def _cleanup_test_data() -> None:
+    if _TEST_DATA_OWNER is not None:
+        _TEST_DATA_OWNER.cleanup()
+
+
+atexit.register(_cleanup_test_data)
+EXTERNAL_WATCHERS = _parse_bool(
+    os.getenv("TEST_EXTERNAL_WATCHERS" if IS_TEST else "MAILAPI_EXTERNAL_WATCHERS", ""),
+    default=not IS_TEST,
+)
+# Compatibility name retained for the test-version integration checks.
+TEST_EXTERNAL_WATCHERS = EXTERNAL_WATCHERS
+EXTERNAL_WATCHERS_DISABLED_STATUS = (
+    "测试模式：未启动外部监听" if IS_TEST else "外部监听未启用"
+)
+HISTORY_DIR = os.path.join(DATA_DIR, "history")
+HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
+CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
+CODEX_AUTH_BACKUP_DIR = os.path.join(CODEX_AUTH_DIR, "backups")
+LEGACY_CODEX_AUTH_FILE = os.path.join(DATA_DIR, "codex_auth.json")
+CODEX_ACCOUNTS_FILE = os.path.join(DATA_DIR, "codex_accounts.json")
+GMAIL_ACCOUNTS_FILE = os.path.join(DATA_DIR, "gmail_accounts.json")
+GPT_PASSWORDS_FILE = os.path.join(DATA_DIR, "gpt_passwords.json")
+TOTP_SECRETS_FILE = os.path.join(DATA_DIR, "totp_secrets.json")
+GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
+GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
+OUTLOOK_TOKEN_DIR = os.path.join(DATA_DIR, "outlook_tokens")
+PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
+MAIL_FILTERS_FILE = os.path.join(DATA_DIR, "mail_filters.json")
+CODING_PLANS_FILE = os.path.join(DATA_DIR, "coding_plans.json")
+RELAY_ACCOUNTS_FILE = os.path.join(DATA_DIR, "relay_accounts.json")
+PROTON_CONFIG_FILE = os.path.expanduser(
+    _setting(
+        "PROTON_CONFIG_FILE",
+        "TEST_PROTON_CONFIG_FILE",
+        os.path.join(DATA_DIR, "proton.env") if IS_TEST else "~/proton/.env",
+    )
+)
+PROTON_POLL_INTERVAL_SECONDS = int(os.getenv("PROTON_POLL_INTERVAL_SECONDS", "3"))
+PROTON_KEEPALIVE_SECONDS = int(os.getenv("PROTON_KEEPALIVE_SECONDS", "30"))
+PROTON_CATCHUP_LIMIT = int(os.getenv("PROTON_CATCHUP_LIMIT", "30"))
+OUTLOOK_POLL_INTERVAL_SECONDS = int(os.getenv("OUTLOOK_POLL_INTERVAL_SECONDS", "3"))
+OUTLOOK_CATCHUP_LIMIT = int(os.getenv("OUTLOOK_CATCHUP_LIMIT", "30"))
+PROTON_DELIVERY_MODE = os.getenv("PROTON_DELIVERY_MODE", "direct").strip().lower()
+if PROTON_DELIVERY_MODE not in {"direct", "relay"}:
+    PROTON_DELIVERY_MODE = "direct"
+MAIL_RELAY_SECRET_FILE = (
+    os.path.join(DATA_DIR, "mail_relay_secret")
+    if IS_TEST
+    else os.path.expanduser(os.getenv("MAIL_RELAY_SECRET_FILE", os.path.join(DATA_DIR, "mail_relay_secret")))
+)
+MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS = int(
+    os.getenv("MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS", "300")
+)
+ERROR_LOG_DIR = os.path.join(DATA_DIR, "logs")
+ERROR_LOG_FILE = os.path.join(ERROR_LOG_DIR, "errors.log")
+ERROR_LOG_MAX_BYTES = int(os.getenv("ERROR_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+ERROR_LOG_BACKUP_COUNT = int(os.getenv("ERROR_LOG_BACKUP_COUNT", "5"))
+GMAIL_AUTH_FALLBACK = os.getenv("GMAIL_AUTH_FALLBACK", "auto").strip().lower()
+GMAIL_OAUTH_REDIRECT_BASE = _setting(
+    "GMAIL_OAUTH_REDIRECT_BASE",
+    "TEST_GMAIL_OAUTH_REDIRECT_BASE",
+    f"http://localhost:{APP_PORT}",
+).rstrip("/")
+APP_BASE_URL = _setting("APP_BASE_URL", "TEST_APP_BASE_URL", GMAIL_OAUTH_REDIRECT_BASE).rstrip("/")
+CODEX_ISSUER = os.getenv("CODEX_ISSUER", "https://auth.openai.com").rstrip("/")
+CODEX_OAUTH_REDIRECT_BASE = _setting(
+    "CODEX_OAUTH_REDIRECT_BASE",
+    "TEST_CODEX_OAUTH_REDIRECT_BASE",
+    "http://localhost:1455",
+).rstrip("/")
+CODEX_LOGIN_ADDR = _setting(
+    "CODEX_LOGIN_ADDR",
+    "TEST_CODEX_LOGIN_ADDR",
+    urllib.parse.urlparse(CODEX_OAUTH_REDIRECT_BASE).netloc or "localhost:1455",
+)
+CODEX_USAGE_BASE_URL = os.getenv("CODEX_USAGE_BASE_URL", "https://chatgpt.com").rstrip("/")
+CODEX_CLIENT_ID = os.getenv("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann").strip()
+CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oauth/token").strip()
+CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
+CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
+CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "60"))
+CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS = int(
+    os.getenv("CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS", "300")
+)
+CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS", "7200"))
+AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
+CODEX_EXHAUSTED_USED_PERCENT = 99.9
+AUTH_LOCK = threading.Lock()
+GOOGLE_OAUTH_TRANSPORT_LOCK = threading.Lock()
+HISTORY_LOCK = threading.Lock()
+AUTH_SESSION_LOCK = threading.Lock()
+OUTLOOK_AUTH_SESSION_LOCK = threading.Lock()
+CODEX_ACCOUNTS_LOCK = threading.Lock()
+CODEX_AUTH_SESSION_LOCK = threading.Lock()
+CODEX_LOGIN_SERVER_LOCK = threading.Lock()
+CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
+MAIL_ACCOUNTS_LOCK = threading.Lock()
+MAIL_WATCHERS_LOCK = threading.Lock()
+MAIL_RELAY_REPLAY_LOCK = threading.Lock()
+ERROR_LOGGER = logging.getLogger(f"mailapi.{APP_MODE}.errors")
+ACCESS_PASSWORD = os.getenv("ACCESS_PASSWORD", "").strip() if not IS_TEST else ""
+ADMIN_ACCESS_PASSWORD = os.getenv("ADMIN_ACCESS_PASSWORD", "").strip() if not IS_TEST else ""
+ACCESS_COOKIE_NAME = "chatgpt_code_access"
+OPENAI_CODE_SENDERS = {
+    item.strip().lower()
+    for item in os.getenv(
+        "OPENAI_CODE_SENDERS",
+        "noreply@tm.openai.com,noreply@tm1.openai.com",
+    ).split(",")
+    if item.strip()
+}
+GMAIL_SENDER_QUERY = " OR ".join(sorted(OPENAI_CODE_SENDERS))
+SEARCH_QUERY = (
+    f"is:unread from:({GMAIL_SENDER_QUERY}) "
+    '(subject:(ChatGPT OR OpenAI OR temporary OR login OR 验证码 OR 登录代码 OR "verification code") '
+    'OR "ChatGPT" OR "OpenAI")'
+)
+
+BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+OAUTH_QUERY_LOG_PATTERN = re.compile(r"(?i)([?&](?:code|state)=)[^&\s]+")
+SECRET_LOG_PATTERN = re.compile(
+    r'(?i)(access_token|refresh_token|id_token|authorization|client_secret|password|totp_secret|'
+    r'session_id|cookie|mail_relay_secret|signature)'
+    r'(\s*["\']?\s*[:=]\s*["\']?)([^"\',}\s]+)'
+)
+
+
+class AccountConfig(TypedDict, total=False):
+    name: str
+    email: str
+    provider: str
+    token_file: str
+    credential_file: str
+    session_file: str
+    config_file: str
+    delivery_mode: str
+    enabled: bool
+
+
+app = FastAPI(title="MailAPI 测试版" if IS_TEST else "MailAPI")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def should_use_console_auth() -> bool:
+    return GMAIL_AUTH_FALLBACK == "console"
+
+
+AUTH_SESSIONS: Dict[str, Dict[str, object]] = {}
+
+
+def oauth_callback_url(account_name: str) -> str:
+    return f"{GMAIL_OAUTH_REDIRECT_BASE}/"
+
+
+def create_auth_session(cfg: AccountConfig, managed: bool = False) -> Dict[str, object]:
+    flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
+    flow.redirect_uri = oauth_callback_url(cfg["name"])
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="select_account consent",
+    )
+    session = {
+        "account_name": cfg["name"],
+        "flow": flow,
+        "event": threading.Event(),
+        "auth_url": auth_url,
+        "state": state,
+        "credentials": None,
+        "error": None,
+        "managed": managed,
+        "cfg": dict(cfg),
+    }
+    with AUTH_SESSION_LOCK:
+        previous = AUTH_SESSIONS.get(cfg["name"])
+        if previous:
+            AUTH_SESSIONS.pop(str(previous.get("state") or ""), None)
+        AUTH_SESSIONS[cfg["name"]] = session
+        AUTH_SESSIONS[state] = session
+    return session
+
+
+def wait_for_auth_session(cfg: AccountConfig, session: Dict[str, object]) -> Credentials:
+    auth_url = str(session["auth_url"])
+    event = session["event"]
+    if not hasattr(event, "wait"):
+        raise RuntimeError("授权会话初始化失败")
+
+    print(f"[{cfg['name']}] 缺少授权 token，请打开以下链接完成 Google 授权：\n{auth_url}")
+    print(f"[{cfg['name']}] 授权回调将使用现有 Web 端口：{GMAIL_OAUTH_REDIRECT_BASE}/")
+    wait_count = 0
+    while not event.wait(CHECK_INTERVAL_SECONDS):
+        wait_count += 1
+        if AUTH_REMINDER_EVERY > 0 and wait_count % AUTH_REMINDER_EVERY == 0:
+            print(f"[{cfg['name']}] 仍在等待 Google 授权，请打开以下链接：\n{auth_url}")
+        save_state(cfg["name"], {"status": "等待 Google 授权，请查看终端授权链接"})
+
+    error = session.get("error")
+    if error:
+        raise RuntimeError(f"Google 授权失败: {error}")
+
+    creds = session.get("credentials")
+    if not isinstance(creds, Credentials):
+        raise RuntimeError("Google 授权完成但未收到 credentials")
+    return creds
+
+
+def request_gmail_credentials(cfg: AccountConfig, flow: InstalledAppFlow) -> Credentials:
+    print(f"[{cfg['name']}] 已设置强制控制台授权，打开链接后将 code 粘贴到终端。")
+    return flow.run_console()
+
+
+def request_gmail_browser_auth(cfg: AccountConfig) -> Credentials:
+    print(f"[{cfg['name']}] 开始浏览器授权：{cfg['email']}（token: {cfg['token_file']}）")
+    if should_use_console_auth():
+        flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
+        return request_gmail_credentials(cfg, flow)
+
+    session = create_auth_session(cfg)
+    try:
+        return wait_for_auth_session(cfg, session)
+    finally:
+        with AUTH_SESSION_LOCK:
+            AUTH_SESSIONS.pop(cfg["name"], None)
+            AUTH_SESSIONS.pop(str(session.get("state", "")), None)
+
+
+def is_google_cert_error(detail: str) -> bool:
+    return "CERTIFICATE_VERIFY_FAILED" in detail or "self-signed certificate" in detail
+
+
+def format_google_auth_error(error: Exception) -> str:
+    detail = str(error)
+    if is_google_cert_error(detail):
+        return (
+            "HTTPS 证书校验失败。通常是代理、抓包工具或网络网关使用了 Python 不信任的"
+            "自签根证书。请先把该根证书加入系统/Python 信任链，或设置 REQUESTS_CA_BUNDLE/"
+            f"SSL_CERT_FILE 指向 CA 证书文件（可写入 .env），然后重启程序重新授权。原始错误: {detail}"
+        )
+    return detail
+
+
+def fetch_google_oauth_token(
+    flow: InstalledAppFlow,
+    callback: GoogleCallbackLink,
+) -> None:
+    redirect_uri = str(flow.redirect_uri or "").strip()
+    parsed = urllib.parse.urlparse(redirect_uri)
+    authorization_response = authorization_response_for_redirect(
+        callback,
+        redirect_uri,
+    )
+    if parsed.scheme.lower() != "http":
+        flow.fetch_token(authorization_response=authorization_response)
+        return
+
+    if (parsed.hostname or "").lower() not in {"localhost", "127.0.0.1", "::1"}:
+        raise RuntimeError("Google OAuth 的非本地回调必须使用 HTTPS")
+
+    with GOOGLE_OAUTH_TRANSPORT_LOCK:
+        previous = os.environ.get("OAUTHLIB_INSECURE_TRANSPORT")
+        os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+        try:
+            flow.fetch_token(authorization_response=authorization_response)
+        finally:
+            if previous is None:
+                os.environ.pop("OAUTHLIB_INSECURE_TRANSPORT", None)
+            else:
+                os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = previous
+
+
+def should_reauth_after_google_refresh_error(error: Exception) -> bool:
+    detail = str(error).lower()
+    return any(
+        marker in detail
+        for marker in (
+            "invalid_grant",
+            "refresh token",
+            "token has been expired",
+            "revoked",
+            "unauthorized",
+            "certificate_verify_failed",
+            "self-signed certificate",
+        )
+    )
+
+
+DEFAULT_ACCOUNTS: List[AccountConfig] = [] if IS_TEST else [
+    {
+        "name": "account-1",
+        "email": "santeekyan0162@gmail.com",
+        "provider": "gmail",
+        "token_file": os.path.join(GMAIL_TOKEN_DIR, "account-1.json"),
+        "credential_file": str(BASE_DIR / "credentials.json"),
+        "enabled": True,
+    },
+    {
+        "name": "account-2",
+        "email": "janymil722@gmail.com",
+        "provider": "gmail",
+        "token_file": os.path.join(GMAIL_TOKEN_DIR, "account-2.json"),
+        "credential_file": str(BASE_DIR / "credentials.json"),
+        "enabled": True,
+    },
+]
+
+
+os.makedirs(HISTORY_DIR, exist_ok=True)
+os.makedirs(HISTORY_ID_DIR, exist_ok=True)
+ensure_private_directory(CODEX_AUTH_DIR)
+ensure_private_directory(CODEX_AUTH_BACKUP_DIR)
+ensure_private_directory(GMAIL_TOKEN_DIR)
+ensure_private_directory(GMAIL_TOKEN_BACKUP_DIR)
+ensure_private_directory(OUTLOOK_TOKEN_DIR)
+os.makedirs(PROTON_SESSION_DIR, exist_ok=True)
+os.makedirs(ERROR_LOG_DIR, exist_ok=True)
+
+
+def load_or_create_mail_relay_secret() -> str:
+    configured = _setting("MAIL_RELAY_SECRET", "TEST_MAIL_RELAY_SECRET")
+    if configured:
+        if len(configured) < 32:
+            raise RuntimeError("MAIL_RELAY_SECRET 至少需要 32 个字符")
+        return configured
+
+    try:
+        with open(MAIL_RELAY_SECRET_FILE, "r", encoding="utf-8") as f:
+            saved = f.read().strip()
+        if len(saved) >= 32:
+            os.chmod(MAIL_RELAY_SECRET_FILE, 0o600)
+            return saved
+    except FileNotFoundError:
+        pass
+
+    secret = secrets.token_hex(32)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    descriptor = os.open(MAIL_RELAY_SECRET_FILE, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+        f.write(secret)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(MAIL_RELAY_SECRET_FILE, 0o600)
+    return secret
+
+
+MAIL_RELAY_SECRET = load_or_create_mail_relay_secret()
+MAIL_RELAY_REPLAY_GUARD = ReplayGuard(
+    retention_seconds=max(60, MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS * 2)
+)
+
+
+def configure_error_logging() -> None:
+    if ERROR_LOGGER.handlers:
+        return
+    ERROR_LOGGER.setLevel(logging.ERROR)
+    ERROR_LOGGER.propagate = False
+    handler = RotatingFileHandler(
+        ERROR_LOG_FILE,
+        maxBytes=max(1024, ERROR_LOG_MAX_BYTES),
+        backupCount=max(1, ERROR_LOG_BACKUP_COUNT),
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
+    )
+    ERROR_LOGGER.addHandler(handler)
+    try:
+        os.chmod(ERROR_LOG_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def redact_log_text(value: Any) -> str:
+    text = str(value)
+    text = BEARER_LOG_PATTERN.sub("Bearer <redacted>", text)
+    text = OAUTH_QUERY_LOG_PATTERN.sub(r"\1<redacted>", text)
+    text = SECRET_LOG_PATTERN.sub(r"\1\2<redacted>", text)
+    return text
+
+
+def log_exception(context: str, error: Exception) -> None:
+    stack = "".join(traceback.format_tb(error.__traceback__)).rstrip()
+    stack_detail = f"\nTraceback:\n{redact_log_text(stack)}" if stack else ""
+    ERROR_LOGGER.error(
+        "%s: %s: %s%s",
+        redact_log_text(context),
+        type(error).__name__,
+        redact_log_text(error),
+        stack_detail,
+    )
+
+
+configure_error_logging()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def now_ts() -> int:
+    return int(time.time())
+
+
+def base64_url_no_pad(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def generate_codex_pkce() -> Dict[str, str]:
+    verifier = base64_url_no_pad(secrets.token_bytes(64))
+    challenge = base64_url_no_pad(hashlib.sha256(verifier.encode("utf-8")).digest())
+    return {"code_verifier": verifier, "code_challenge": challenge}
+
+
+def generate_codex_state() -> str:
+    return base64_url_no_pad(secrets.token_bytes(32))
+
+
+def codex_oauth_callback_url() -> str:
+    return f"{CODEX_OAUTH_REDIRECT_BASE}/auth/callback"
+
+
+def build_codex_authorize_url(code_challenge: str, state: str) -> str:
+    query = {
+        "response_type": "code",
+        "client_id": CODEX_CLIENT_ID,
+        "redirect_uri": codex_oauth_callback_url(),
+        "scope": "openid profile email offline_access api.connectors.read api.connectors.invoke",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
+        "state": state,
+        "originator": "codex_cli_rs",
+    }
+    return f"{CODEX_ISSUER}/oauth/authorize?{urllib.parse.urlencode(query)}"
+
+
+def create_codex_auth_session(
+    reason: str, target_account: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    pkce = generate_codex_pkce()
+    state = generate_codex_state()
+    target = target_account or {}
+    session = {
+        "state": state,
+        "code_verifier": pkce["code_verifier"],
+        "auth_url": build_codex_authorize_url(pkce["code_challenge"], state),
+        "reason": reason,
+        "target_email": str(target.get("email") or "").strip(),
+        "created_at": now_iso(),
+    }
+    with CODEX_AUTH_SESSION_LOCK:
+        CODEX_AUTH_SESSIONS[state] = session
+    return session
+
+
+def exchange_codex_code_for_tokens(code: str, code_verifier: str) -> Dict[str, str]:
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": codex_oauth_callback_url(),
+            "client_id": CODEX_CLIENT_ID,
+            "code_verifier": code_verifier,
+        }
+    ).encode("utf-8")
+    value = http_json(
+        CODEX_OAUTH_TOKEN_URL,
+        {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        data=data,
+    )
+    access_token = str(value.get("access_token") or "").strip()
+    id_token = str(value.get("id_token") or "").strip()
+    refresh_token = str(value.get("refresh_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("token 响应缺少 access_token")
+    return {
+        "access_token": access_token,
+        "id_token": id_token,
+        "refresh_token": refresh_token,
+    }
+
+
+def codex_auth_payload_from_tokens(tokens: Dict[str, str]) -> Dict[str, Any]:
+    payload = {
+        "tokens": {
+            "access_token": tokens.get("access_token", ""),
+            "id_token": tokens.get("id_token", ""),
+            "refresh_token": tokens.get("refresh_token", ""),
+        },
+        "source": "oauth",
+        "updated_at": now_iso(),
+    }
+    record = build_codex_account_record(extract_codex_token_payload(payload))
+    payload.update(
+        {
+            "account_id": record.get("id"),
+            "email": record.get("email"),
+            "subject": record.get("subject"),
+            "chatgpt_account_id": record.get("chatgpt_account_id"),
+            "workspace_id": record.get("workspace_id"),
+            "chatgpt_plan_type": record.get("chatgpt_plan_type"),
+            "access_token_expires_at": record.get("access_token_expires_at"),
+        }
+    )
+    return payload
+
+
+def codex_auth_identity(payload: Dict[str, Any]) -> str:
+    tokens = payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {}
+    access_token = str(tokens.get("access_token") or payload.get("access_token") or "").strip()
+    identity = (
+        str(payload.get("account_id") or "").strip()
+        or str(payload.get("chatgpt_account_id") or "").strip()
+        or str(payload.get("workspace_id") or "").strip()
+        or str(payload.get("email") or "").strip()
+        or str(payload.get("subject") or "").strip()
+    )
+    if identity:
+        return identity
+    if access_token:
+        return f"token-{hashlib.sha256(access_token.encode('utf-8')).hexdigest()[:12]}"
+    return "codex_auth"
+
+
+def safe_codex_auth_filename(payload: Dict[str, Any]) -> str:
+    identity = codex_auth_identity(payload)
+    name = re.sub(r"[^A-Za-z0-9_.=-]+", "_", identity).strip("._")
+    return f"{(name or 'codex_auth')[:160]}.json"
+
+
+def write_json_atomic(path: str, value: Any) -> None:
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    temporary = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            os.chmod(temporary, 0o600)
+            json.dump(value, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+MAIL_FILTERS_LOCK = threading.Lock()
+
+
+def default_mail_filters() -> List[Dict[str, Any]]:
+    return [{
+        "id": "openai",
+        "name": "OpenAI 验证码",
+        "builtin": True,
+        "enabled": True,
+        "senders": sorted(OPENAI_CODE_SENDERS),
+        "sender_mode": "exact",
+        "sender_pattern": "",
+        "subject": "",
+        "body": "",
+        "match_mode": "all",
+        "text_mode": "all",
+        "code_pattern": r"(?<!\d)(\d{4,8})(?!\d)",
+        "extract_type": "code",
+        "link_text_pattern": r"(?i)sign\s*in|login|continue|verify",
+        "allowed_hosts": [],
+    }]
+
+
+def normalize_mail_filter(value: Any, *, builtin: bool = False) -> Dict[str, Any]:
+    item = value if isinstance(value, dict) else {}
+    senders = item.get("senders", item.get("sender", []))
+    if isinstance(senders, str):
+        senders = senders.split(",")
+    senders = [str(x).strip().lower() for x in (senders if isinstance(senders, list) else []) if str(x).strip()]
+    sender_mode = str(item.get("sender_mode") or "exact").lower()
+    if sender_mode not in {"exact", "domain", "regex"}:
+        sender_mode = "exact"
+    sender_pattern = str(item.get("sender_pattern") or "").strip()
+    if len(sender_pattern) > 500:
+        raise ValueError("发件人正则最多 500 个字符")
+    if sender_mode == "regex":
+        if not sender_pattern:
+            raise ValueError("正则发件人规则不能为空")
+        try:
+            re.compile(sender_pattern)
+        except re.error as error:
+            raise ValueError(f"发件人正则无效：{error}") from error
+    elif not senders:
+        raise ValueError("至少填写一个发件人邮箱")
+    if sender_mode != "regex":
+        pattern = r"[^\s@(),:<>]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}" if sender_mode == "exact" else r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+        if any(not re.fullmatch(pattern, sender) for sender in senders):
+            raise ValueError("请填写有效的邮箱地址或域名，不支持搜索表达式")
+    name = str(item.get("name") or (senders[0] if senders else "自定义收件箱")).strip()[:120]
+    if not name:
+        raise ValueError("收件箱名称不能为空")
+    code_pattern = str(item.get("code_pattern") or r"(?<!\d)(\d{4,8})(?!\d)").strip()
+    if len(code_pattern) > 500:
+        raise ValueError("验证码正则最多 500 个字符")
+    try:
+        re.compile(code_pattern)
+    except re.error as error:
+        raise ValueError(f"验证码正则无效：{error}") from error
+    extract_type = str(item.get("extract_type") or "code").lower()
+    if extract_type not in {"code", "link", "auto"}:
+        extract_type = "code"
+    allowed_hosts = item.get("allowed_hosts", [])
+    if isinstance(allowed_hosts, str):
+        allowed_hosts = allowed_hosts.split(",")
+    allowed_hosts = [str(x).strip().lower() for x in (allowed_hosts if isinstance(allowed_hosts, list) else []) if str(x).strip()]
+    if extract_type in {"link", "auto"} and not allowed_hosts:
+        raise ValueError("提取登录链接时必须填写允许的链接域名")
+    if any(not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", host) for host in allowed_hosts):
+        raise ValueError("链接白名单请填写完整域名，不含协议、路径或通配符")
+    link_text_pattern = str(item.get("link_text_pattern") or r"(?i)sign\s*in|login|continue|verify").strip()[:500]
+    try:
+        re.compile(link_text_pattern)
+    except re.error as error:
+        raise ValueError(f"登录按钮文字正则无效：{error}") from error
+    conditions = normalize_mail_conditions(item.get("conditions"))
+    condition_logic = str(item.get("condition_logic") or item.get("match_mode") or "all").strip().lower()
+    if condition_logic not in {"all", "any"}:
+        raise ValueError("高级条件关系必须是全部满足或任一满足")
+    return {
+        "id": str(item.get("id") or secrets.token_hex(8)),
+        "name": name,
+        "builtin": bool(builtin or item.get("builtin")),
+        "enabled": bool(item.get("enabled", True)),
+        "senders": senders,
+        "sender_mode": sender_mode,
+        "sender_pattern": sender_pattern,
+        "subject": str(item.get("subject") or "").strip()[:500],
+        "body": str(item.get("body") or "").strip()[:500],
+        "match_mode": "any" if str(item.get("match_mode") or "all").lower() == "any" else "all",
+        "text_mode": "any" if str(item.get("text_mode") or "all").lower() == "any" else "all",
+        "conditions": conditions,
+        "condition_logic": condition_logic,
+        "code_pattern": code_pattern[:500],
+        "extract_type": extract_type,
+        "link_text_pattern": link_text_pattern,
+        "allowed_hosts": allowed_hosts,
+    }
+
+
+def load_mail_filters() -> List[Dict[str, Any]]:
+    filters: List[Dict[str, Any]] = []
+    try:
+        with open(MAIL_FILTERS_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        values = payload.get("items", []) if isinstance(payload, dict) else []
+        filters = [normalize_mail_filter(value) for value in values if isinstance(value, dict)]
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        filters = []
+    builtin = normalize_mail_filter(default_mail_filters()[0], builtin=True)
+    filters = [item for item in filters if not item.get("builtin") and item["id"] != "openai"]
+    return [builtin] + filters
+
+
+def save_mail_filters() -> None:
+    with MAIL_FILTERS_LOCK:
+        write_json_atomic(MAIL_FILTERS_FILE, {"items": [dict(item) for item in MAIL_FILTERS]})
+
+
+def mail_filter_search_query() -> str:
+    # Gmail cannot express arbitrary sender regexes; enforce them after fetching.
+    if any(item.get("enabled", True) and item.get("sender_mode") == "regex" for item in MAIL_FILTERS):
+        return "is:unread"
+    senders = sorted({sender for item in MAIL_FILTERS if item.get("enabled", True) for sender in item.get("senders", [])})
+    return f"is:unread from:({' OR '.join(senders)})" if senders else "is:unread"
+
+
+def migrate_codex_auth_layout() -> None:
+    ensure_private_directory(CODEX_AUTH_DIR)
+    ensure_private_directory(CODEX_AUTH_BACKUP_DIR)
+    if os.path.isfile(LEGACY_CODEX_AUTH_FILE):
+        try:
+            with open(LEGACY_CODEX_AUTH_FILE, "r", encoding="utf-8") as f:
+                value = json.load(f)
+            target_name = (
+                safe_codex_auth_filename(value)
+                if isinstance(value, dict)
+                else "legacy-import.json"
+            )
+            migrate_auth_file(
+                LEGACY_CODEX_AUTH_FILE,
+                os.path.join(CODEX_AUTH_DIR, target_name),
+                CODEX_AUTH_BACKUP_DIR,
+            )
+        except Exception as error:  # noqa: BLE001
+            log_exception("迁移旧 Codex auth 文件", error)
+            archive_auth_file(LEGACY_CODEX_AUTH_FILE, CODEX_AUTH_BACKUP_DIR)
+
+    for backup in glob.glob(f"{LEGACY_CODEX_AUTH_FILE}.bak.*"):
+        archive_auth_file(backup, CODEX_AUTH_BACKUP_DIR)
+    for filename in os.listdir(CODEX_AUTH_DIR):
+        path = os.path.join(CODEX_AUTH_DIR, filename)
+        if os.path.isfile(path) and filename.endswith(".json"):
+            secure_auth_file(path)
+
+
+migrate_codex_auth_layout()
+
+
+def save_codex_auth_file(payload: Dict[str, Any]) -> None:
+    path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
+    write_json_atomic(path, payload)
+
+
+def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
+    token = record.get("token") if isinstance(record.get("token"), dict) else {}
+    payload = {
+        "tokens": {
+            "access_token": token.get("access_token") or "",
+            "id_token": token.get("id_token") or "",
+            "refresh_token": token.get("refresh_token") or "",
+        },
+        "source": "refresh",
+        "updated_at": now_iso(),
+        "account_id": record.get("id"),
+        "email": record.get("email"),
+        "subject": record.get("subject"),
+        "chatgpt_account_id": record.get("chatgpt_account_id"),
+        "workspace_id": record.get("workspace_id"),
+        "chatgpt_plan_type": record.get("chatgpt_plan_type"),
+        "access_token_expires_at": record.get("access_token_expires_at"),
+    }
+    path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
+    write_json_atomic(path, payload)
+
+
+def delete_codex_record_auth_files(record: Dict[str, Any]) -> None:
+    paths = []
+    if os.path.isdir(CODEX_AUTH_DIR):
+        paths.extend(
+            os.path.join(CODEX_AUTH_DIR, name)
+            for name in os.listdir(CODEX_AUTH_DIR)
+            if name.endswith(".json")
+        )
+    record_id = str(record.get("id") or "")
+    record_email = str(record.get("email") or "")
+    record_workspace = str(record.get("workspace_id") or "")
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                continue
+            same_id = str(payload.get("account_id") or "") == record_id
+            same_account = (
+                record_email
+                and str(payload.get("email") or "") == record_email
+                and str(payload.get("workspace_id") or "") == record_workspace
+            )
+            if same_id or same_account:
+                os.remove(path)
+        except FileNotFoundError:
+            continue
+        except Exception as e:  # noqa: BLE001
+            log_exception(f"删除 Codex auth 文件 {path}", e)
+            print(f"Codex auth 文件删除失败：{path}: {e}")
+
+
+def load_codex_auth_files() -> List[Dict[str, Any]]:
+    entries = []
+    paths = []
+    if os.path.isdir(CODEX_AUTH_DIR):
+        for filename in sorted(os.listdir(CODEX_AUTH_DIR)):
+            if filename.endswith(".json"):
+                paths.append(os.path.join(CODEX_AUTH_DIR, filename))
+
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                value = json.load(f)
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if isinstance(item, dict):
+                    entries.append((os.path.getmtime(path), path, item))
+        except Exception as e:  # noqa: BLE001
+            log_exception(f"加载 Codex auth 文件 {path}", e)
+            print(f"Codex auth 文件加载失败：{path}: {e}")
+
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for _, path, payload in sorted(entries, key=lambda item: item[0]):
+        key = codex_auth_identity(payload) or path
+        deduped[key] = payload
+    return list(deduped.values())
+
+
+def import_codex_auth_file(
+    refresh_snapshot: bool = False, overwrite_existing_tokens: bool = True
+) -> List[Dict[str, Any]]:
+    imported: List[Dict[str, Any]] = []
+    for payload in load_codex_auth_files():
+        imported.extend(
+            import_codex_auth_json(
+                json.dumps(payload),
+                refresh_snapshot=refresh_snapshot,
+                overwrite_existing_tokens=overwrite_existing_tokens,
+            )
+        )
+    return imported
+
+
+def complete_codex_oauth_callback(code: str, state: str) -> List[Dict[str, Any]]:
+    with CODEX_AUTH_SESSION_LOCK:
+        session = CODEX_AUTH_SESSIONS.pop(state, None)
+    if not session:
+        raise RuntimeError("Codex 授权会话不存在或已过期，请重新点击导入/刷新")
+
+    tokens = exchange_codex_code_for_tokens(code, str(session["code_verifier"]))
+    payload = codex_auth_payload_from_tokens(tokens)
+    validate_codex_account_email(
+        str(session.get("target_email") or ""),
+        str(payload.get("email") or ""),
+    )
+    save_codex_auth_file(payload)
+    return import_codex_auth_json(json.dumps(payload), refresh_snapshot=True)
+
+
+def decode_jwt_claims(token: str) -> Dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8"))
+        value = json.loads(decoded.decode("utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def normalize_scoped_identity_value(value: Optional[str], marker: str) -> Optional[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+
+    scoped = raw.rsplit("::", 1)[-1]
+    for segment in scoped.split("|"):
+        segment = segment.strip()
+        if segment.startswith(marker):
+            found = segment[len(marker) :].strip()
+            if found:
+                return found
+
+    if "::" in raw or "|" in raw or "=" in raw or raw.startswith("import-sub-"):
+        return None
+    return raw
+
+
+def normalize_chatgpt_account_id(value: Optional[str]) -> Optional[str]:
+    return normalize_scoped_identity_value(value, "cgpt=")
+
+
+def normalize_workspace_id(value: Optional[str]) -> Optional[str]:
+    return normalize_scoped_identity_value(value, "ws=")
+
+
+def extract_auth_claims(claims: Dict[str, Any]) -> Dict[str, Any]:
+    auth = claims.get("https://api.openai.com/auth")
+    return auth if isinstance(auth, dict) else {}
+
+
+def extract_chatgpt_account_id_from_token(token: str) -> Optional[str]:
+    claims = decode_jwt_claims(token)
+    direct = normalize_chatgpt_account_id(str(claims.get("chatgpt_account_id", "") or ""))
+    if direct:
+        return direct
+    auth = extract_auth_claims(claims)
+    return normalize_chatgpt_account_id(str(auth.get("chatgpt_account_id", "") or ""))
+
+
+def extract_workspace_id_from_token(token: str) -> Optional[str]:
+    claims = decode_jwt_claims(token)
+    for key in ("workspace_id", "chatgpt_account_id", "organization_id", "org_id"):
+        found = normalize_workspace_id(str(claims.get(key, "") or ""))
+        if found:
+            return found
+
+    auth = extract_auth_claims(claims)
+    orgs = auth.get("organizations")
+    if isinstance(orgs, list):
+        default_org = next(
+            (item for item in orgs if isinstance(item, dict) and item.get("is_default")),
+            None,
+        )
+        for item in (default_org, orgs[0] if orgs else None):
+            if isinstance(item, dict):
+                found = normalize_workspace_id(str(item.get("id", "") or ""))
+                if found:
+                    return found
+
+    for key in ("workspace_id", "chatgpt_account_id", "organization_id", "org_id"):
+        found = normalize_workspace_id(str(auth.get(key, "") or ""))
+        if found:
+            return found
+    return None
+
+
+def extract_plan_type_from_claims(claims: Dict[str, Any]) -> Optional[str]:
+    auth = extract_auth_claims(claims)
+    raw = str(auth.get("chatgpt_plan_type", "") or "").strip().lower()
+    return raw or None
+
+
+def extract_token_exp(token: str) -> Optional[int]:
+    exp = decode_jwt_claims(token).get("exp")
+    return exp if isinstance(exp, int) else None
+
+
+def optional_string_any(sources: List[tuple]) -> Optional[str]:
+    for source, key in sources:
+        if not isinstance(source, dict):
+            continue
+        value = source.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                return value
+    return None
+
+
+def required_string_any(sources: List[tuple], label: str) -> str:
+    value = optional_string_any(sources)
+    if not value:
+        raise ValueError(f"缺少 {label}")
+    return value
+
+
+def parse_codex_auth_items(raw_text: str) -> List[Dict[str, Any]]:
+    value = json.loads(raw_text)
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        raise ValueError("Codex 授权内容必须是 JSON 对象或数组")
+
+    for key in ("items", "accounts"):
+        items = value.get(key)
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+        if isinstance(items, dict):
+            nested = [item for item in items.values() if isinstance(item, dict)]
+            if nested:
+                return nested
+    return [value]
+
+
+def extract_codex_token_payload(item: Dict[str, Any]) -> Dict[str, str]:
+    tokens = item.get("tokens")
+    if not isinstance(tokens, dict):
+        tokens = item
+    user = item.get("user") if isinstance(item.get("user"), dict) else {}
+
+    access_token = required_string_any(
+        [
+            (tokens, "access_token"),
+            (tokens, "accessToken"),
+            (item, "access_token"),
+            (item, "accessToken"),
+        ],
+        "access_token/accessToken",
+    )
+    return {
+        "access_token": access_token,
+        "id_token": optional_string_any(
+            [
+                (tokens, "id_token"),
+                (tokens, "idToken"),
+                (item, "id_token"),
+                (item, "idToken"),
+            ]
+        )
+        or "",
+        "refresh_token": optional_string_any(
+            [
+                (tokens, "refresh_token"),
+                (tokens, "refreshToken"),
+                (item, "refresh_token"),
+                (item, "refreshToken"),
+            ]
+        )
+        or "",
+        "account_id_hint": optional_string_any(
+            [
+                (tokens, "account_id"),
+                (tokens, "accountId"),
+                (item, "account_id"),
+                (item, "accountId"),
+            ]
+        )
+        or "",
+        "chatgpt_account_id_hint": optional_string_any(
+            [
+                (tokens, "chatgpt_account_id"),
+                (tokens, "chatgptAccountId"),
+                (item, "chatgpt_account_id"),
+                (item, "chatgptAccountId"),
+            ]
+        )
+        or "",
+        "workspace_id_hint": optional_string_any(
+            [
+                (tokens, "workspace_id"),
+                (tokens, "workspaceId"),
+                (item, "workspace_id"),
+                (item, "workspaceId"),
+            ]
+        )
+        or "",
+        "email": optional_string_any([(item, "email"), (user, "email")]) or "",
+    }
+
+
+def token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def build_codex_account_record(
+    payload: Dict[str, str], existing: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    access_token = payload["access_token"]
+    id_token = payload.get("id_token") or access_token
+    access_claims = decode_jwt_claims(access_token)
+    id_claims = decode_jwt_claims(id_token)
+    claims = id_claims or access_claims
+
+    subject = str(access_claims.get("sub") or claims.get("sub") or "").strip()
+    email = (
+        payload.get("email")
+        or str(claims.get("email") or "").strip()
+        or str(access_claims.get("email") or "").strip()
+    )
+    chatgpt_account_id = (
+        normalize_chatgpt_account_id(payload.get("chatgpt_account_id_hint"))
+        or extract_chatgpt_account_id_from_token(id_token)
+        or extract_chatgpt_account_id_from_token(access_token)
+    )
+    workspace_id = (
+        normalize_workspace_id(payload.get("workspace_id_hint"))
+        or extract_workspace_id_from_token(id_token)
+        or extract_workspace_id_from_token(access_token)
+        or chatgpt_account_id
+    )
+    plan_type = extract_plan_type_from_claims(access_claims) or extract_plan_type_from_claims(claims)
+
+    if chatgpt_account_id and workspace_id and chatgpt_account_id != workspace_id:
+        account_id = f"{chatgpt_account_id}::ws={workspace_id}"
+    else:
+        account_id = (
+            chatgpt_account_id
+            or workspace_id
+            or payload.get("account_id_hint")
+            or subject
+            or f"codex-{token_fingerprint(access_token)}"
+        )
+
+    now = now_iso()
+    previous = existing or {}
+    record = {
+        "id": previous.get("id") or account_id,
+        "label": email or chatgpt_account_id or workspace_id or account_id,
+        "email": email,
+        "subject": subject,
+        "chatgpt_account_id": chatgpt_account_id,
+        "workspace_id": workspace_id,
+        "chatgpt_plan_type": plan_type,
+        "account_id_hint": payload.get("account_id_hint") or "",
+        "token": {
+            "access_token": access_token,
+            "id_token": payload.get("id_token") or "",
+            "refresh_token": payload.get("refresh_token") or "",
+        },
+        "access_token_expires_at": extract_token_exp(access_token),
+        "subscription": previous.get("subscription"),
+        "subscription_last_refresh_at": previous.get("subscription_last_refresh_at"),
+        "usage": previous.get("usage"),
+        "status": "已导入",
+        "error": previous.get("error"),
+        "subscription_error": previous.get("subscription_error"),
+        "usage_error": None,
+        "refresh_error": None,
+        "reauth_required": False,
+        "created_at": previous.get("created_at") or now,
+        "updated_at": now,
+        "last_refresh_at": previous.get("last_refresh_at"),
+    }
+    return record
+
+
+def normalize_codex_base_url(base_url: str) -> str:
+    base = base_url.strip().rstrip("/")
+    if not base:
+        base = "https://chatgpt.com"
+    is_chatgpt_host = base.startswith("https://chatgpt.com") or base.startswith(
+        "https://chat.openai.com"
+    )
+    if is_chatgpt_host and "/backend-api" not in base:
+        base += "/backend-api"
+    return base
+
+
+def codex_usage_endpoint() -> str:
+    base = normalize_codex_base_url(CODEX_USAGE_BASE_URL)
+    if "/backend-api" in base:
+        return f"{base}/wham/usage"
+    return f"{base}/api/codex/usage"
+
+
+def codex_reset_credits_endpoint() -> str:
+    base = normalize_codex_base_url(CODEX_USAGE_BASE_URL)
+    return f"{base}/wham/rate-limit-reset-credits" if "/backend-api" in base else f"{base}/api/codex/rate-limit-reset-credits"
+
+
+def codex_accounts_check_endpoint() -> str:
+    return f"{normalize_codex_base_url(CODEX_USAGE_BASE_URL)}/accounts/check/v4-2023-04-27"
+
+
+def summarize_response_body(body: str) -> str:
+    text = body.strip()
+    if not text:
+        return ""
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            for key in ("message", "detail", "error", "code"):
+                found = value.get(key)
+                if isinstance(found, str) and found.strip():
+                    return found.strip()[:240]
+                if isinstance(found, dict):
+                    nested = found.get("message") or found.get("code")
+                    if isinstance(nested, str) and nested.strip():
+                        return nested.strip()[:240]
+    except Exception:
+        pass
+    return " ".join(text.split())[:240]
+
+
+def response_error_details(headers: Any) -> str:
+    details = []
+    content_type = headers.get("Content-Type", "")
+    if "html" in str(content_type).lower():
+        details.append("kind=html")
+    for name, label in (
+        ("x-request-id", "request_id"),
+        ("x-oai-request-id", "request_id"),
+        ("cf-ray", "cf_ray"),
+        ("x-openai-authorization-error", "auth_error"),
+    ):
+        value = headers.get(name)
+        if value:
+            details.append(f"{label}={value}")
+    return f" [{', '.join(details)}]" if details else ""
+
+
+def http_json(url: str, headers: Dict[str, str], data: Optional[bytes] = None) -> Dict[str, Any]:
+    method = "POST" if data is not None else "GET"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=CODEX_HTTP_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("Content-Type", "")
+            body = response.read().decode("utf-8", errors="replace")
+            if "text/html" in content_type.lower():
+                raise RuntimeError(f"上游返回 HTML: {summarize_response_body(body)}")
+            if not body.strip():
+                return {}
+            value = json.loads(body)
+            return value if isinstance(value, dict) else {"value": value}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        suffix = summarize_response_body(body)
+        detail = f" status {e.code} {e.reason}{response_error_details(e.headers)}"
+        if suffix:
+            detail += f": {suffix}"
+        raise RuntimeError(detail) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(str(e.reason)) from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"JSON 解析失败: {e}") from e
+
+
+def parse_subscription_timestamp(value: Any) -> Optional[int]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return int(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return None
+
+
+def normalize_account_plan_value(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    aliases = {"education": "edu"}
+    return aliases.get(normalized, normalized)
+
+
+def build_subscription_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
+    account = entry.get("account") if isinstance(entry.get("account"), dict) else {}
+    entitlement = entry.get("entitlement") if isinstance(entry.get("entitlement"), dict) else {}
+
+    account_plan_type = normalize_account_plan_value(account.get("plan_type")) or normalize_account_plan_value(
+        entitlement.get("subscription_plan")
+    )
+    plan_type = normalize_account_plan_value(entitlement.get("subscription_plan")) or account_plan_type
+    expires_at = parse_subscription_timestamp(entitlement.get("expires_at"))
+    renews_at = (
+        parse_subscription_timestamp(entitlement.get("renews_at"))
+        or parse_subscription_timestamp(entitlement.get("next_renewal_at"))
+        or parse_subscription_timestamp(entitlement.get("next_credit_grant_update"))
+        or parse_subscription_timestamp(entitlement.get("renewal_date"))
+    )
+    if not renews_at and entitlement.get("will_renew") and expires_at:
+        renews_at = expires_at
+
+    has_subscription = entitlement.get("has_active_subscription")
+    if has_subscription is None:
+        has_subscription = (
+            account.get("has_subscription")
+            if account.get("has_subscription") is not None
+            else account.get("has_active_subscription")
+        )
+    if has_subscription is None:
+        has_subscription = account.get("is_paid_subscription_active")
+    if has_subscription is None:
+        has_subscription = bool(
+            (account_plan_type and account_plan_type != "free")
+            or (plan_type and plan_type != "free")
+            or expires_at
+            or renews_at
+        )
+
+    return {
+        "has_subscription": bool(has_subscription),
+        "account_plan_type": account_plan_type,
+        "plan_type": plan_type,
+        "expires_at": expires_at,
+        "renews_at": renews_at,
+    }
+
+
+def fetch_codex_subscription(access_token: str, account_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not account_id:
+        return None
+    value = http_json(
+        codex_accounts_check_endpoint(),
+        {
+            "Authorization": f"Bearer {access_token}",
+            "Origin": "https://chatgpt.com",
+            "Referer": "https://chatgpt.com/",
+            "Accept": "application/json",
+        },
+    )
+    accounts = value.get("accounts") if isinstance(value.get("accounts"), dict) else {}
+    if not accounts:
+        return {
+            "has_subscription": False,
+            "account_plan_type": None,
+            "plan_type": None,
+            "expires_at": None,
+            "renews_at": None,
+        }
+
+    matched = accounts.get(account_id)
+    if isinstance(matched, dict):
+        return build_subscription_snapshot(matched)
+
+    snapshots = []
+    default_snapshot = None
+    paid_snapshot = None
+    for entry in accounts.values():
+        if not isinstance(entry, dict):
+            continue
+        snapshot = build_subscription_snapshot(entry)
+        snapshots.append(snapshot)
+        account = entry.get("account") if isinstance(entry.get("account"), dict) else {}
+        if default_snapshot is None and account.get("is_default"):
+            default_snapshot = snapshot
+        if paid_snapshot is None and snapshot.get("account_plan_type") not in (None, "free"):
+            paid_snapshot = snapshot
+    return default_snapshot or paid_snapshot or (snapshots[0] if snapshots else None)
+
+
+def parse_iso_timestamp(value: Any) -> Optional[int]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return int(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return None
+
+
+def should_refresh_codex_subscription(record: Dict[str, Any]) -> bool:
+    refreshed_at = parse_iso_timestamp(record.get("subscription_last_refresh_at"))
+    if refreshed_at is None:
+        return True
+    return now_ts() - refreshed_at >= max(60, CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS)
+
+
+def get_nested_number(value: Dict[str, Any], path: List[str]) -> Optional[float]:
+    current: Any = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if isinstance(current, (int, float)):
+        return float(current)
+    return None
+
+
+def get_nested_int(value: Dict[str, Any], path: List[str]) -> Optional[int]:
+    found = get_nested_number(value, path)
+    return int(found) if found is not None else None
+
+
+def normalize_weekly_usage_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    windows = [
+        (
+            snapshot.get("used_percent"),
+            snapshot.get("window_minutes"),
+            snapshot.get("resets_at"),
+        ),
+        (
+            snapshot.get("secondary_used_percent"),
+            snapshot.get("secondary_window_minutes"),
+            snapshot.get("secondary_resets_at"),
+        ),
+    ]
+    available = [window for window in windows if window[0] is not None or window[1] is not None]
+    weekly = max(available, key=lambda window: window[1] or 0) if available else (None, None, None)
+    normalized = dict(snapshot)
+    normalized["used_percent"], normalized["window_minutes"], normalized["resets_at"] = weekly
+    normalized.pop("secondary_used_percent", None)
+    normalized.pop("secondary_window_minutes", None)
+    normalized.pop("secondary_resets_at", None)
+    return normalized
+
+
+def parse_usage_snapshot(value: Dict[str, Any]) -> Dict[str, Any]:
+    window_seconds = get_nested_int(value, ["rate_limit", "primary_window", "limit_window_seconds"])
+    secondary_window_seconds = get_nested_int(
+        value, ["rate_limit", "secondary_window", "limit_window_seconds"]
+    )
+    return normalize_weekly_usage_snapshot({
+        "used_percent": get_nested_number(value, ["rate_limit", "primary_window", "used_percent"]),
+        "window_minutes": (window_seconds + 59) // 60 if window_seconds is not None else None,
+        "resets_at": get_nested_int(value, ["rate_limit", "primary_window", "reset_at"]),
+        "secondary_used_percent": get_nested_number(
+            value, ["rate_limit", "secondary_window", "used_percent"]
+        ),
+        "secondary_window_minutes": (
+            (secondary_window_seconds + 59) // 60
+            if secondary_window_seconds is not None
+            else None
+        ),
+        "secondary_resets_at": get_nested_int(
+            value, ["rate_limit", "secondary_window", "reset_at"]
+        ),
+        "credits": value.get("credits"),
+        "captured_at": now_ts(),
+    })
+
+
+def classify_usage_status(snapshot: Optional[Dict[str, Any]]) -> str:
+    if not snapshot:
+        return "unknown"
+    snapshot = normalize_weekly_usage_snapshot(snapshot)
+    primary_present = snapshot.get("used_percent") is not None and snapshot.get("window_minutes") is not None
+    if not primary_present:
+        return "unavailable"
+    if float(snapshot.get("used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
+        return "unavailable"
+    credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
+    if credits.get("overage_limit_reached") is True:
+        return "unavailable"
+    return "available"
+
+
+def codex_error_status_reason(error: str) -> str:
+    normalized = error.lower()
+    if "订阅信息" in normalized:
+        if "401" in normalized:
+            return "subscription_http_401"
+        if "403" in normalized:
+            return "subscription_http_403"
+        return "subscription_refresh_failed"
+    if "401" in normalized:
+        return "usage_http_401"
+    if "403" in normalized:
+        return "usage_http_403"
+    if "timeout" in normalized or "timed out" in normalized:
+        return "usage_refresh_timeout"
+    if "name or service" in normalized or "dns" in normalized:
+        return "usage_refresh_dns"
+    if "connection" in normalized or "连接" in normalized:
+        return "usage_refresh_connection"
+    if "refresh token" in normalized or "invalid_grant" in normalized:
+        return "refresh_token_invalid"
+    return "usage_refresh_failed"
+
+
+def codex_usage_status_reason(
+    snapshot: Optional[Dict[str, Any]], error: Optional[str] = None
+) -> str:
+    if error:
+        return codex_error_status_reason(error)
+    if not snapshot:
+        return "usage_unknown"
+
+    snapshot = normalize_weekly_usage_snapshot(snapshot)
+    primary_present = snapshot.get("used_percent") is not None and snapshot.get("window_minutes") is not None
+    if not primary_present:
+        return "usage_missing_weekly"
+    if float(snapshot.get("used_percent") or 0) >= CODEX_EXHAUSTED_USED_PERCENT:
+        return "usage_limit_exhausted"
+
+    credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
+    if credits.get("overage_limit_reached") is True:
+        return "usage_limit_exhausted"
+    return "usage_ok"
+
+
+def fetch_codex_usage(access_token: str, workspace_id: Optional[str]) -> Dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "codex_cli_rs/0.0.0",
+        "originator": "codex_cli_rs",
+    }
+    if workspace_id:
+        headers["ChatGPT-Account-ID"] = workspace_id
+    return parse_usage_snapshot(http_json(codex_usage_endpoint(), headers))
+
+
+def fetch_codex_reset_credits(access_token: str, workspace_id: Optional[str]) -> Dict[str, Any]:
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json", "User-Agent": "codex_cli_rs/0.0.0", "Origin": "https://chatgpt.com"}
+    if workspace_id:
+        headers["ChatGPT-Account-ID"] = workspace_id
+    value = http_json(codex_reset_credits_endpoint(), headers)
+    credits = value.get("credits") or value.get("reset_credits") or value.get("items") or value.get("data") or []
+    if isinstance(credits, dict): credits = credits.get("credits") or credits.get("items") or []
+    if not isinstance(credits, list): credits = []
+    values = [parse_subscription_timestamp(x.get("expires_at") or x.get("expiresAt") or x.get("expiration_date")) for x in credits if isinstance(x, dict)]
+    return {"available": len(credits), "earliest_expires_at": min((x for x in values if x is not None), default=None)}
+
+
+def should_refresh_codex_token(error: str) -> bool:
+    detail = error.lower()
+    if "unsupported_country_region_territory" in detail:
+        return False
+    return " status 401 " in detail
+
+
+def codex_refresh_requires_reauth(error: str) -> bool:
+    detail = error.lower()
+    return any(
+        marker in detail
+        for marker in (
+            " status 400 ",
+            " status 401 ",
+            "invalid_grant",
+            "refresh_token_expired",
+            "refresh_token_reused",
+            "refresh_token_invalidated",
+            "app_session_terminated",
+        )
+    )
+
+
+def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
+    token = record.get("token") if isinstance(record.get("token"), dict) else {}
+    refresh_token = str(token.get("refresh_token") or "").strip()
+    if not refresh_token:
+        return False
+
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "client_id": CODEX_CLIENT_ID,
+            "refresh_token": refresh_token,
+            "scope": "openid profile email",
+        }
+    ).encode("utf-8")
+    value = http_json(
+        CODEX_REFRESH_TOKEN_URL,
+        {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        data=data,
+    )
+    access_token = str(value.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("刷新 token 响应缺少 access_token")
+
+    token["access_token"] = access_token
+    if isinstance(value.get("refresh_token"), str) and value["refresh_token"].strip():
+        token["refresh_token"] = value["refresh_token"].strip()
+    if isinstance(value.get("id_token"), str) and value["id_token"].strip():
+        token["id_token"] = value["id_token"].strip()
+    record["token"] = token
+
+    refreshed_payload = {
+        "access_token": token["access_token"],
+        "id_token": token.get("id_token") or "",
+        "refresh_token": token.get("refresh_token") or "",
+        "account_id_hint": str(record.get("account_id_hint") or ""),
+        "chatgpt_account_id_hint": str(record.get("chatgpt_account_id") or ""),
+        "workspace_id_hint": str(record.get("workspace_id") or ""),
+        "email": str(record.get("email") or ""),
+    }
+    refreshed_record = build_codex_account_record(refreshed_payload, record)
+    record.update(refreshed_record)
+    record["status"] = "token 已刷新"
+    save_codex_record_auth_file(record)
+    return True
+
+
+def refresh_codex_account_record(
+    record: Dict[str, Any],
+    force_subscription: bool = False,
+    force_token_refresh: bool = False,
+) -> Dict[str, Any]:
+    updated = dict(record)
+    updated["token"] = dict(record.get("token") or {})
+    if not str(updated["token"].get("access_token") or "").strip():
+        raise ValueError("账号缺少 access_token")
+
+    errors: List[str] = []
+    subscription_errors: List[str] = []
+    usage_errors: List[str] = []
+    subscription_refresh_attempted = False
+    refreshed_once = False
+    refresh_attempted = False
+    refresh_error: Optional[str] = None
+    if force_token_refresh:
+        refresh_attempted = True
+        try:
+            refreshed_once = refresh_codex_access_token(updated)
+        except Exception as e:  # noqa: BLE001
+            log_exception(
+                f"手动续期 Codex token account={updated.get('email') or updated.get('id')}",
+                e,
+            )
+            refresh_error = str(e)
+
+    for attempt in range(2):
+        errors = []
+        subscription_errors = []
+        usage_errors = []
+        access_token = str(updated["token"].get("access_token") or "").strip()
+        chatgpt_account_id = str(updated.get("chatgpt_account_id") or "").strip() or None
+        workspace_id = str(updated.get("workspace_id") or "").strip() or chatgpt_account_id
+
+        refresh_subscription = force_subscription or should_refresh_codex_subscription(updated)
+        if refresh_subscription:
+            subscription_refresh_attempted = True
+            try:
+                subscription = fetch_codex_subscription(access_token, chatgpt_account_id)
+                if subscription is not None:
+                    updated["subscription"] = subscription
+                    plan_type = subscription.get("account_plan_type") or subscription.get("plan_type")
+                    if plan_type:
+                        updated["chatgpt_plan_type"] = plan_type
+            except Exception as e:  # noqa: BLE001
+                log_exception(
+                    f"刷新 Codex 订阅信息 account={updated.get('email') or updated.get('id')}",
+                    e,
+                )
+                message = f"订阅信息: {e}"
+                subscription_errors.append(message)
+                errors.append(message)
+
+        try:
+            usage = fetch_codex_usage(access_token, workspace_id)
+            updated["usage"] = usage
+            updated["usage_status"] = classify_usage_status(usage)
+            updated["status_reason"] = codex_usage_status_reason(usage)
+        except Exception as e:  # noqa: BLE001
+            log_exception(
+                f"刷新 Codex 用量 account={updated.get('email') or updated.get('id')}",
+                e,
+            )
+            message = f"额度信息: {e}"
+            usage_errors.append(message)
+            errors.append(message)
+
+        last_reset_refresh = parse_iso_timestamp(updated.get("reset_credits_last_refresh_at")) or 0
+        if now_ts() - last_reset_refresh >= max(300, CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS):
+            try:
+                updated["reset_credits"] = fetch_codex_reset_credits(access_token, workspace_id)
+                updated["reset_credits_last_refresh_at"] = now_iso()
+            except Exception as e:  # noqa: BLE001
+                log_exception(f"刷新 Codex 重置卡 account={updated.get('email') or updated.get('id')}", e)
+                updated["reset_credits_error"] = str(e)
+
+        if (
+            usage_errors
+            and attempt == 0
+            and not refresh_attempted
+            and any(should_refresh_codex_token(error) for error in usage_errors)
+        ):
+            refresh_attempted = True
+            try:
+                refreshed_once = refresh_codex_access_token(updated)
+                if refreshed_once:
+                    continue
+            except Exception as e:  # noqa: BLE001
+                log_exception(
+                    f"续期 Codex token account={updated.get('email') or updated.get('id')}",
+                    e,
+                )
+                refresh_error = str(e)
+                errors.append(f"刷新 token: {refresh_error}")
+        break
+
+    updated["last_refresh_at"] = now_iso()
+    updated["updated_at"] = now_iso()
+    updated["access_token_expires_at"] = extract_token_exp(str(updated["token"].get("access_token") or ""))
+    if subscription_refresh_attempted:
+        updated["subscription_last_refresh_at"] = now_iso()
+        updated["subscription_error"] = "; ".join(subscription_errors) if subscription_errors else None
+    else:
+        updated["subscription_last_refresh_at"] = record.get("subscription_last_refresh_at")
+        updated["subscription_error"] = record.get("subscription_error")
+    updated["usage_error"] = "; ".join(usage_errors) if usage_errors else None
+    updated["error"] = updated["usage_error"]
+    updated["refresh_error"] = refresh_error
+    updated["reauth_required"] = bool(
+        (refresh_error and codex_refresh_requires_reauth(refresh_error))
+        or (
+            refresh_attempted
+            and refresh_error is None
+            and any(should_refresh_codex_token(error) for error in usage_errors)
+        )
+    )
+    if usage_errors:
+        if updated["reauth_required"]:
+            updated["status_reason"] = "refresh_token_invalid"
+        else:
+            updated["status_reason"] = codex_usage_status_reason(
+                updated.get("usage") if isinstance(updated.get("usage"), dict) else None,
+                updated["usage_error"],
+            )
+    else:
+        updated["status_reason"] = codex_usage_status_reason(
+            updated.get("usage") if isinstance(updated.get("usage"), dict) else None
+        )
+    if not usage_errors:
+        updated["status"] = "已刷新"
+    elif updated.get("subscription") or updated.get("usage"):
+        updated["status"] = "部分刷新失败"
+    else:
+        updated["status"] = "刷新失败"
+    return updated
+
+
+def load_codex_accounts() -> None:
+    if not os.path.exists(CODEX_ACCOUNTS_FILE):
+        return
+    try:
+        with open(CODEX_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("items") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return
+        with CODEX_ACCOUNTS_LOCK:
+            CODEX_ACCOUNTS.clear()
+            for item in items:
+                if isinstance(item, dict) and item.get("id"):
+                    CODEX_ACCOUNTS[str(item["id"])] = item
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"加载 Codex 账号信息 {CODEX_ACCOUNTS_FILE}", e)
+        print(f"Codex 账号信息加载失败：{e}")
+
+
+def save_codex_accounts() -> None:
+    with CODEX_ACCOUNTS_LOCK:
+        items = list(CODEX_ACCOUNTS.values())
+        write_json_atomic(CODEX_ACCOUNTS_FILE, {"items": items})
+
+
+def login_credentials(email: str) -> Dict[str, Any]:
+    name = "email:" + AccountCredentialStore.email_key(email)
+    return {
+        "gpt_password_account": name,
+        "totp_secret_account": name,
+        "has_gpt_password": CREDENTIAL_STORE.get(email, "password") is not None,
+        "has_totp_secret": CREDENTIAL_STORE.get(email, "secret") is not None,
+    }
+
+
+def find_login_account(account_name: str) -> Optional[AccountConfig]:
+    if account_name.startswith("email:"):
+        email = AccountCredentialStore.email_key(account_name[6:])
+        with MAIL_ACCOUNTS_LOCK:
+            mail = next((item for item in ACCOUNTS if AccountCredentialStore.email_key(item["email"]) == email), None)
+        if mail:
+            return mail
+        with CODEX_ACCOUNTS_LOCK:
+            if any(AccountCredentialStore.email_key(item.get("email")) == email for item in CODEX_ACCOUNTS.values()):
+                return {"name": account_name, "email": email}
+        return None
+    return find_mail_account(account_name)
+
+
+def sanitize_login_account(cfg: AccountConfig) -> Dict[str, Any]:
+    if not cfg["name"].startswith("email:"):
+        return sanitize_mail_account(cfg)
+    return {"name": cfg["name"], "email": cfg["email"], **login_credentials(cfg["email"])}
+
+
+def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
+    token = record.get("token") if isinstance(record.get("token"), dict) else {}
+    raw_usage = record.get("usage") if isinstance(record.get("usage"), dict) else None
+    usage = normalize_weekly_usage_snapshot(raw_usage) if raw_usage else None
+    usage_status = classify_usage_status(usage)
+    error = record.get("error")
+    subscription_error = record.get("subscription_error")
+    usage_error = record.get("usage_error")
+    if error and str(error).startswith("订阅信息") and not usage_error:
+        subscription_error = subscription_error or error
+        error = None
+    status_reason = codex_usage_status_reason(usage, str(error) if error else None)
+    if not error and status_reason in {"subscription_http_401", "subscription_http_403", "subscription_refresh_failed"}:
+        status_reason = codex_usage_status_reason(usage)
+    return {
+        **login_credentials(str(record.get("email") or "")),
+        "id": record.get("id"),
+        "label": record.get("label"),
+        "email": record.get("email"),
+        "subject": record.get("subject"),
+        "chatgpt_account_id": record.get("chatgpt_account_id"),
+        "workspace_id": record.get("workspace_id"),
+        "chatgpt_plan_type": record.get("chatgpt_plan_type"),
+        "access_token_expires_at": record.get("access_token_expires_at"),
+        "has_refresh_token": bool(str(token.get("refresh_token") or "").strip()),
+        "subscription": record.get("subscription"),
+        "subscription_last_refresh_at": record.get("subscription_last_refresh_at"),
+        "usage": usage,
+        "reset_credits": record.get("reset_credits"),
+        "reset_credits_error": record.get("reset_credits_error"),
+        "usage_status": usage_status,
+        "status_reason": status_reason,
+        "status": record.get("status"),
+        "error": error,
+        "subscription_error": subscription_error,
+        "usage_error": usage_error,
+        "refresh_error": record.get("refresh_error"),
+        "reauth_required": bool(record.get("reauth_required")),
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at"),
+        "last_refresh_at": record.get("last_refresh_at"),
+    }
+
+
+def import_codex_auth_json(
+    raw_text: str,
+    refresh_snapshot: bool = True,
+    overwrite_existing_tokens: bool = True,
+) -> List[Dict[str, Any]]:
+    imported: List[Dict[str, Any]] = []
+    for item in parse_codex_auth_items(raw_text):
+        payload = extract_codex_token_payload(item)
+        candidate = build_codex_account_record(payload)
+        with CODEX_ACCOUNTS_LOCK:
+            existing = CODEX_ACCOUNTS.get(str(candidate.get("id") or ""))
+        if existing and not overwrite_existing_tokens:
+            imported.append(sanitize_codex_account(existing))
+            continue
+        record = build_codex_account_record(payload, existing)
+        if refresh_snapshot and EXTERNAL_WATCHERS:
+            try:
+                record = refresh_codex_account_record(record, force_subscription=True)
+            except Exception as e:  # noqa: BLE001
+                log_exception(
+                    f"导入后刷新 Codex 账号 account={record.get('email') or record.get('id')}",
+                    e,
+                )
+                record["status"] = "已导入，刷新失败"
+                record["error"] = str(e)
+                record["status_reason"] = codex_usage_status_reason(
+                    record.get("usage") if isinstance(record.get("usage"), dict) else None,
+                    str(e),
+                )
+                record["updated_at"] = now_iso()
+        with CODEX_ACCOUNTS_LOCK:
+            CODEX_ACCOUNTS[str(record["id"])] = record
+        imported.append(sanitize_codex_account(record))
+    save_codex_accounts()
+    return imported
+
+
+def refresh_all_codex_accounts_once() -> None:
+    with CODEX_ACCOUNTS_LOCK:
+        records = list(CODEX_ACCOUNTS.values())
+
+    if not records:
+        return
+
+    changed = False
+    for record in records:
+        account_id = str(record.get("id") or "")
+        if not account_id:
+            continue
+        if record.get("reauth_required"):
+            continue
+        try:
+            updated = refresh_codex_account_record(record)
+        except Exception as e:  # noqa: BLE001
+            log_exception(
+                f"后台刷新 Codex 账号 account={record.get('email') or account_id}",
+                e,
+            )
+            updated = dict(record)
+            updated["status"] = "刷新失败"
+            updated["error"] = str(e)
+            updated["status_reason"] = codex_usage_status_reason(
+                updated.get("usage") if isinstance(updated.get("usage"), dict) else None,
+                str(e),
+            )
+            updated["updated_at"] = now_iso()
+
+        with CODEX_ACCOUNTS_LOCK:
+            if account_id not in CODEX_ACCOUNTS:
+                delete_codex_record_auth_files(updated)
+                continue
+            if CODEX_ACCOUNTS[account_id] is not record:
+                continue
+            CODEX_ACCOUNTS[account_id] = updated
+        changed = True
+
+    if changed:
+        save_codex_accounts()
+
+
+def codex_refresh_loop() -> None:
+    while True:
+        try:
+            refresh_all_codex_accounts_once()
+        except Exception as e:  # noqa: BLE001
+            log_exception("Codex 后台刷新循环", e)
+            print(f"Codex 账号额度刷新失败：{e}")
+        time.sleep(max(10, CODEX_REFRESH_INTERVAL_SECONDS))
+
+
+def gmail_token_path(account_name: str) -> str:
+    return os.path.join(GMAIL_TOKEN_DIR, f"{account_name}.json")
+
+
+def legacy_gmail_token_path(account_name: str) -> Optional[str]:
+    match = re.fullmatch(r"account-(\d+)", account_name)
+    if not match:
+        return None
+    return os.path.join(DATA_DIR, f"token_account{match.group(1)}.json")
+
+
+def migrate_gmail_token_layout(account_name: str, configured_path: str) -> str:
+    target = gmail_token_path(account_name)
+    backup_dir = os.path.join(GMAIL_TOKEN_BACKUP_DIR, account_name)
+    ensure_private_directory(backup_dir)
+
+    candidates = [configured_path, target]
+    legacy = legacy_gmail_token_path(account_name)
+    if legacy:
+        candidates.append(legacy)
+    candidates = list(dict.fromkeys(os.path.normpath(path) for path in candidates if path))
+
+    authoritative = next(
+        (
+            path
+            for path in candidates
+            if path == os.path.normpath(configured_path) and os.path.isfile(path)
+        ),
+        None,
+    )
+    if not authoritative and os.path.isfile(target):
+        authoritative = target
+    if not authoritative:
+        authoritative = next((path for path in candidates if os.path.isfile(path)), None)
+
+    if authoritative:
+        result = migrate_auth_file(authoritative, target, backup_dir)
+        if result in {"moved", "deduplicated"}:
+            print(f"[{account_name}] Gmail token 已归档到 {target}")
+
+    for candidate in candidates:
+        if candidate in {target, authoritative} or not os.path.isfile(candidate):
+            continue
+        if os.path.isfile(target) and files_are_identical(Path(candidate), Path(target)):
+            os.remove(candidate)
+        else:
+            archive_auth_file(candidate, backup_dir)
+
+    for candidate in candidates:
+        for backup in glob.glob(f"{candidate}.bak.*"):
+            archive_auth_file(backup, backup_dir)
+
+    secure_auth_file(target)
+    return target
+
+
+def load_accounts() -> List[AccountConfig]:
+    cfgs: Any = None
+    if os.path.exists(GMAIL_ACCOUNTS_FILE):
+        try:
+            with open(GMAIL_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                value = json.load(f)
+            cfgs = value.get("items") if isinstance(value, dict) else value
+        except Exception as e:  # noqa: BLE001
+            log_exception(f"加载 Gmail 账号配置 {GMAIL_ACCOUNTS_FILE}", e)
+            print(f"Gmail 账号配置加载失败：{e}")
+
+    if not isinstance(cfgs, list):
+        raw = os.getenv("TEST_GMAIL_ACCOUNTS" if IS_TEST else "GMAIL_ACCOUNTS")
+        if raw:
+            cfgs = json.loads(raw)
+        else:
+            cfgs = DEFAULT_ACCOUNTS
+
+    normalized: List[AccountConfig] = []
+    used_names = set()
+    for index, item in enumerate(cfgs, start=1):
+        if not isinstance(item, dict):
+            continue
+        fallback_name = f"account-{index}"
+        name = re.sub(r"[^A-Za-z0-9_-]+", "-", str(item.get("name") or fallback_name)).strip("-")
+        if not name or name in used_names:
+            name = fallback_name
+        used_names.add(name)
+        provider = str(item.get("provider") or "gmail").strip().lower()
+        cfg: AccountConfig = {
+            "name": name,
+            "email": str(item.get("email") or "未配置"),
+            "provider": provider,
+            "enabled": item.get("enabled") is not False,
+        }
+        if provider == "proton":
+            delivery_mode = str(
+                item.get("delivery_mode") or PROTON_DELIVERY_MODE
+            ).strip().lower()
+            cfg["delivery_mode"] = (
+                delivery_mode if delivery_mode in {"direct", "relay"} else "direct"
+            )
+            cfg["session_file"] = str(
+                item.get("session_file")
+                or os.path.join(PROTON_SESSION_DIR, f"{name}.pickle")
+            )
+            cfg["config_file"] = os.path.expanduser(
+                str(item.get("config_file") or PROTON_CONFIG_FILE)
+            )
+        elif provider == "outlook":
+            cfg["token_file"] = str(
+                item.get("token_file")
+                or os.path.join(OUTLOOK_TOKEN_DIR, f"{name}.json")
+            )
+            secure_auth_file(cfg["token_file"])
+        else:
+            cfg["provider"] = "gmail"
+            cfg["token_file"] = migrate_gmail_token_layout(
+                name,
+                str(item.get("token_file") or gmail_token_path(name)),
+            )
+            cfg["credential_file"] = str(item.get("credential_file") or str(BASE_DIR / "credentials.json"))
+        normalized.append(cfg)
+    return normalized
+
+
+def save_mail_accounts() -> None:
+    with MAIL_ACCOUNTS_LOCK:
+        items = [dict(item) for item in ACCOUNTS]
+    write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
+
+
+def find_mail_account(name: str) -> Optional[AccountConfig]:
+    with MAIL_ACCOUNTS_LOCK:
+        return next((item for item in ACCOUNTS if item["name"] == name), None)
+
+
+def find_gmail_account(name: str) -> Optional[AccountConfig]:
+    cfg = find_mail_account(name)
+    return cfg if cfg and cfg.get("provider", "gmail") == "gmail" else None
+
+
+def find_outlook_account(name: str) -> Optional[AccountConfig]:
+    cfg = find_mail_account(name)
+    return cfg if cfg and cfg.get("provider") == "outlook" else None
+
+
+def next_account_name() -> str:
+    with MAIL_ACCOUNTS_LOCK:
+        used = {item["name"] for item in ACCOUNTS}
+    index = 1
+    while f"account-{index}" in used:
+        index += 1
+    return f"account-{index}"
+
+
+def next_gmail_account_config() -> AccountConfig:
+    name = next_account_name()
+    return {
+        "name": name,
+        "email": "等待授权",
+        "provider": "gmail",
+        "token_file": os.path.join(GMAIL_TOKEN_DIR, f"{name}.json"),
+        "credential_file": str(BASE_DIR / "credentials.json"),
+        "enabled": True,
+    }
+
+
+def next_outlook_account_config() -> AccountConfig:
+    name = next_account_name()
+    return {
+        "name": name,
+        "email": "等待授权",
+        "provider": "outlook",
+        "token_file": os.path.join(OUTLOOK_TOKEN_DIR, f"{name}.json"),
+        "enabled": True,
+    }
+
+
+app.state.site_accounts = SiteAccountStore(Path(DATA_DIR) / "site_accounts.json")
+
+ACCOUNTS = load_accounts()
+MAIL_FILTERS = load_mail_filters()
+GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
+TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
+CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"))
+CODING_PLAN_STORE = ResourceStore(CODING_PLANS_FILE, "api_key", "API key")
+RELAY_ACCOUNT_STORE = ResourceStore(RELAY_ACCOUNTS_FILE, "password", "密码")
+STATE_LOCK = threading.Lock()
+STATE: Dict[str, Dict[str, Optional[str]]] = {}
+CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}
+CODEX_ACCOUNTS: Dict[str, Dict[str, Any]] = {}
+CODEX_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
+OUTLOOK_AUTH_SESSIONS: Dict[str, Dict[str, Any]] = {}
+MAIL_WATCHERS: Dict[str, Dict[str, Any]] = {}
+
+
+def ensure_mail_state(cfg: AccountConfig) -> None:
+    waiting_status = (
+        "等待本地中继"
+        if cfg.get("provider") == "proton" and cfg.get("delivery_mode") == "relay"
+        else "待启动"
+    )
+    with STATE_LOCK:
+        existing = STATE.get(cfg["name"], {})
+        STATE[cfg["name"]] = {
+            "name": cfg["name"],
+            "email": cfg["email"],
+            "provider": cfg.get("provider", "gmail"),
+            "last_code": existing.get("last_code"),
+            "result_type": existing.get("result_type", "code"),
+            "result_value": existing.get("result_value"),
+            "rule_name": existing.get("rule_name"),
+            "message_id": existing.get("message_id"),
+            "subject": existing.get("subject"),
+            "updated_at": existing.get("updated_at"),
+            "status": existing.get("status")
+            or (waiting_status if cfg["enabled"] else "已停用"),
+        }
+    with HISTORY_LOCK:
+        CODE_HISTORY.setdefault(cfg["name"], [])
+
+
+for cfg in ACCOUNTS:
+    ensure_mail_state(cfg)
+
+
+def history_file_path(name: str) -> str:
+    return os.path.join(HISTORY_DIR, f"{name}.codes.history.json")
+
+
+def load_code_history(name: str) -> List[Dict[str, str]]:
+    path = history_file_path(name)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"加载验证码历史 account={name}", e)
+        return []
+    return []
+
+
+def save_code_history(name: str, records: List[Dict[str, str]]) -> None:
+    write_json_atomic(history_file_path(name), records)
+
+
+def clear_code_history(name: str) -> None:
+    CODE_HISTORY.pop(name, None)
+    path = history_file_path(name)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def append_code_record(name: str, record: Dict[str, str]) -> bool:
+    with HISTORY_LOCK:
+        records = CODE_HISTORY.get(name, [])
+        if any(item.get("message_id") == record.get("message_id") for item in records):
+            return False
+        updated = [record, *records][:MAX_HISTORY_RECORDS]
+        save_code_history(name, updated)
+        CODE_HISTORY[name] = updated
+        return True
+
+
+def load_histories():
+    for cfg in ACCOUNTS:
+        CODE_HISTORY[cfg["name"]] = load_code_history(cfg["name"])
+
+
+def request_access_role(request: FastAPIRequest) -> Optional[str]:
+    user = getattr(request.state, "site_user", None)
+    if user:
+        return "admin" if user["role"] in ADMIN_ROLES else "user"
+    cookie_token = request.cookies.get(ACCESS_COOKIE_NAME, "")
+    header_token = request.headers.get("x-access-token", "")
+    query_token = request.query_params.get("access_token", "")
+    bearer = request.headers.get("authorization", "")
+    bearer_token = bearer.split(" ", 1)[1] if bearer.startswith("Bearer ") else ""
+    tokens = (cookie_token, header_token, query_token, bearer_token)
+    if ADMIN_ACCESS_PASSWORD and any(token == ADMIN_ACCESS_PASSWORD for token in tokens):
+        return "admin"
+    if ACCESS_PASSWORD and any(token == ACCESS_PASSWORD for token in tokens):
+        return "user"
+    return None
+
+
+def legacy_access_login(request: FastAPIRequest, access_token: str, *, browser: bool = False):
+    role = "admin" if access_token == ADMIN_ACCESS_PASSWORD else "user" if access_token == ACCESS_PASSWORD else None
+    if role is None:
+        if browser:
+            page = (STATIC_DIR / "login.html").read_text(encoding="utf-8")
+            return HTMLResponse(page.replace("<!-- LOGIN_ERROR -->", "用户名或密码错误"), status_code=401)
+        raise SiteAccountError("用户名或密码错误", 401)
+    if browser:
+        response = RedirectResponse("/", status_code=302)
+    else:
+        response = JSONResponse({"ok": True, "role": role})
+    response.set_cookie(
+        ACCESS_COOKIE_NAME,
+        access_token,
+        httponly=True,
+        max_age=86400,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+    return response
+
+
+def request_access_ok(request: FastAPIRequest) -> bool:
+    return request_access_role(request) is not None
+
+
+def can_access_resource(request: FastAPIRequest, key: str) -> bool:
+    if request_access_role(request) == "admin" and not is_user_preview(request):
+        return True
+    user = getattr(request.state, "site_user", None)
+    if not user:
+        if is_user_preview(request):
+            # Legacy production admin sessions have no website-account id.
+            # Preview still uses the public/listed resource view in that mode.
+            return request_access_role(request) == "admin"
+        # Legacy production user tokens retain the pre-account-console view.
+        return request_access_role(request) == "user" and not is_user_preview(request)
+    subject_id = request.query_params.get("user_id", user["id"]) if is_user_preview(request) else user["id"]
+    return request.app.state.site_accounts.resource_allowed(subject_id, key)
+
+
+def can_access_account(request: FastAPIRequest, email: str) -> bool:
+    if request_access_role(request) == "admin" and not is_user_preview(request):
+        return True
+    email = AccountCredentialStore.email_key(email)
+    if not can_access_resource(request, "gpt:email:" + email):
+        return False
+    return CREDENTIAL_STORE.get(email, "listed") is not False
+
+
+def is_user_preview(request: FastAPIRequest) -> bool:
+    return request_access_role(request) == "admin" and request.query_params.get("preview") == "1"
+
+
+def requires_admin_access(request: FastAPIRequest) -> bool:
+    path = request.url.path
+    return (
+        path == "/admin"
+        or path.startswith("/admin/")
+        or path == "/preview"
+        or path in {"/static/admin.html", "/static/access.html"}
+        or path == "/api/admin"
+        or path.startswith("/api/admin/")
+        or path == "/api/codex"
+        or path.startswith("/api/codex/")
+        or (path.startswith("/api/history/") and request.method != "GET")
+    )
+
+
+@app.middleware("http")
+async def error_log_guard(request: FastAPIRequest, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"Web 请求 {request.method} {request.url.path}", e)
+        raise
+
+
+@app.exception_handler(SiteAccountError)
+async def site_account_error(request: FastAPIRequest, error: SiteAccountError):
+    return JSONResponse({"detail": str(error)}, status_code=error.status_code,
+                        headers={"Cache-Control": "no-store, private"})
+
+
+@app.middleware("http")
+async def access_guard(request: FastAPIRequest, call_next):
+    path = request.url.path
+    request.state.site_user = request.app.state.site_accounts.session_user(request.cookies.get(SESSION_COOKIE, ""))
+    callback = (
+        path in {"/auth/callback", "/api/admin/outlook/auth/callback", "/api/internal/mail-relay"}
+        or path.startswith("/oauth2callback/")
+        or (path == "/" and request.query_params.get("code") and request.query_params.get("state"))
+    )
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and not callback:
+        origin = request.headers.get("origin")
+        request_host = request.headers.get("host", "").lower()
+        origin_host = urllib.parse.urlparse(origin).netloc.lower() if origin else ""
+        fetch_site = request.headers.get("sec-fetch-site", "").lower()
+        if (origin_host and origin_host != request_host) or (fetch_site == "cross-site" and not origin):
+            return JSONResponse({"detail": "不允许跨站请求"}, status_code=403)
+    public = callback or path in {"/login", "/api/auth/login"}
+    role = request_access_role(request)
+    if not public and (role is None or (requires_admin_access(request) and role != "admin")):
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "需要管理员权限" if role else "请先登录"}, status_code=403 if role else 401)
+        if role:
+            status_code = 303 if request.state.site_user else 307
+            return RedirectResponse("/", status_code=status_code)
+        return RedirectResponse("/login", status_code=303)
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
+def remove_google_auth_session(session: Dict[str, object], state: str) -> None:
+    with AUTH_SESSION_LOCK:
+        AUTH_SESSIONS.pop(str(session.get("account_name") or ""), None)
+        AUTH_SESSIONS.pop(state, None)
+
+
+def finish_google_auth_session(
+    session: Dict[str, object],
+    callback: GoogleCallbackLink,
+) -> Optional[AccountConfig]:
+    flow = session["flow"]
+    if not isinstance(flow, InstalledAppFlow):
+        raise RuntimeError("授权会话数据异常")
+    credentials = session.get("credentials")
+    if not isinstance(credentials, Credentials):
+        fetch_google_oauth_token(flow, callback)
+        credentials = flow.credentials
+        if not isinstance(credentials, Credentials):
+            raise RuntimeError("Google token 交换完成但未收到 credentials")
+        session["credentials"] = credentials
+    session["error"] = None
+    event = session["event"]
+    if session.get("managed"):
+        cfg = complete_managed_gmail_auth(session, credentials)
+        remove_google_auth_session(session, callback.state)
+        return cfg
+    if hasattr(event, "set"):
+        event.set()
+    return None
+
+
+def fail_google_auth_session(
+    session: Dict[str, object],
+    error: Exception,
+) -> str:
+    detail = format_google_auth_error(error)
+    session["error"] = detail
+    event = session["event"]
+    if not session.get("managed") and hasattr(event, "set"):
+        event.set()
+    return detail
+
+
+def complete_oauth_callback(request: FastAPIRequest) -> HTMLResponse:
+    try:
+        callback = parse_google_callback_link(str(request.url))
+    except GoogleCallbackLinkError as error:
+        return HTMLResponse(f"Google 授权返回链接无效：{html.escape(str(error))}", status_code=400)
+
+    with AUTH_SESSION_LOCK:
+        session = AUTH_SESSIONS.get(callback.state)
+    if not session:
+        return HTMLResponse("授权会话不存在或已完成，请重新发起授权。", status_code=404)
+
+    try:
+        cfg = finish_google_auth_session(session, callback)
+        if cfg:
+            return HTMLResponse(
+                "Google 授权完成，账号已开始监听。"
+                f'<script>setTimeout(() => window.location.href = "/admin", 800);</script>'
+                f'<p><a href="/admin">返回账号控制台：{html.escape(cfg["email"])}</a></p>'
+            )
+        return HTMLResponse("Google 授权完成，token 已返回服务器。可以关闭此页面并回到终端。")
+    except Exception as e:  # noqa: BLE001
+        log_exception(
+            f"Google OAuth 回调 account={session.get('account_name') or 'unknown'}",
+            e,
+        )
+        detail = fail_google_auth_session(session, e)
+        return HTMLResponse(f"Google 授权失败：{html.escape(detail)}", status_code=400)
+
+
+@app.get("/oauth2callback/{account_name}", response_class=HTMLResponse)
+def oauth2_callback(account_name: str, request: FastAPIRequest):
+    return complete_oauth_callback(request)
+
+
+def get_gmail_service(cfg: AccountConfig):
+    creds = None
+    token_file = cfg["token_file"]
+    if os.path.exists(token_file):
+        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+
+    if not creds or not creds.valid:
+        with AUTH_LOCK:
+            if os.path.exists(token_file):
+                creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+                if creds and creds.expired and creds.refresh_token:
+                    try:
+                        creds.refresh(GoogleRequest())
+                    except Exception as e:  # noqa: BLE001
+                        log_exception(f"刷新 Gmail token account={cfg['name']}", e)
+                        if not should_reauth_after_google_refresh_error(e):
+                            raise RuntimeError(format_google_auth_error(e)) from e
+                        backup_path = backup_token_file(token_file)
+                        suffix = f"，旧 token 已备份到 {backup_path}" if backup_path else ""
+                        print(f"[{cfg['name']}] token 刷新失败，将重新授权{suffix}：{format_google_auth_error(e)}")
+                        creds = None
+            if not creds or not creds.valid:
+                if not os.path.exists(cfg["credential_file"]):
+                    raise FileNotFoundError(
+                        f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"
+                    )
+                creds = request_gmail_browser_auth(cfg)
+        write_json_atomic(token_file, json.loads(creds.to_json()))
+
+    return build("gmail", "v1", credentials=creds)
+
+
+def backup_token_file(token_file: str) -> Optional[str]:
+    if not os.path.exists(token_file):
+        return None
+    account_name = os.path.splitext(os.path.basename(token_file))[0]
+    backup_dir = os.path.join(GMAIL_TOKEN_BACKUP_DIR, account_name)
+    ensure_private_directory(backup_dir)
+    filename = (
+        f"{os.path.basename(token_file)}.bak."
+        f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    )
+    backup_path = os.path.join(backup_dir, filename)
+    os.replace(token_file, backup_path)
+    secure_auth_file(backup_path)
+    return backup_path
+
+
+def decode_body(data: Optional[str]) -> str:
+    if not data:
+        return ""
+    padded = data + "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def collect_text_from_payload(payload: Dict) -> List[str]:
+    if not payload:
+        return []
+
+    texts: List[str] = []
+    for part in payload.get("parts", []):
+        texts.extend(collect_text_from_payload(part))
+
+    mime = (payload.get("mimeType") or "").lower()
+    body_data = payload.get("body", {}).get("data", "")
+    if body_data and (mime.startswith("text/plain") or mime.startswith("text/html")):
+        raw = decode_body(body_data)
+        texts.append(raw)
+
+    return texts
+
+
+def message_header(message: Dict, name: str) -> str:
+    expected = name.lower()
+    for header in message.get("payload", {}).get("headers", []):
+        if str(header.get("name") or "").lower() == expected:
+            return str(header.get("value") or "")
+    return ""
+
+
+def sender_email(message: Dict) -> str:
+    raw = message_header(message, "From").lower()
+    match = re.search(r"<([^<>\s]+@[^<>\s]+)>", raw)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b[^\s<>]+@[^\s<>]+\b", raw)
+    return match.group(0).strip(".,;\"") if match else ""
+
+
+def gmail_incoming_mail(message: Dict) -> IncomingMail:
+    snippet = message.get("snippet", "")
+    subject = message_header(message, "Subject")
+    payload_texts = collect_text_from_payload(message.get("payload", {}))
+    return IncomingMail(
+        message_id=str(message.get("id") or ""),
+        sender=sender_email(message),
+        subject=subject,
+        body="\n".join([snippet] + payload_texts),
+        received_at=int(message.get("internalDate") or 0) // 1000,
+    )
+
+
+def extract_verification_code(message: Dict) -> Optional[str]:
+    result = extract_configured_result(gmail_incoming_mail(message))
+    return result["value"] if result and result["type"] == "code" else None
+
+
+def extract_configured_result(message: IncomingMail) -> Optional[Dict[str, str]]:
+    for rule in MAIL_FILTERS:
+        if not rule.get("enabled", True):
+            continue
+        if rule.get("builtin"):
+            code = extract_code_from_mail(message, OPENAI_CODE_SENDERS)
+            result = {"type": "code", "value": code} if code else None
+        else:
+            result = extract_mail_result(message, rule)
+        if result:
+            return {**result, "code": result["value"] if result["type"] == "code" else "",
+                    "rule_id": rule["id"], "rule_name": rule["name"],
+                    "sender": message.sender, "message_id": message.message_id,
+                    "subject": message.subject or "（无主题）"}
+    return None
+
+
+def parse_subject(message: Dict) -> str:
+    return message_header(message, "Subject") or "（无主题）"
+
+
+def mark_as_read(service, message_id: str):
+    service.users().messages().batchModify(
+        userId="me",
+        body={"ids": [message_id], "removeLabelIds": ["UNREAD"]},
+    ).execute()
+
+
+def read_history_id(cfg: AccountConfig) -> int:
+    path = os.path.join(HISTORY_ID_DIR, f"{cfg['name']}.history")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if content.isdigit():
+                return int(content)
+    return 0
+
+
+def write_history_id(cfg: AccountConfig, history_id: int):
+    path = os.path.join(HISTORY_ID_DIR, f"{cfg['name']}.history")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(str(history_id))
+
+
+def save_state(name: str, patch: Dict[str, Optional[str]]):
+    with STATE_LOCK:
+        if name in STATE:
+            STATE[name].update(patch)
+
+
+def store_code_result(
+    cfg: AccountConfig,
+    result: Dict[str, str],
+    status: str = "监听中",
+) -> bool:
+    result = {"type": "code", "value": result.get("code", ""), **result}
+    inserted = append_code_record(
+        cfg["name"],
+        {
+            **result,
+            "code": result["code"],
+            "message_id": result["message_id"],
+            "subject": result["subject"],
+            "created_at": now_iso(),
+            "email": cfg["email"],
+        },
+    )
+    if not inserted:
+        return False
+    save_state(
+        cfg["name"],
+        {
+            "last_code": result["code"],
+            "result_type": result["type"],
+            "result_value": result["value"],
+            "rule_name": result.get("rule_name", ""),
+            "message_id": result["message_id"],
+            "subject": result["subject"],
+            "updated_at": now_iso(),
+            "status": status,
+        },
+    )
+    return True
+
+
+def process_message(service, cfg: AccountConfig, message_id: str) -> Optional[Dict[str, str]]:
+    msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+
+    labels = msg.get("labelIds", [])
+    if "UNREAD" not in labels:
+        return None
+
+    return extract_configured_result(gmail_incoming_mail(msg))
+
+
+def scan_unread_once(service, cfg: AccountConfig):
+    response = service.users().messages().list(
+        userId="me",
+        q=mail_filter_search_query(),
+        maxResults=100,
+    ).execute()
+    for item in response.get("messages", []):
+        result = process_message(service, cfg, item["id"])
+        if result:
+            if store_code_result(cfg, result, status="已完成（补扫）"):
+                mark_as_read(service, result["message_id"])
+
+
+def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = None):
+    stop_event = stop_event or threading.Event()
+    name = cfg["name"]
+    save_state(name, {"status": "启动中"})
+
+    try:
+        service = get_gmail_service(cfg)
+        profile = service.users().getProfile(userId="me").execute()
+        history_id = read_history_id(cfg) or int(profile["historyId"])
+
+        # 首次启动，先补扫一次未读验证码邮件，防止历史遗漏
+        scan_unread_once(service, cfg)
+
+        while not stop_event.is_set():
+            try:
+                response = service.users().history().list(
+                    userId="me",
+                    startHistoryId=history_id,
+                    maxResults=MAX_POLL_RESULTS,
+                ).execute()
+
+                got = False
+                for item in response.get("history", []):
+                    for added in item.get("messagesAdded", []):
+                        message = added.get("message", {})
+                        msg_id = message.get("id")
+                        if not msg_id:
+                            continue
+                        result = process_message(service, cfg, msg_id)
+                        if result:
+                            saved = store_code_result(cfg, result)
+                            got = saved or got
+                            if saved:
+                                mark_as_read(service, result["message_id"])
+                if response.get("historyId"):
+                    history_id = int(response["historyId"])
+                    write_history_id(cfg, history_id)
+
+                if not got:
+                    save_state(name, {"status": "监听中"})
+
+            except HttpError as e:
+                status = getattr(e, "status", None) or getattr(e.resp, "status", None)
+                if status in (404, 410):
+                    save_state(name, {"status": "历史游标过期，补扫"})
+                    scan_unread_once(service, cfg)
+                    profile = service.users().getProfile(userId="me").execute()
+                    history_id = int(profile["historyId"])
+                    write_history_id(cfg, history_id)
+                else:
+                    log_exception(f"Gmail API account={name} status={status}", e)
+                    save_state(name, {"status": f"API 错误: {status}"})
+            except Exception as e:  # noqa: BLE001
+                log_exception(f"Gmail 监听 account={name}", e)
+                save_state(name, {"status": f"运行错误: {e}"})
+
+            stop_event.wait(CHECK_INTERVAL_SECONDS)
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"启动 Gmail 监听 account={name}", e)
+        save_state(name, {"status": f"启动失败: {e}"})
+    finally:
+        with MAIL_WATCHERS_LOCK:
+            current = MAIL_WATCHERS.get(name)
+            if current and current.get("thread") is threading.current_thread():
+                MAIL_WATCHERS.pop(name, None)
+
+
+def process_outlook_message(
+    mailbox: OutlookMailbox,
+    cfg: AccountConfig,
+    message: Dict[str, Any],
+) -> Optional[Dict[str, str]]:
+    if message.get("isRead") is True:
+        return None
+    incoming = outlook_incoming_mail(message)
+    extractor = globals().get("extract_configured_result")
+    if extractor:
+        return extractor(incoming)
+    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    return {"code": code, "message_id": incoming.message_id, "subject": incoming.subject or "（无主题）"} if code else None
+
+
+def save_outlook_cache(mailbox: OutlookMailbox, cfg: AccountConfig) -> None:
+    mailbox.save_refreshed_cache(
+        lambda value: write_json_atomic(str(cfg["token_file"]), value)
+    )
+
+
+def scan_outlook_unread_once(
+    mailbox: OutlookMailbox,
+    cfg: AccountConfig,
+    status: str = "监听中",
+) -> bool:
+    messages = mailbox.get_unread_messages(limit=max(1, OUTLOOK_CATCHUP_LIMIT))
+    save_outlook_cache(mailbox, cfg)
+    got = False
+    for message in reversed(messages):
+        try:
+            result = process_outlook_message(mailbox, cfg, message)
+            if result:
+                saved = store_code_result(cfg, result, status=status)
+                got = saved or got
+                mailbox.mark_as_read(result["message_id"])
+        except (OutlookAuthorizationRequired, OutlookAPIError):
+            raise
+        except Exception as error:  # noqa: BLE001
+            log_exception(f"Outlook 邮件处理 account={cfg['name']}", error)
+    return got
+
+
+def watch_outlook_account(
+    cfg: AccountConfig,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    stop_event = stop_event or threading.Event()
+    name = cfg["name"]
+    save_state(name, {"status": "启动中"})
+    try:
+        settings = load_outlook_settings(
+            f"{APP_BASE_URL}/api/admin/outlook/auth/callback"
+        )
+        mailbox = OutlookMailbox(settings, str(cfg["token_file"]), cfg["email"])
+        connected = False
+        first_scan = True
+        while not stop_event.is_set():
+            try:
+                if not connected:
+                    profile = mailbox.connect()
+                    if profile["email"].lower() != cfg["email"].lower():
+                        raise OutlookAuthorizationRequired(
+                            f"Outlook token 账号与记录不一致：{profile['email']}"
+                        )
+                    save_outlook_cache(mailbox, cfg)
+                    connected = True
+                got = scan_outlook_unread_once(
+                    mailbox, cfg, status="已完成（补扫）" if first_scan else "监听中"
+                )
+                first_scan = False
+                if not got:
+                    save_state(name, {"status": "监听中"})
+            except OutlookAuthorizationRequired as error:
+                log_exception(f"Outlook 授权失效 account={name}", error)
+                save_state(name, {"status": "需重新授权"})
+                break
+            except OutlookAPIError as error:
+                log_exception(
+                    f"Outlook Graph account={name} status={error.status}",
+                    error,
+                )
+                if error.status in {401, 403}:
+                    save_state(name, {"status": f"需重新授权: HTTP {error.status}"})
+                    break
+                save_state(name, {"status": f"API 错误: {error.status}"})
+            except Exception as error:  # noqa: BLE001
+                log_exception(f"Outlook 监听 account={name}", error)
+                save_state(name, {"status": f"运行错误: {error}"})
+            stop_event.wait(max(1, OUTLOOK_POLL_INTERVAL_SECONDS))
+    except OutlookAuthorizationRequired as error:
+        save_state(name, {"status": str(error)})
+    except Exception as error:  # noqa: BLE001
+        log_exception(f"启动 Outlook 监听 account={name}", error)
+        save_state(name, {"status": f"启动失败: {error}"})
+    finally:
+        with MAIL_WATCHERS_LOCK:
+            current = MAIL_WATCHERS.get(name)
+            if current and current.get("thread") is threading.current_thread():
+                MAIL_WATCHERS.pop(name, None)
+
+
+def proton_incoming_mail(message: Any) -> IncomingMail:
+    sender = getattr(getattr(message, "sender", None), "address", "") or ""
+    return IncomingMail(
+        message_id=str(getattr(message, "id", "") or ""),
+        sender=str(sender),
+        subject=str(getattr(message, "subject", "") or ""),
+        body=str(getattr(message, "body", "") or ""),
+        received_at=int(getattr(message, "time", 0) or 0),
+    )
+
+
+def process_proton_message(
+    mailbox: ProtonMailbox,
+    cfg: AccountConfig,
+    message: Any,
+) -> Optional[Dict[str, str]]:
+    if getattr(message, "unread", True) is False:
+        return None
+    full_message = mailbox.read_message(message)
+    incoming = proton_incoming_mail(full_message)
+    extractor = globals().get("extract_configured_result")
+    if extractor:
+        return extractor(incoming)
+    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
+    return {"code": code, "message_id": incoming.message_id, "subject": incoming.subject or "（无主题）"} if code else None
+
+
+def scan_proton_unread_once(mailbox: ProtonMailbox, cfg: AccountConfig) -> None:
+    messages = mailbox.get_recent_messages(limit=max(1, PROTON_CATCHUP_LIMIT))
+    for message in reversed(messages):
+        if getattr(message, "unread", True) is False:
+            continue
+        try:
+            result = process_proton_message(mailbox, cfg, message)
+            if result:
+                if store_code_result(cfg, result, status="已完成（补扫）"):
+                    mailbox.mark_as_read(result["message_id"])
+        except Exception as e:  # noqa: BLE001
+            log_exception(f"Proton 补扫 account={cfg['name']}", e)
+
+
+def watch_proton_account(
+    cfg: AccountConfig,
+    stop_event: Optional[threading.Event] = None,
+) -> None:
+    stop_event = stop_event or threading.Event()
+    name = cfg["name"]
+    mailbox = ProtonMailbox(str(cfg["session_file"]))
+    save_state(name, {"status": "启动中"})
+    try:
+        mailbox.connect()
+        scan_proton_unread_once(mailbox, cfg)
+        save_state(name, {"status": "监听中"})
+        while not stop_event.is_set():
+            try:
+                message = mailbox.wait_for_new_message(
+                    interval=max(1, PROTON_POLL_INTERVAL_SECONDS),
+                    timeout=max(10, PROTON_KEEPALIVE_SECONDS),
+                )
+                if message is None:
+                    save_state(name, {"status": "监听中"})
+                    continue
+                result = process_proton_message(mailbox, cfg, message)
+                if result:
+                    if store_code_result(cfg, result):
+                        mailbox.mark_as_read(result["message_id"])
+            except Exception as e:  # noqa: BLE001
+                log_exception(f"Proton 监听 account={name}", e)
+                save_state(name, {"status": "连接异常，正在重连"})
+                if stop_event.wait(5):
+                    break
+                mailbox.connect()
+                scan_proton_unread_once(mailbox, cfg)
+                save_state(name, {"status": "监听中"})
+    except ProtonAuthorizationRequired as e:
+        save_state(name, {"status": str(e)})
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"启动 Proton 监听 account={name}", e)
+        save_state(name, {"status": f"启动失败: {e}"})
+    finally:
+        with MAIL_WATCHERS_LOCK:
+            current = MAIL_WATCHERS.get(name)
+            if current and current.get("thread") is threading.current_thread():
+                MAIL_WATCHERS.pop(name, None)
+
+
+def start_mail_watcher(cfg: AccountConfig) -> bool:
+    if not cfg.get("enabled", True):
+        save_state(cfg["name"], {"status": "已停用"})
+        return False
+    ensure_mail_state(cfg)
+    if not EXTERNAL_WATCHERS:
+        save_state(cfg["name"], {"status": EXTERNAL_WATCHERS_DISABLED_STATUS})
+        return False
+    provider = cfg.get("provider", "gmail")
+    if provider == "proton" and cfg.get("delivery_mode") == "relay":
+        save_state(cfg["name"], {"status": "等待本地中继"})
+        return False
+    targets = {
+        "gmail": watch_gmail_account,
+        "outlook": watch_outlook_account,
+        "proton": watch_proton_account,
+    }
+    target = targets.get(provider)
+    if target is None:
+        save_state(cfg["name"], {"status": f"不支持的邮箱类型: {provider}"})
+        return False
+    with MAIL_WATCHERS_LOCK:
+        current = MAIL_WATCHERS.get(cfg["name"])
+        if current and current.get("thread") and current["thread"].is_alive():
+            return False
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=target,
+            args=(cfg, stop_event),
+            daemon=True,
+            name=f"{provider}-{cfg['name']}",
+        )
+        MAIL_WATCHERS[cfg["name"]] = {
+            "thread": thread,
+            "stop_event": stop_event,
+            "provider": provider,
+        }
+        thread.start()
+    return True
+
+
+def stop_mail_watcher(name: str, cancel_auth: bool = True) -> None:
+    with MAIL_WATCHERS_LOCK:
+        current = MAIL_WATCHERS.pop(name, None)
+    if current:
+        current["stop_event"].set()
+        thread = current.get("thread")
+        if thread and thread is not threading.current_thread():
+            timeout = (
+                max(10, PROTON_KEEPALIVE_SECONDS) + 2
+                if current.get("provider") == "proton"
+                else CHECK_INTERVAL_SECONDS + 2
+            )
+            thread.join(timeout=timeout)
+
+    if cancel_auth:
+        with AUTH_SESSION_LOCK:
+            session = AUTH_SESSIONS.get(name)
+            if session:
+                session["error"] = "账号监听已停止"
+                event = session.get("event")
+                if hasattr(event, "set"):
+                    event.set()
+        with OUTLOOK_AUTH_SESSION_LOCK:
+            stale_states = [
+                state
+                for state, session in OUTLOOK_AUTH_SESSIONS.items()
+                if isinstance(session.get("cfg"), dict)
+                and session["cfg"].get("name") == name
+            ]
+            for state in stale_states:
+                OUTLOOK_AUTH_SESSIONS.pop(state, None)
+
+
+def complete_managed_gmail_auth(
+    session: Dict[str, object], credentials: Credentials
+) -> AccountConfig:
+    raw_cfg = session.get("cfg")
+    if not isinstance(raw_cfg, dict):
+        raise RuntimeError("Gmail 授权会话缺少账号配置")
+    cfg = dict(raw_cfg)
+    service = build("gmail", "v1", credentials=credentials)
+    profile = service.users().getProfile(userId="me").execute()
+    email = str(profile.get("emailAddress") or "").strip()
+    if not email:
+        raise RuntimeError("Google 授权成功，但无法读取 Gmail 地址")
+
+    if session.get("managed_action") == "reauth" and cfg.get("email") not in {email, "未配置", "等待授权"}:
+        raise RuntimeError(f"选择的 Gmail 账号与原账号不一致：{email}")
+    if session.get("managed_action") == "add":
+        with MAIL_ACCOUNTS_LOCK:
+            duplicate = next(
+                (
+                    item
+                    for item in ACCOUNTS
+                    if item.get("provider", "gmail") == "gmail"
+                    and item["email"].lower() == email.lower()
+                ),
+                None,
+            )
+        if duplicate:
+            cfg = dict(duplicate)
+
+    cfg["email"] = email
+    cfg["provider"] = "gmail"
+    cfg["enabled"] = True
+    stop_mail_watcher(str(cfg["name"]), cancel_auth=False)
+    write_json_atomic(str(cfg["token_file"]), json.loads(credentials.to_json()))
+
+    with MAIL_ACCOUNTS_LOCK:
+        index = next((i for i, item in enumerate(ACCOUNTS) if item["name"] == cfg["name"]), None)
+        if index is None:
+            ACCOUNTS.append(cfg)
+        else:
+            ACCOUNTS[index] = cfg
+    save_mail_accounts()
+    ensure_mail_state(cfg)
+    save_state(cfg["name"], {"email": email, "status": "授权完成，正在启动"})
+    start_mail_watcher(cfg)
+    return cfg
+
+
+def complete_managed_outlook_auth(
+    session: Dict[str, Any],
+    response: Dict[str, str],
+) -> AccountConfig:
+    authorization = session.get("authorization")
+    flow = session.get("flow")
+    raw_cfg = session.get("cfg")
+    if not isinstance(authorization, OutlookAuthorization):
+        raise RuntimeError("Outlook 授权会话数据异常")
+    if not isinstance(flow, dict) or not isinstance(raw_cfg, dict):
+        raise RuntimeError("Outlook 授权会话缺少账号配置")
+
+    access_token = authorization.complete(flow, response)
+    profile = fetch_outlook_profile(access_token)
+    email = profile["email"]
+    cfg: AccountConfig = dict(raw_cfg)
+    action = str(session.get("managed_action") or "add")
+    expected_email = str(cfg.get("email") or "")
+
+    if (
+        action == "reauth"
+        and expected_email not in {"未配置", "等待授权"}
+        and expected_email.lower() != email.lower()
+    ):
+        raise RuntimeError(f"选择的 Outlook 账号与原账号不一致：{email}")
+
+    if action == "add":
+        with MAIL_ACCOUNTS_LOCK:
+            duplicate = next(
+                (
+                    item
+                    for item in ACCOUNTS
+                    if item.get("provider") == "outlook"
+                    and item["email"].lower() == email.lower()
+                ),
+                None,
+            )
+        if duplicate:
+            cfg = dict(duplicate)
+
+    cfg["email"] = email
+    cfg["provider"] = "outlook"
+    cfg["enabled"] = True
+    stop_mail_watcher(str(cfg["name"]), cancel_auth=False)
+    write_json_atomic(str(cfg["token_file"]), authorization.serialized_cache())
+
+    with MAIL_ACCOUNTS_LOCK:
+        index = next(
+            (i for i, item in enumerate(ACCOUNTS) if item["name"] == cfg["name"]),
+            None,
+        )
+        if index is None:
+            ACCOUNTS.append(cfg)
+        else:
+            ACCOUNTS[index] = cfg
+    save_mail_accounts()
+    ensure_mail_state(cfg)
+    save_state(cfg["name"], {"email": email, "status": "授权完成，正在启动"})
+    start_mail_watcher(cfg)
+    return cfg
+
+
+def account_auth_file(cfg: AccountConfig) -> str:
+    if cfg.get("provider", "gmail") == "proton":
+        return str(cfg.get("session_file") or "")
+    return str(cfg.get("token_file") or "")
+
+
+def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
+    with STATE_LOCK:
+        state = dict(STATE.get(cfg["name"], {}))
+    delivery_mode = cfg.get("delivery_mode", "direct")
+    is_relay = cfg.get("provider") == "proton" and delivery_mode == "relay"
+    auth_file = account_auth_file(cfg)
+    return {
+        "name": cfg["name"],
+        "email": cfg["email"],
+        "provider": cfg.get("provider", "gmail"),
+        "delivery_mode": delivery_mode,
+        "enabled": cfg.get("enabled", True),
+        "authorized": (
+            bool(MAIL_RELAY_SECRET)
+            if is_relay
+            else bool(auth_file and os.path.exists(auth_file))
+        ),
+        "token_updated_at": (
+            datetime.fromtimestamp(os.path.getmtime(auth_file), timezone.utc).isoformat()
+            if auth_file and os.path.exists(auth_file)
+            else None
+        ),
+        "status": state.get("status") or "未知",
+        "updated_at": state.get("updated_at"),
+        "has_gpt_password": gpt_password_for_account(cfg) is not None,
+        "has_totp_secret": totp_secret_for_account(cfg) is not None,
+    }
+
+
+def gpt_password_for_account(cfg: AccountConfig) -> Optional[str]:
+    return CREDENTIAL_STORE.get(cfg["email"], "password")
+
+
+def totp_secret_for_account(cfg: AccountConfig) -> Optional[str]:
+    return CREDENTIAL_STORE.get(cfg["email"], "secret")
+
+
+@app.on_event("startup")
+def start_watchers():
+    app.state.site_accounts.ensure_admin(_setting("ADMIN_ACCESS_PASSWORD", "TEST_ADMIN_PASSWORD") or os.getenv("ACCESS_PASSWORD", ""))
+    print(f"{APP_MODE} 版已启用网站账号登录；最高管理员用户名：admin")
+    print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
+    print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
+    save_mail_accounts()
+    load_histories()
+    load_codex_accounts()
+    CREDENTIAL_STORE.migrate(
+        list(ACCOUNTS) + [{"name": f"codex:{item['id']}", "email": item.get("email") or ""} for item in CODEX_ACCOUNTS.values()],
+        GPT_PASSWORD_STORE, TOTP_SECRET_STORE, {} if IS_TEST else os.environ,
+    )
+    import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
+    if EXTERNAL_WATCHERS:
+        threading.Thread(target=codex_refresh_loop, daemon=True).start()
+        for cfg in ACCOUNTS:
+            start_mail_watcher(cfg)
+    else:
+        for cfg in ACCOUNTS:
+            ensure_mail_state(cfg)
+            save_state(cfg["name"], {"status": EXTERNAL_WATCHERS_DISABLED_STATUS})
+
+
+@app.get("/")
+def index(request: FastAPIRequest):
+    if request.query_params.get("code") and request.query_params.get("state"):
+        return complete_oauth_callback(request)
+    return render_index_page(request)
+
+
+@app.get("/preview")
+def preview_page(request: FastAPIRequest):
+    target_id = request.query_params.get("user_id")
+    if target_id and not request.app.state.site_accounts.get_user(target_id):
+        return JSONResponse({"detail": "未找到预览账号"}, status_code=404)
+    return render_index_page(request, preview=True)
+
+
+def render_index_page(request: FastAPIRequest, preview: bool = False):
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    role = request_access_role(request)
+    admin_link = '<a class="small-btn" href="/admin">账号控制台</a>'
+    preview_banner = (
+        '<div class="preview-banner" role="status">用户账号主页预览：仅显示所选账号分组中已分配且上架的资源；请在网站账号页面选择预览对象。'
+        '<a href="/admin">返回账号控制台</a></div>'
+        if preview
+        else ""
+    )
+    subject_id = request.query_params.get("user_id")
+    if not subject_id and request.state.site_user:
+        subject_id = request.state.site_user["id"]
+    preview_script = ("<script>window.__USER_PREVIEW__ = true;window.__PREVIEW_USER_ID__ = "
+                      + json.dumps(subject_id) + ";</script>") if preview else ""
+    return HTMLResponse(
+        page
+        .replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if role == "admin" and not preview else "")
+        .replace("<!-- PREVIEW_BANNER -->", preview_banner)
+        .replace("<!-- PREVIEW_SCRIPT -->", preview_script),
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/admin")
+def admin_page():
+    return FileResponse(
+        STATIC_DIR / "admin.html",
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/codes")
+def get_codes(request: FastAPIRequest):
+    with MAIL_ACCOUNTS_LOCK:
+        accounts = {item["name"]: item for item in ACCOUNTS}
+    with STATE_LOCK:
+        data = []
+        for name, cfg in accounts.items():
+            if not can_access_account(request, cfg["email"]):
+                continue
+            item = dict(STATE.get(name, {}))
+            item.update(name=name, email=cfg["email"], enabled=cfg.get("enabled", True))
+            item["has_gpt_password"] = gpt_password_for_account(cfg) is not None
+            item["has_totp_secret"] = totp_secret_for_account(cfg) is not None
+            data.append(item)
+    return JSONResponse(
+        content={"items": data, "updated_at": now_iso()},
+        headers={"Cache-Control": "no-store, private"},
+    )
+
+
+@app.post("/api/internal/mail-relay")
+async def receive_mail_relay(request: FastAPIRequest):
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "邮件中继请求过大"}, status_code=413)
+
+    try:
+        timestamp = verify_relay_request(
+            MAIL_RELAY_SECRET,
+            request.headers.get("x-mail-relay-timestamp", ""),
+            request.headers.get("x-mail-relay-nonce", ""),
+            request.headers.get("x-mail-relay-signature", ""),
+            body,
+            max_clock_skew_seconds=max(30, MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS),
+        )
+    except RelayAuthenticationError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=401)
+
+    try:
+        message = parse_relay_message(json.loads(body.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, RelayValidationError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    cfg = find_mail_account(message.account_name)
+    if not cfg or cfg.get("provider") != "proton":
+        return JSONResponse(
+            content={"detail": f"未找到 Proton 账号：{message.account_name}"},
+            status_code=404,
+        )
+    if cfg.get("delivery_mode") != "relay":
+        return JSONResponse(content={"detail": "该 Proton 账号未启用中继模式"}, status_code=409)
+    if not cfg.get("enabled", True):
+        return JSONResponse(content={"detail": "该 Proton 账号已停用"}, status_code=409)
+
+    nonce = request.headers.get("x-mail-relay-nonce", "")
+    with MAIL_RELAY_REPLAY_LOCK:
+        if not MAIL_RELAY_REPLAY_GUARD.consume(nonce, timestamp):
+            return JSONResponse(content={"detail": "邮件中继请求已处理"}, status_code=409)
+
+    inserted = store_code_result(
+        cfg,
+        {
+            "code": message.code,
+            "message_id": message.message_id,
+            "subject": message.subject,
+        },
+        status="已通过本地中继接收",
+    )
+    return JSONResponse(
+        content={"ok": True, "duplicate": not inserted, "updated_at": now_iso()},
+        status_code=201 if inserted else 200,
+    )
+
+
+@app.post("/api/accounts/{account_name}/gpt-password")
+@app.post("/api/mail/accounts/{account_name}/gpt-password")
+@app.post("/api/gmail/accounts/{account_name}/gpt-password")
+def get_gpt_password(account_name: str, request: FastAPIRequest):
+    cfg = find_login_account(account_name)
+    if not cfg or not can_access_account(request, cfg["email"]):
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+    password = gpt_password_for_account(cfg)
+    if password is None:
+        return JSONResponse(content={"detail": "该账号未配置 GPT 密码"}, status_code=404)
+    return JSONResponse(
+        content={"password": password},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.put("/api/admin/accounts/{account_name}/gpt-password")
+@app.put("/api/admin/mail/accounts/{account_name}/gpt-password")
+async def set_gpt_password(account_name: str, request: FastAPIRequest):
+    cfg = find_login_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "GPT 密码内容过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        password = payload.get("password") if isinstance(payload, dict) else None
+        if not isinstance(password, str):
+            raise AccountPasswordError("请求缺少 GPT 密码")
+        CREDENTIAL_STORE.set(cfg["email"], "password", password)
+    except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    return JSONResponse(
+        content={"ok": True, "item": sanitize_login_account(cfg)},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.delete("/api/admin/accounts/{account_name}/gpt-password")
+@app.delete("/api/admin/mail/accounts/{account_name}/gpt-password")
+def delete_gpt_password(account_name: str):
+    cfg = find_login_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+    CREDENTIAL_STORE.delete(cfg["email"], "password")
+    return JSONResponse(
+        content={"ok": True, "item": sanitize_login_account(cfg)},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.post("/api/accounts/{account_name}/totp-code")
+def get_totp_code(account_name: str, request: FastAPIRequest):
+    cfg = find_login_account(account_name)
+    if not cfg or not can_access_account(request, cfg["email"]):
+        return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    secret = totp_secret_for_account(cfg)
+    if secret is None:
+        return JSONResponse(content={"detail": "该账号未配置身份验证器(2FA)"}, status_code=404)
+    try:
+        result = generate_totp_code(secret, time.time())
+    except AccountPasswordError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(
+        content=result,
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.post("/api/accounts/{account_name}/totp-secret")
+@app.post("/api/mail/accounts/{account_name}/totp-secret")
+@app.post("/api/gmail/accounts/{account_name}/totp-secret")
+def get_totp_secret(account_name: str, request: FastAPIRequest):
+    cfg = find_login_account(account_name)
+    if not cfg or not can_access_account(request, cfg["email"]):
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+    secret = totp_secret_for_account(cfg)
+    if secret is None:
+        return JSONResponse(content={"detail": "该账号未配置身份验证器(2FA)"}, status_code=404)
+    return JSONResponse(
+        content={"secret": secret},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+@app.put("/api/admin/accounts/{account_name}/totp-secret")
+@app.put("/api/admin/mail/accounts/{account_name}/totp-secret")
+async def set_totp_secret(account_name: str, request: FastAPIRequest):
+    cfg = find_login_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "2FA 密钥内容过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        secret = normalize_totp_secret(
+            payload.get("secret") if isinstance(payload, dict) else None
+        )
+        CREDENTIAL_STORE.set(cfg["email"], "secret", secret)
+    except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(content={"ok": True, "item": sanitize_login_account(cfg)})
+
+@app.delete("/api/admin/accounts/{account_name}/totp-secret")
+@app.delete("/api/admin/mail/accounts/{account_name}/totp-secret")
+def delete_totp_secret(account_name: str):
+    cfg = find_login_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
+    CREDENTIAL_STORE.delete(cfg["email"], "secret")
+    return JSONResponse(content={"ok": True, "item": sanitize_login_account(cfg)})
+
+@app.get("/api/admin/mail/accounts")
+@app.get("/api/admin/gmail/accounts")
+def get_mail_accounts():
+    with MAIL_ACCOUNTS_LOCK:
+        items = [sanitize_mail_account(item) for item in ACCOUNTS]
+    return JSONResponse(content={"items": items, "updated_at": now_iso()})
+
+
+@app.get("/api/admin/mail-filters")
+@app.get("/api/admin/mail/filters")
+def get_mail_filters():
+    with MAIL_FILTERS_LOCK:
+        items = [dict(item) for item in MAIL_FILTERS]
+    return JSONResponse(content={"items": items, "updated_at": now_iso()})
+
+
+async def mail_filter_payload(request: FastAPIRequest) -> Dict[str, Any]:
+    body = await request.body()
+    if len(body) > 8192:
+        raise ValueError("收件设置内容过长")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("收件设置必须是 JSON") from error
+    if not isinstance(payload, dict):
+        raise ValueError("收件设置格式无效")
+    return payload
+
+
+@app.post("/api/admin/mail-filters")
+@app.post("/api/admin/mail/filters")
+async def create_mail_filter(request: FastAPIRequest):
+    global MAIL_FILTERS
+    try:
+        item = normalize_mail_filter(await mail_filter_payload(request))
+    except ValueError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    item["builtin"] = False
+    with MAIL_FILTERS_LOCK:
+        if any(existing["id"] == item["id"] for existing in MAIL_FILTERS):
+            item["id"] = secrets.token_hex(8)
+        MAIL_FILTERS = [*MAIL_FILTERS, item]
+    save_mail_filters()
+    return JSONResponse(content={"item": item}, status_code=201)
+
+
+@app.put("/api/admin/mail-filters/{filter_id}")
+@app.put("/api/admin/mail/filters/{filter_id}")
+async def update_mail_filter(filter_id: str, request: FastAPIRequest):
+    global MAIL_FILTERS
+    with MAIL_FILTERS_LOCK:
+        current = next((item for item in MAIL_FILTERS if item["id"] == filter_id), None)
+    if not current:
+        return JSONResponse(content={"detail": "未找到收件设置"}, status_code=404)
+    if current.get("builtin"):
+        return JSONResponse(content={"detail": "OpenAI 内置收件设置不可修改"}, status_code=409)
+    try:
+        item = normalize_mail_filter({**current, **(await mail_filter_payload(request)), "id": filter_id})
+    except ValueError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    item["builtin"] = False
+    with MAIL_FILTERS_LOCK:
+        MAIL_FILTERS = [item if existing["id"] == filter_id else existing for existing in MAIL_FILTERS]
+    save_mail_filters()
+    return JSONResponse(content={"item": item})
+
+
+@app.delete("/api/admin/mail-filters/{filter_id}")
+@app.delete("/api/admin/mail/filters/{filter_id}")
+def delete_mail_filter(filter_id: str):
+    global MAIL_FILTERS
+    with MAIL_FILTERS_LOCK:
+        current = next((item for item in MAIL_FILTERS if item["id"] == filter_id), None)
+        if not current:
+            return JSONResponse(content={"detail": "未找到收件设置"}, status_code=404)
+        if current.get("builtin"):
+            return JSONResponse(content={"detail": "OpenAI 内置收件设置不可删除"}, status_code=409)
+        MAIL_FILTERS = [item for item in MAIL_FILTERS if item["id"] != filter_id]
+    save_mail_filters()
+    return JSONResponse(content={"ok": True})
+
+
+@app.get("/api/admin/gmail/auth/start")
+def start_gmail_admin_auth(account_name: Optional[str] = None):
+    if account_name:
+        existing = find_gmail_account(account_name)
+        if not existing:
+            return JSONResponse(content={"detail": f"未找到 Gmail 账号：{account_name}"}, status_code=404)
+        cfg = dict(existing)
+    else:
+        cfg = next_gmail_account_config()
+
+    if not os.path.exists(cfg["credential_file"]):
+        return JSONResponse(
+            content={"detail": f"Google OAuth 配置不存在：{cfg['credential_file']}"},
+            status_code=400,
+        )
+    try:
+        session = create_auth_session(cfg, managed=True)
+        session["managed_action"] = "reauth" if account_name else "add"
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"发起 Gmail 授权 account={cfg['name']}", e)
+        return JSONResponse(content={"detail": format_google_auth_error(e)}, status_code=400)
+    return RedirectResponse(url=str(session["auth_url"]), status_code=302)
+
+
+@app.post("/api/admin/gmail/auth/complete")
+async def complete_gmail_admin_auth(request: FastAPIRequest):
+    body = await request.body()
+    if len(body) > 16384:
+        return JSONResponse(content={"detail": "Google 授权返回链接过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        callback = parse_google_callback_link(
+            str(payload.get("callback_url") or "") if isinstance(payload, dict) else ""
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, GoogleCallbackLinkError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    with AUTH_SESSION_LOCK:
+        session = AUTH_SESSIONS.get(callback.state)
+    if not session:
+        return JSONResponse(
+            content={"detail": "授权会话不存在或已完成，请重新点击添加或重新授权"},
+            status_code=404,
+        )
+
+    try:
+        cfg = finish_google_auth_session(session, callback)
+    except Exception as error:  # noqa: BLE001
+        log_exception(
+            f"提交 Google OAuth 返回链接 account={session.get('account_name') or 'unknown'}",
+            error,
+        )
+        detail = fail_google_auth_session(session, error)
+        return JSONResponse(content={"detail": detail}, status_code=400)
+
+    content: Dict[str, Any] = {
+        "ok": True,
+        "detail": (
+            "Google 授权完成，账号已开始监听"
+            if cfg
+            else "Google 授权链接已提交，后台正在保存 token"
+        ),
+    }
+    if cfg:
+        content["item"] = sanitize_mail_account(cfg)
+    return JSONResponse(
+        content=content,
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/admin/outlook/auth/start")
+def start_outlook_admin_auth(account_name: Optional[str] = None):
+    if account_name:
+        existing = find_outlook_account(account_name)
+        if not existing:
+            return outlook_callback_page(
+                False, f"未找到 Outlook 账号：{account_name}", 404,
+            )
+        cfg = dict(existing)
+        action = "reauth"
+    else:
+        cfg = next_outlook_account_config()
+        action = "add"
+
+    try:
+        settings = load_outlook_settings(
+            f"{APP_BASE_URL}/api/admin/outlook/auth/callback"
+        )
+        state = base64_url_no_pad(secrets.token_bytes(32))
+        authorization = OutlookAuthorization(settings, str(cfg["token_file"]))
+        flow = authorization.start(state)
+        session = {
+            "state": state,
+            "cfg": cfg,
+            "managed_action": action,
+            "authorization": authorization,
+            "flow": flow,
+            "created_at": now_iso(),
+        }
+        with OUTLOOK_AUTH_SESSION_LOCK:
+            OUTLOOK_AUTH_SESSIONS[state] = session
+    except OutlookConfigurationError as error:
+        log_exception(f"发起 Outlook 授权 account={cfg['name']}", error)
+        return outlook_callback_page(False, str(error), 503, setup_required=True)
+    except Exception as error:  # noqa: BLE001
+        log_exception(
+            f"发起 Outlook 授权 account={cfg['name']}",
+            error,
+        )
+        return outlook_callback_page(False, str(error), 400)
+    return RedirectResponse(url=str(flow["auth_uri"]), status_code=302)
+
+
+def outlook_callback_page(
+    ok: bool, message: str, status_code: int, setup_required: bool = False,
+) -> HTMLResponse:
+    title = "Outlook 配置未完成" if setup_required else ("Outlook 授权完成" if ok else "Outlook 授权失败")
+    setup_help = ""
+    if setup_required:
+        setup_help = """
+            <p>请由部署管理员完成以下一次性设置，再返回控制台添加邮箱：</p>
+            <ol>
+              <li>打开 <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra 管理中心</a>，在“应用注册”中新建应用，支持的账号类型选择包含个人 Microsoft 账号的选项。</li>
+              <li>在“身份验证”中添加 Web 平台，登记回调地址：<code>https://你的公网域名/api/admin/outlook/auth/callback</code>，必须与下面的配置完全一致。</li>
+              <li>在“API 权限”中添加 Microsoft Graph <strong>委托权限</strong>：<code>User.Read</code> 和 <code>Mail.ReadWrite</code>。</li>
+              <li>从“概述”复制“应用程序(客户端) ID”；在“证书和密码”中新建客户端密码，复制密码的<strong>值</strong>，不是密码 ID。</li>
+              <li>在服务器项目根目录的 <code>.env</code> 中填写下列配置，然后重启服务。</li>
+            </ol>
+            <pre>OUTLOOK_CLIENT_ID=应用程序客户端ID
+OUTLOOK_CLIENT_SECRET=客户端密码值
+OUTLOOK_TENANT=common
+OUTLOOK_OAUTH_REDIRECT_URI=https://你的公网域名/api/admin/outlook/auth/callback</pre>
+            <p>本地调试可使用 <code>http://localhost:8001/api/admin/outlook/auth/callback</code>，前提是浏览器能通过该地址访问本服务，并在 Microsoft 中登记相同地址。</p>
+            <p>无需开启 POP/IMAP。配置完成后点击“添加 Outlook”，登录目标邮箱并同意授权；程序才会开始读取验证码邮件。</p>
+            <p><a href="https://learn.microsoft.com/graph/auth-register-app-v2" target="_blank" rel="noopener noreferrer">Microsoft 官方应用注册说明</a></p>
+        """
+    color = "#15803d" if ok else "#b91c1c"
+    redirect_script = (
+        '<script>setTimeout(() => { window.location.href = "/admin"; }, 1200);</script>'
+        if ok
+        else ""
+    )
+    return HTMLResponse(
+        f"""
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>{title}</title>
+          <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 32px; background: #f5f7fa; color: #1f2937; }}
+            main {{ max-width: 560px; margin: 60px auto; padding: 24px; background: #fff; border: 1px solid #dfe3e8; border-radius: 8px; }}
+            h1 {{ margin: 0 0 12px; color: {color}; font-size: 22px; }}
+            p {{ line-height: 1.6; }}
+            li {{ line-height: 1.6; margin-bottom: 8px; }}
+            pre {{ white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: #f5f7fa; }}
+            code {{ overflow-wrap: anywhere; }}
+            a {{ color: #2563eb; }}
+          </style>
+        </head>
+        <body>
+          <main>
+            <h1>{title}</h1>
+            <p>{html.escape(message)}</p>
+            {setup_help}
+            <p><a href="/admin">返回账号控制台</a></p>
+          </main>
+          {redirect_script}
+        </body>
+        </html>
+        """,
+        status_code=status_code,
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.api_route(
+    "/api/admin/outlook/auth/callback",
+    methods=["GET", "POST"],
+    response_class=HTMLResponse,
+)
+async def complete_outlook_admin_auth(request: FastAPIRequest):
+    if request.method == "POST":
+        body = await request.body()
+        if len(body) > 16384:
+            return outlook_callback_page(False, "Outlook 授权回调内容过长", 413)
+        try:
+            response = dict(
+                urllib.parse.parse_qsl(
+                    body.decode("utf-8"),
+                    keep_blank_values=True,
+                )
+            )
+        except UnicodeDecodeError:
+            return outlook_callback_page(False, "Outlook 授权回调编码无效", 400)
+    else:
+        response = dict(request.query_params)
+    state = str(response.get("state") or "").strip()
+    if not state:
+        return outlook_callback_page(False, "授权回调缺少 state", 400)
+
+    with OUTLOOK_AUTH_SESSION_LOCK:
+        session = OUTLOOK_AUTH_SESSIONS.pop(state, None)
+    if not session:
+        return outlook_callback_page(
+            False,
+            "授权会话不存在或已完成，请重新点击添加或重新授权。",
+            404,
+        )
+
+    try:
+        cfg = complete_managed_outlook_auth(session, response)
+    except Exception as error:  # noqa: BLE001
+        raw_cfg = session.get("cfg")
+        account_name = (
+            str(raw_cfg.get("name") or "unknown")
+            if isinstance(raw_cfg, dict)
+            else "unknown"
+        )
+        log_exception(
+            f"Outlook OAuth 回调 account={account_name}",
+            error,
+        )
+        return outlook_callback_page(False, str(error), 400)
+    return outlook_callback_page(
+        True,
+        f"{cfg['email']} 已授权并开始监听验证码。",
+        200,
+    )
+
+
+@app.post("/api/admin/mail/accounts/{account_name}/enable")
+@app.post("/api/admin/gmail/accounts/{account_name}/enable")
+def enable_mail_account(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    is_relay = (
+        cfg.get("provider") == "proton" and cfg.get("delivery_mode") == "relay"
+    )
+    if not is_relay:
+        auth_file = account_auth_file(cfg)
+        if not auth_file or not os.path.exists(auth_file):
+            return JSONResponse(content={"detail": "账号缺少授权，请先重新授权"}, status_code=409)
+    cfg["enabled"] = True
+    save_mail_accounts()
+    start_mail_watcher(cfg)
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)})
+
+
+@app.post("/api/admin/mail/accounts/{account_name}/disable")
+@app.post("/api/admin/gmail/accounts/{account_name}/disable")
+def disable_mail_account(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    cfg["enabled"] = False
+    save_mail_accounts()
+    stop_mail_watcher(account_name)
+    save_state(account_name, {"status": "已停用"})
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)})
+
+
+@app.delete("/api/admin/mail/accounts/{account_name}")
+@app.delete("/api/admin/gmail/accounts/{account_name}")
+def delete_mail_account(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    stop_mail_watcher(account_name)
+    with MAIL_ACCOUNTS_LOCK:
+        ACCOUNTS[:] = [item for item in ACCOUNTS if item["name"] != account_name]
+    save_mail_accounts()
+    with STATE_LOCK:
+        STATE.pop(account_name, None)
+    with HISTORY_LOCK:
+        CODE_HISTORY.pop(account_name, None)
+    credentials_deleted = delete_unlinked_credentials(cfg["email"])
+    return JSONResponse(
+        content={
+            "ok": True,
+            "account": account_name,
+            "data_preserved": True,
+            "gpt_password_deleted": credentials_deleted,
+            "totp_secret_deleted": credentials_deleted,
+        }
+    )
+
+
+@app.post("/api/admin/proton/accounts")
+def register_proton_account():
+    try:
+        credentials = load_proton_credentials(PROTON_CONFIG_FILE)
+    except Exception as e:  # noqa: BLE001
+        log_exception("读取 Proton 配置", e)
+        return JSONResponse(content={"detail": str(e)}, status_code=400)
+
+    with MAIL_ACCOUNTS_LOCK:
+        existing = next(
+            (
+                item
+                for item in ACCOUNTS
+                if item.get("provider") == "proton"
+                and item.get("email", "").lower() == credentials.username.lower()
+            ),
+            None,
+        )
+    if existing:
+        ensure_mail_state(existing)
+        return JSONResponse(content={"item": sanitize_mail_account(existing)})
+
+    name = next_account_name()
+    cfg: AccountConfig = {
+        "name": name,
+        "email": credentials.username,
+        "provider": "proton",
+        "delivery_mode": PROTON_DELIVERY_MODE,
+        "session_file": os.path.join(PROTON_SESSION_DIR, f"{name}.pickle"),
+        "config_file": PROTON_CONFIG_FILE,
+        "enabled": True,
+    }
+    with MAIL_ACCOUNTS_LOCK:
+        ACCOUNTS.append(cfg)
+    save_mail_accounts()
+    ensure_mail_state(cfg)
+    save_state(name, {"status": "等待 Proton 登录"})
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)}, status_code=201)
+
+
+@app.post("/api/admin/proton/accounts/{account_name}/login")
+def login_proton_account(account_name: str):
+    cfg = find_mail_account(account_name)
+    if not cfg or cfg.get("provider") != "proton":
+        return JSONResponse(content={"detail": f"未找到 Proton 账号：{account_name}"}, status_code=404)
+    if cfg.get("delivery_mode") == "relay":
+        return JSONResponse(
+            content={"detail": "该账号使用本地中继模式，请在能访问 Proton 的电脑运行 proton_relay.py"},
+            status_code=409,
+        )
+    try:
+        credentials = load_proton_credentials(str(cfg.get("config_file") or PROTON_CONFIG_FILE))
+        if cfg.get("email", "").lower() != credentials.username.lower():
+            raise RuntimeError("Proton 配置邮箱与账号记录不一致")
+        stop_mail_watcher(account_name)
+        save_state(account_name, {"status": "正在登录 Proton"})
+        ProtonMailbox(str(cfg["session_file"])).login_fresh(credentials)
+    except Exception as e:  # noqa: BLE001
+        log_exception(f"Proton 登录 account={account_name}", e)
+        detail = redact_log_text(e)
+        save_state(account_name, {"status": f"登录失败: {detail}"})
+        return JSONResponse(
+            content={"detail": f"Proton 登录失败：{detail}。若触发 CAPTCHA，请先在终端完成登录。"},
+            status_code=400,
+        )
+    cfg["enabled"] = True
+    save_mail_accounts()
+    save_state(account_name, {"status": "登录完成，正在启动"})
+    start_mail_watcher(cfg)
+    return JSONResponse(content={"item": sanitize_mail_account(cfg)})
+
+
+def parse_codex_login_addr() -> tuple:
+    raw = CODEX_LOGIN_ADDR or urllib.parse.urlparse(CODEX_OAUTH_REDIRECT_BASE).netloc
+    if "://" in raw:
+        raw = urllib.parse.urlparse(raw).netloc
+    host, separator, port_text = raw.rpartition(":")
+    if not separator:
+        return raw or "localhost", 1455
+    return host or "localhost", int(port_text)
+
+
+def codex_callback_result(params: Dict[str, str]) -> tuple:
+    error_code = params.get("error", "").strip()
+    error_description = params.get("error_description", "").strip()
+    if error_code:
+        detail = error_description or error_code
+        return False, f"Codex 授权失败：{detail}", 400
+
+    code = params.get("code", "").strip()
+    state = params.get("state", "").strip()
+    if not code or not state:
+        return False, "Codex 授权回调缺少 code 或 state", 400
+
+    try:
+        imported = complete_codex_oauth_callback(code, state)
+    except CodexCallbackLinkError as e:
+        log_exception("Codex OAuth 账号关联校验", e)
+        return False, f"Codex 授权导入失败：{e}", 400
+    except Exception as e:  # noqa: BLE001
+        log_exception("Codex OAuth 回调", e)
+        return False, f"Codex 授权导入失败：{e}", 500
+
+    label = imported[0].get("label") if imported else "Codex 账号"
+    return True, f"{label} 已导入，auth 文件已保存到 {CODEX_AUTH_DIR}/", 200
+
+
+class CodexLoginHTTPServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+class CodexLoginCallbackHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/auth/callback":
+            self.send_error(404)
+            return
+
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+        ok, message, status_code = codex_callback_result(params)
+        body = codex_callback_html(ok, message, redirect_url=APP_BASE_URL if ok else None)
+        data = body.encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def ensure_codex_login_server() -> None:
+    global CODEX_LOGIN_SERVER
+    with CODEX_LOGIN_SERVER_LOCK:
+        if CODEX_LOGIN_SERVER is not None:
+            return
+        host, port = parse_codex_login_addr()
+        try:
+            server = CodexLoginHTTPServer((host, port), CodexLoginCallbackHandler)
+        except OSError as error:
+            raise RuntimeError(
+                f"Codex 登录回调端口 {host}:{port} 无法监听：{error}。"
+                "请确认没有其他程序占用，或设置 CODEX_LOGIN_ADDR/CODEX_OAUTH_REDIRECT_BASE。"
+            ) from error
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        CODEX_LOGIN_SERVER = server
+        print(f"Codex 授权回调监听中：http://{host}:{port}/auth/callback")
+
+
+@app.get("/api/codex/auth/start")
+def start_codex_auth(request: FastAPIRequest):
+    reason = request.query_params.get("reason", "import").strip() or "import"
+    account_id = request.query_params.get("account_id", "").strip()
+    target_account = None
+    if account_id:
+        with CODEX_ACCOUNTS_LOCK:
+            existing = CODEX_ACCOUNTS.get(account_id)
+            target_account = dict(existing) if existing else None
+        if not target_account:
+            return JSONResponse(
+                content={"detail": f"未找到 Codex 账号：{account_id}"},
+                status_code=404,
+            )
+        if not str(target_account.get("email") or "").strip():
+            return JSONResponse(
+                content={"detail": "目标 Codex 账号缺少邮箱，无法进行关联授权"},
+                status_code=409,
+            )
+    try:
+        ensure_codex_login_server()
+    except Exception as error:  # noqa: BLE001
+        log_exception("启动 Codex OAuth 回调服务", error)
+        return JSONResponse(content={"detail": str(error)}, status_code=500)
+    session = create_codex_auth_session(reason, target_account)
+    headers = {"Cache-Control": "no-store, private", "Pragma": "no-cache"}
+    if request.query_params.get("format") == "json":
+        return JSONResponse(content={"auth_url": session["auth_url"]}, headers=headers)
+    return RedirectResponse(url=str(session["auth_url"]), status_code=302, headers=headers)
+
+
+@app.post("/api/codex/auth/complete")
+async def complete_codex_auth_link(request: FastAPIRequest):
+    body = await request.body()
+    if len(body) > 16384:
+        return JSONResponse(content={"detail": "Codex 授权返回链接过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        callback = parse_codex_callback_link(
+            str(payload.get("callback_url") or "") if isinstance(payload, dict) else ""
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, CodexCallbackLinkError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+
+    with CODEX_AUTH_SESSION_LOCK:
+        session = CODEX_AUTH_SESSIONS.get(callback.state)
+    if not session:
+        return JSONResponse(
+            content={"detail": "授权会话不存在或已完成，请重新点击导入或重新授权"},
+            status_code=404,
+        )
+
+    ok, message, status_code = codex_callback_result(callback.params)
+    content: Dict[str, Any] = {"ok": ok, "detail": message}
+    if ok:
+        content["target_email"] = str(session.get("target_email") or "")
+    return JSONResponse(content=content, status_code=status_code)
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+def codex_auth_callback(request: FastAPIRequest):
+    ok, message, status_code = codex_callback_result(dict(request.query_params))
+    return codex_callback_page(ok, message, status_code=status_code)
+
+
+def codex_callback_html(ok: bool, message: str, redirect_url: Optional[str] = "/") -> str:
+    title = "Codex 授权完成" if ok else "Codex 授权失败"
+    color = "#166534" if ok else "#b91c1c"
+    escaped_message = html.escape(message)
+    redirect_script = (
+        f"<script>setTimeout(() => {{ window.location.href = {json.dumps(redirect_url)}; }}, 1200);</script>"
+        if ok and redirect_url
+        else ""
+    )
+    return f"""
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width,initial-scale=1" />
+          <title>{title}</title>
+          <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #1f2937; margin: 0; padding: 32px; }}
+            .card {{ max-width: 560px; margin: 60px auto; background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08); }}
+            h1 {{ color: {color}; margin: 0 0 12px; font-size: 22px; }}
+            p {{ line-height: 1.6; }}
+            a {{ color: #0ea5e9; }}
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>{title}</h1>
+            <p>{escaped_message}</p>
+            <p><a href="/">返回验证码页面</a></p>
+          </div>
+          {redirect_script}
+        </body>
+        </html>
+        """
+
+
+def codex_callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLResponse:
+    return HTMLResponse(codex_callback_html(ok, message), status_code=status_code)
+
+
+def delete_unlinked_credentials(email: str) -> bool:
+    if find_login_account("email:" + AccountCredentialStore.email_key(email)):
+        return False
+    CREDENTIAL_STORE.delete(email)
+    return True
+
+
+def account_groups() -> List[Dict[str, Any]]:
+    # Integrations retain their own OAuth lifecycle; login information belongs to the email.
+    with MAIL_ACCOUNTS_LOCK:
+        mail_accounts = list(ACCOUNTS)
+    with CODEX_ACCOUNTS_LOCK:
+        codex_accounts = [dict(item) for item in CODEX_ACCOUNTS.values()]
+    groups = {}
+    for kind, records in (("codex", codex_accounts), ("mail", mail_accounts)):
+        for record in records:
+            email = AccountCredentialStore.email_key(record.get("email"))
+            key = "email:" + email if "@" in email else f"{kind}:{record.get('id') or record.get('name')}"
+            group = groups.setdefault(key, {"key": key, "email": email, "listed": CREDENTIAL_STORE.get(email, "listed") is not False, "codex": [], "mail": [], **login_credentials(email)})
+            if kind == "codex":
+                item = sanitize_codex_account(record)
+            else:
+                with STATE_LOCK:
+                    item = dict(STATE.get(record["name"], {}))
+                item.update(sanitize_mail_account(record))
+            group[kind].append(item)
+    return list(groups.values())
+
+
+@app.get("/api/accounts")
+def get_accounts(request: FastAPIRequest):
+    items = account_groups()
+    items = [item for item in items if can_access_account(request, item["email"])]
+    return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
+
+
+async def resource_payload(request: FastAPIRequest, label: str) -> Dict[str, Any]:
+    body = await request.body()
+    if len(body) > 8192:
+        raise ResourceStoreError(f"{label}内容过长")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ResourceStoreError(f"{label}必须是 JSON") from error
+    if not isinstance(payload, dict):
+        raise ResourceStoreError(f"{label}格式无效")
+    return payload
+
+
+def resource_list_response(store: ResourceStore, request: FastAPIRequest, kind: str) -> JSONResponse:
+    return JSONResponse(
+        content={"items": [item for item in store.list_public() if can_access_resource(request, kind + ":" + item["id"])], "updated_at": now_iso()},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/coding-plans")
+def get_coding_plans(request: FastAPIRequest):
+    return resource_list_response(CODING_PLAN_STORE, request, "coding-plan")
+
+
+@app.get("/api/relay-accounts")
+def get_relay_accounts(request: FastAPIRequest):
+    return resource_list_response(RELAY_ACCOUNT_STORE, request, "relay-account")
+
+
+@app.get("/api/coding-plans/{plan_id}/api-key")
+@app.post("/api/coding-plans/{plan_id}/api-key")
+def get_coding_plan_api_key(plan_id: str, request: FastAPIRequest):
+    value = CODING_PLAN_STORE.get_secret(plan_id) if can_access_resource(request, "coding-plan:" + plan_id) else None
+    if value is None:
+        return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
+    return JSONResponse(
+        content={"api_key": value},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/relay-accounts/{account_id}/password")
+@app.post("/api/relay-accounts/{account_id}/password")
+def get_relay_account_password(account_id: str, request: FastAPIRequest):
+    value = RELAY_ACCOUNT_STORE.get_secret(account_id) if can_access_resource(request, "relay-account:" + account_id) else None
+    if value is None:
+        return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
+    return JSONResponse(
+        content={"password": value},
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
+@app.post("/api/admin/coding-plans")
+async def create_coding_plan(request: FastAPIRequest):
+    try:
+        item = CODING_PLAN_STORE.create(await resource_payload(request, "Coding Plan"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(content={"item": item}, status_code=201)
+
+
+@app.put("/api/admin/coding-plans/{plan_id}")
+async def update_coding_plan(plan_id: str, request: FastAPIRequest):
+    try:
+        item = CODING_PLAN_STORE.update(plan_id, await resource_payload(request, "Coding Plan"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    if item is None:
+        return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
+    return JSONResponse(content={"item": item})
+
+
+@app.delete("/api/admin/coding-plans/{plan_id}")
+def delete_coding_plan(plan_id: str):
+    if not CODING_PLAN_STORE.delete(plan_id):
+        return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
+    return JSONResponse(content={"ok": True})
+
+
+@app.post("/api/admin/relay-accounts")
+async def create_relay_account(request: FastAPIRequest):
+    try:
+        item = RELAY_ACCOUNT_STORE.create(await resource_payload(request, "中转站账号"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(content={"item": item}, status_code=201)
+
+
+@app.put("/api/admin/relay-accounts/{account_id}")
+async def update_relay_account(account_id: str, request: FastAPIRequest):
+    try:
+        item = RELAY_ACCOUNT_STORE.update(account_id, await resource_payload(request, "中转站账号"))
+    except ResourceStoreError as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    if item is None:
+        return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
+    return JSONResponse(content={"item": item})
+
+
+@app.delete("/api/admin/relay-accounts/{account_id}")
+def delete_relay_account(account_id: str):
+    if not RELAY_ACCOUNT_STORE.delete(account_id):
+        return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
+    return JSONResponse(content={"ok": True})
+
+
+@app.put("/api/admin/accounts/{account_name}/listing")
+async def set_account_listing(account_name: str, request: FastAPIRequest):
+    cfg = find_login_account(account_name)
+    if not cfg:
+        return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    body = await request.body()
+    if len(body) > 8192:
+        return JSONResponse(content={"detail": "请求内容过长"}, status_code=413)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        listed = payload.get("listed") if isinstance(payload, dict) else None
+        CREDENTIAL_STORE.set(cfg["email"], "listed", listed)
+    except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
+        return JSONResponse(content={"detail": str(error)}, status_code=400)
+    return JSONResponse(
+        content={"ok": True, "listed": listed},
+        headers={"Cache-Control": "no-store, private"},
+    )
+
+
+@app.delete("/api/admin/accounts/{account_name}")
+def delete_chatgpt_account(account_name: str):
+    groups = account_groups()
+    group = next((item for item in groups if item["key"] == account_name), None)
+    if group is None:
+        return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    for item in group["mail"]:
+        response = delete_mail_account(item["name"])
+        if response.status_code != 200:
+            return response
+    for item in group["codex"]:
+        response = delete_codex_account(item["id"])
+        if response.status_code != 200:
+            return response
+    CREDENTIAL_STORE.delete(group["email"])
+    return JSONResponse(content={"ok": True})
+
+
+@app.get("/api/codex/accounts")
+def get_codex_accounts():
+    with CODEX_ACCOUNTS_LOCK:
+        items = [sanitize_codex_account(item) for item in CODEX_ACCOUNTS.values()]
+    items.sort(key=lambda item: str(item.get("label") or item.get("id") or ""))
+    return JSONResponse(content={"items": items, "updated_at": now_iso()})
+
+
+@app.post("/api/codex/accounts")
+async def import_codex_accounts(request: FastAPIRequest):
+    body = (await request.body()).decode("utf-8", errors="replace").strip()
+    if not body:
+        return JSONResponse(content={"detail": "请求内容为空"}, status_code=400)
+
+    raw_text = body
+    try:
+        payload = json.loads(body)
+        if isinstance(payload, dict):
+            raw_value = (
+                payload.get("auth_json")
+                or payload.get("session_json")
+                or payload.get("content")
+                or payload.get("data")
+            )
+            if isinstance(raw_value, str) and raw_value.strip():
+                raw_text = raw_value.strip()
+            else:
+                raw_text = json.dumps(payload)
+        elif isinstance(payload, str):
+            raw_text = payload.strip()
+    except Exception:
+        pass
+
+    try:
+        imported = import_codex_auth_json(raw_text)
+    except Exception as e:  # noqa: BLE001
+        log_exception("导入 Codex auth 内容", e)
+        return JSONResponse(content={"detail": str(e)}, status_code=400)
+
+    return JSONResponse(content={"items": imported, "updated_at": now_iso()})
+
+
+@app.post("/api/codex/accounts/{account_id}/refresh")
+def refresh_codex_account(account_id: str):
+    if not EXTERNAL_WATCHERS:
+        return JSONResponse(
+            content={
+                "detail": (
+                    "测试模式未连接外部 Codex 接口，当前使用启动时的数据快照"
+                    if IS_TEST
+                    else "外部监听未启用，当前未连接 Codex 接口"
+                )
+            },
+            status_code=409,
+        )
+    with CODEX_ACCOUNTS_LOCK:
+        record = CODEX_ACCOUNTS.get(account_id)
+    if not record:
+        return JSONResponse(
+            content={"detail": f"未找到 Codex 账号：{account_id}"},
+            status_code=404,
+        )
+
+    try:
+        updated = refresh_codex_account_record(
+            record,
+            force_subscription=True,
+            force_token_refresh=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        log_exception(
+            f"手动刷新 Codex 账号 account={record.get('email') or account_id}",
+            e,
+        )
+        updated = dict(record)
+        updated["status"] = "刷新失败"
+        updated["error"] = str(e)
+        updated["updated_at"] = now_iso()
+
+    with CODEX_ACCOUNTS_LOCK:
+        if account_id not in CODEX_ACCOUNTS:
+            delete_codex_record_auth_files(updated)
+            return JSONResponse(content={"detail": "账号已删除"}, status_code=404)
+        if CODEX_ACCOUNTS[account_id] is not record:
+            return JSONResponse(content={"detail": "账号信息已更新，请重新加载"}, status_code=409)
+        CODEX_ACCOUNTS[account_id] = updated
+    save_codex_accounts()
+    return JSONResponse(content={"item": sanitize_codex_account(updated), "updated_at": now_iso()})
+
+
+@app.delete("/api/codex/accounts/{account_id}")
+def delete_codex_account(account_id: str):
+    with CODEX_ACCOUNTS_LOCK:
+        existed = CODEX_ACCOUNTS.pop(account_id, None)
+    if not existed:
+        return JSONResponse(
+            content={"detail": f"未找到 Codex 账号：{account_id}"},
+            status_code=404,
+        )
+    delete_unlinked_credentials(str(existed.get("email") or ""))
+    delete_codex_record_auth_files(existed)
+    save_codex_accounts()
+    return JSONResponse(content={"ok": True, "account": account_id})
+
+
+@app.get("/api/history/{account_name}")
+def get_history(account_name: str, request: FastAPIRequest):
+    if request_access_role(request) != "admin" or is_user_preview(request):
+        cfg = find_mail_account(account_name)
+        if not cfg or not can_access_account(request, cfg["email"]):
+            return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    with HISTORY_LOCK:
+        records = CODE_HISTORY.get(account_name, [])
+        if not records:
+            records = load_code_history(account_name)
+            CODE_HISTORY[account_name] = records
+    return JSONResponse(
+        content={
+            "account": account_name,
+            "items": records,
+        },
+        headers={"Cache-Control": "no-store, private"},
+    )
+
+
+@app.delete("/api/history/{account_name}")
+def clear_history(account_name: str):
+    if account_name not in CODE_HISTORY:
+        return JSONResponse(
+            content={"detail": f"未找到账号：{account_name}"},
+            status_code=404,
+        )
+
+    clear_code_history(account_name)
+    save_state(
+        account_name,
+        {
+            "last_code": None,
+            "result_type": "code",
+            "result_value": None,
+            "rule_name": None,
+            "message_id": None,
+            "subject": "（历史已清空）",
+            "updated_at": now_iso(),
+            "status": "历史已清空",
+        },
+    )
+    return JSONResponse(content={"ok": True, "account": account_name})
+
+
+def resource_catalog() -> List[Dict[str, Any]]:
+    items = [{"key": "gpt:" + item["key"], "kind": "gpt", "name": item["email"], "listed": item["listed"]}
+             for item in account_groups() if "@" in item["email"]]
+    for kind, store in (("coding-plan", CODING_PLAN_STORE), ("relay-account", RELAY_ACCOUNT_STORE)):
+        items.extend({"key": kind + ":" + item["id"], "kind": kind, "name": item["name"]} for item in store.list_public())
+    return items
+
+
+app.state.legacy_access_login = legacy_access_login
+app.include_router(create_account_router(STATIC_DIR, resource_catalog))
+
+
+def run() -> None:
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host=APP_HOST,
+        port=APP_PORT,
+    )

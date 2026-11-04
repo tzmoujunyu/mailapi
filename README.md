@@ -1,12 +1,13 @@
 # ChatGPT 多邮箱验证码监听
 
-独立测试入口：`python code-receive-test.py`（默认端口 8001）。测试代码和页面位于
-`test_app/`。测试进程启动时把正式 `runtime/` 的当前数据复制到系统临时目录，测试页面
-读取和修改这份副本；进程退出后临时目录自动删除。正式入口继续使用下文的启动方式。
-正式版和测试版共用的邮件、凭据、资源、授权回调和中继业务实现位于 `mailapi_shared/`；
-两边原有模块路径保留为兼容入口。
-首次启动前复制 `.env.test.example` 为 `.env.test` 并设置 `TEST_ADMIN_PASSWORD`，
-使用 `admin` 登录后进入 `/admin/access` 管理网站账号和分组。
+正式入口为 `python code-receive.py`（默认端口 8000），测试入口为
+`python code-receive-test.py`（默认端口 8001）。两个入口加载同一份
+`mailapi_shared.application`；测试进程启动时把正式 `runtime/` 的当前数据复制到系统临时目录，
+测试页面读取和修改这份副本，进程退出后临时目录自动删除。两边原有模块路径和静态目录
+保留为兼容入口，但实际登录、路由和业务实现只有一份。
+首次启动测试版前复制 `.env.test.example` 为 `.env.test` 并设置 `TEST_ADMIN_PASSWORD`；
+正式版首次初始化 admin 使用 `ADMIN_ACCESS_PASSWORD`（未设置时回退到 `ACCESS_PASSWORD`）。
+两版都使用用户名 `admin` 加密码登录，登录后从 `/admin/access` 管理网站账号和分组。
 参见[权限说明及测试开发与同步流程](docs/development.md)。
 
 ## 启动
@@ -17,7 +18,9 @@ export ADMIN_ACCESS_PASSWORD='你的管理员口令'
 python3 code-receive.py
 ```
 
-网页登录表单只有一个口令输入框：普通用户输入 `ACCESS_PASSWORD` 后只能进入 GPT 接码主页，管理员输入 `ADMIN_ACCESS_PASSWORD` 后会额外看到账号控制台入口。未配置 `ADMIN_ACCESS_PASSWORD` 时，为兼容已有部署会暂时沿用 `ACCESS_PASSWORD`；需要隔离普通用户和管理员时请设置不同的管理员口令。
+正式版暂时兼容已有 `ACCESS_PASSWORD` / `ADMIN_ACCESS_PASSWORD` 访问口令、请求头和旧 cookie；
+新建的网站账号统一使用用户名和密码登录。测试版默认不读取正式 `.env`，只使用 `.env.test` 和
+临时数据目录。
 
 依赖可通过 `pip install -r requirements.txt` 安装。网页控制台当前支持 Gmail 和 Outlook；Proton 旧实现仍保留在代码中，但不再提供新增和登录入口。
 

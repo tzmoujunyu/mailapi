@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,12 +38,14 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 )
                 cls.module = importlib.util.module_from_spec(spec)
                 assert spec.loader is not None
+                sys.modules[spec.name] = cls.module
                 spec.loader.exec_module(cls.module)
         finally:
             os.chdir(cls.previous_directory)
 
     @classmethod
     def tearDownClass(cls):
+        sys.modules.pop("mailapi_code_receive_for_tests", None)
         for handler in list(cls.module.ERROR_LOGGER.handlers):
             handler.close()
             cls.module.ERROR_LOGGER.removeHandler(handler)

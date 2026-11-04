@@ -183,6 +183,8 @@
         th, td { font-size: 13px; }
       }
     </style>
+  <link rel="stylesheet" href="/static/session.css">
+    <script src="/static/session.js" defer></script>
   </head>
   <body>
     <div class="shell">
@@ -282,7 +284,7 @@
         <h2>登录 Codex</h2>
         <p id="codex-auth-status" class="muted" role="status"></p>
         <label>授权链接<input id="codex-auth-url" type="text" readonly autocomplete="off" /></label>
-        <p class="muted">点击下方按钮打开 OpenAI 登录页。若内置浏览器显示空白，请复制链接到 Chrome、Edge 等浏览器打开。授权结束后，可回控制台提交返回链接。</p>
+        <p class="muted">点击下方按钮打开 OpenAI 登录页。若内置浏览器显示空白，请复制链接到 Chrome、Edge 等浏览器打开。授权结束后，请复制浏览器地址栏的完整返回链接，回到本控制台的“Codex 授权返回链接”输入框提交。</p>
         <div class="dialog-actions">
           <a id="codex-auth-open" class="btn btn-primary" target="_blank" rel="noopener noreferrer" hidden>打开登录页面</a>
           <button id="codex-auth-copy" class="btn" type="button" disabled>复制授权链接</button>
