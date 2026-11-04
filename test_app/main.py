@@ -1,3 +1,4 @@
+import atexit
 import base64
 import glob
 import hashlib
@@ -7,7 +8,9 @@ import logging
 import os
 import secrets
 import re
+import shutil
 import threading
+import tempfile
 import time
 import traceback
 import urllib.error
@@ -127,13 +130,67 @@ MAX_POLL_RESULTS = 100
 MAX_HISTORY_RECORDS = 30
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 _production_data = (BASE_DIR / "runtime").resolve()
-_default_data = _production_data / "test"
-_test_data = Path(os.getenv("TEST_DATA_DIR", str(_default_data))).expanduser().resolve()
-if (_test_data == _production_data or _test_data in _production_data.parents
-        or (_production_data in _test_data.parents and _test_data != _default_data
-            and _default_data not in _test_data.parents)):
-    raise RuntimeError("TEST_DATA_DIR 必须使用 runtime/test 或正式 runtime 以外的独立目录")
+
+
+def _validate_configured_test_data(path: Path) -> Path:
+    default_data = _production_data / "test"
+    if path == _production_data or (
+        _production_data in path.parents
+        and path != default_data
+        and default_data not in path.parents
+    ):
+        raise RuntimeError("TEST_DATA_DIR 必须使用 runtime/test 或正式 runtime 以外的独立目录")
+    return path
+
+
+def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
+    if Path(directory).resolve() == _production_data:
+        return {
+            name
+            for name in names
+            if name in {"test", "site_accounts.json", "mail_relay_secret"}
+        }
+    return set()
+
+
+def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, bool]:
+    configured = os.getenv("TEST_DATA_DIR", "").strip()
+    if configured:
+        path = Path(os.path.abspath(os.path.expanduser(configured)))
+        _validate_configured_test_data(path.resolve())
+        path.mkdir(parents=True, exist_ok=True)
+        return None, path, False
+
+    owner = tempfile.TemporaryDirectory(prefix="mailapi-test-")
+    path = Path(owner.name)
+    if _production_data.is_dir():
+        shutil.copytree(
+            _production_data,
+            path,
+            dirs_exist_ok=True,
+            ignore=_snapshot_ignore,
+        )
+    os.chmod(path, 0o700)
+    return owner, path, True
+
+
+_TEST_DATA_OWNER, _test_data, TEST_DATA_EPHEMERAL = _prepare_test_data()
 DATA_DIR = str(_test_data)
+TEST_DATA_SOURCE = str(_production_data)
+TEST_EXTERNAL_WATCHERS = os.getenv("TEST_EXTERNAL_WATCHERS", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _cleanup_test_data() -> None:
+    if _TEST_DATA_OWNER is not None:
+        _TEST_DATA_OWNER.cleanup()
+
+
+atexit.register(_cleanup_test_data)
 HISTORY_DIR = os.path.join(DATA_DIR, "history")
 HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
 CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
@@ -1859,7 +1916,7 @@ def import_codex_auth_json(
             imported.append(sanitize_codex_account(existing))
             continue
         record = build_codex_account_record(payload, existing)
-        if refresh_snapshot:
+        if refresh_snapshot and TEST_EXTERNAL_WATCHERS:
             try:
                 record = refresh_codex_account_record(record, force_subscription=True)
             except Exception as e:  # noqa: BLE001
@@ -2845,6 +2902,9 @@ def start_mail_watcher(cfg: AccountConfig) -> bool:
         save_state(cfg["name"], {"status": "已停用"})
         return False
     ensure_mail_state(cfg)
+    if not TEST_EXTERNAL_WATCHERS:
+        save_state(cfg["name"], {"status": "测试模式：未启动外部监听"})
+        return False
     provider = cfg.get("provider", "gmail")
     if provider == "proton" and cfg.get("delivery_mode") == "relay":
         save_state(cfg["name"], {"status": "等待本地中继"})
@@ -3078,9 +3138,14 @@ def start_watchers():
         GPT_PASSWORD_STORE, TOTP_SECRET_STORE, {},
     )
     import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
-    threading.Thread(target=codex_refresh_loop, daemon=True).start()
-    for cfg in ACCOUNTS:
-        start_mail_watcher(cfg)
+    if TEST_EXTERNAL_WATCHERS:
+        threading.Thread(target=codex_refresh_loop, daemon=True).start()
+        for cfg in ACCOUNTS:
+            start_mail_watcher(cfg)
+    else:
+        for cfg in ACCOUNTS:
+            ensure_mail_state(cfg)
+            save_state(cfg["name"], {"status": "测试模式：未启动外部监听"})
 
 
 @app.get("/")
@@ -4113,6 +4178,11 @@ async def import_codex_accounts(request: FastAPIRequest):
 
 @app.post("/api/codex/accounts/{account_id}/refresh")
 def refresh_codex_account(account_id: str):
+    if not TEST_EXTERNAL_WATCHERS:
+        return JSONResponse(
+            content={"detail": "测试模式未连接外部 Codex 接口，当前使用启动时的数据快照"},
+            status_code=409,
+        )
     with CODEX_ACCOUNTS_LOCK:
         record = CODEX_ACCOUNTS.get(account_id)
     if not record:

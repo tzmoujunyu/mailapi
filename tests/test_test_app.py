@@ -1,5 +1,6 @@
 """Isolation and HTTP permission checks for the independent test application."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,60 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestAppIsolationTests(unittest.TestCase):
+    def test_default_startup_snapshots_production_data_and_cleans_it_on_exit(self):
+        environment = dict(os.environ)
+        environment.pop("TEST_DATA_DIR", None)
+        environment["TEST_EXTERNAL_WATCHERS"] = "0"
+        environment["TEST_ADMIN_PASSWORD"] = "snapshot-admin-password"
+        script = "\n".join([
+            "import json",
+            "from pathlib import Path",
+            "from test_app import main",
+            "data = Path(main.DATA_DIR)",
+            "production = Path(main.TEST_DATA_SOURCE)",
+            "assert main.TEST_DATA_EPHEMERAL is True",
+            "assert data != production",
+            "assert (data / 'gmail_accounts.json').read_bytes() == (production / 'gmail_accounts.json').read_bytes()",
+            "assert not (data / 'site_accounts.json').exists()",
+            "if (production / 'mail_relay_secret').is_file(): assert (data / 'mail_relay_secret').read_bytes() != (production / 'mail_relay_secret').read_bytes()",
+            "before = (production / 'account_credentials.json').read_bytes()",
+            "main.CREDENTIAL_STORE.set('simulation@example.com', 'listed', False)",
+            "assert (production / 'account_credentials.json').read_bytes() == before",
+            "print(json.dumps({'data': str(data), 'external_watchers': main.TEST_EXTERNAL_WATCHERS}))",
+        ])
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data_path = Path(json.loads(result.stdout.strip().splitlines()[-1])["data"])
+        self.assertFalse(data_path.exists())
+
+    def test_default_startup_does_not_start_external_watchers(self):
+        environment = dict(os.environ)
+        environment.pop("TEST_DATA_DIR", None)
+        environment["TEST_EXTERNAL_WATCHERS"] = "0"
+        environment["TEST_ADMIN_PASSWORD"] = "snapshot-admin-password"
+        script = "\n".join([
+            "from unittest.mock import patch",
+            "from test_app import main",
+            "with patch.object(main, 'start_mail_watcher') as mail, patch.object(main.threading, 'Thread') as thread:",
+            "    main.start_watchers()",
+            "    assert not mail.called",
+            "    assert not thread.called",
+        ])
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_independent_import_ignores_production_accounts_and_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
             environment = {
