@@ -139,7 +139,7 @@ test('user preview uses the ordinary account API view for all interactions', asy
   assert.ok(app.calls.some(([url]) => url === '/api/accounts/email%3Auser%40example.com/totp-code?preview=1'));
 });
 
-test('preview forwards its selected website user to every account interaction', async () => {
+test('test-version preview forwards its selected website user to every account interaction', { skip: !process.env.MAILAPI_UI_ROOT }, async () => {
   const app = page('static/index.html', true, 'selected-user'); await flush();
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   await app.click('rows', '[data-history-name]', { historyName: 'account-1' });

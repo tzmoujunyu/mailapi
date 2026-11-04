@@ -4,13 +4,7 @@
 测试入口使用 `python code-receive-test.py`，默认监听 `127.0.0.1:8001`。
 在远程开发环境中转发 8001 端口；需要直接通过服务器地址访问时设置 `TEST_HOST=0.0.0.0`。
 
-正式版首次启用网站账号登录时，使用现有 `ADMIN_ACCESS_PASSWORD` 初始化唯一的
-`admin`；未配置时兼容使用 `ACCESS_PASSWORD`，密码至少 8 个字符。
-用户和分组从空开始，由管理员在 `/admin/access` 创建并分配现有正式资源。
-账号数据保存在 `runtime/site_accounts.json`；后续启动不会重置已保存的密码，
-也不会导入测试版账号或覆盖正式资源、token 和验证码历史。
-
-测试版首次启动：
+首次启动：
 
 ```bash
 cp .env.test.example .env.test
@@ -27,7 +21,6 @@ python code-receive-test.py
 
 ```text
 code-receive.py             正式入口和现有路由
-accounts.py、site_accounts.py 正式版网站登录、账号、会话和分组权限
 static/                     正式页面
 *.py、mail_providers/        正式版服务模块，保留现有导入兼容
 code-receive-test.py        测试入口
@@ -72,9 +65,7 @@ runtime/                    正式运行数据（不提交）
 所有列表、验证码、历史、密码、2FA 与资源密钥读取接口都执行同一权限检查。
 在网站账号表点击“按此账号预览”核对指定用户的分组视图；预览始终按用户资源权限展示。
 
-正式版账号、分组和会话写入 `runtime/site_accounts.json`，测试版写入
-`runtime/test/site_accounts.json`，采用原子写入和文件权限 600。
-两版分别使用 `mailapi_session` 和 `mailapi_test_session` cookie，登录互不影响。
+账号、分组和会话写入 `runtime/test/site_accounts.json`，采用原子写入和文件权限 600。
 网站密码使用带独立盐的 PBKDF2-SHA256 哈希，登录 cookie 只携带随机会话 token，
 服务器只保存 token 摘要；会话有效期为 24 小时。退出、删除账号或修改密码会使相关旧会话失效，
 分组和角色变化从下一次请求起生效。服务保持单进程运行；不要设置多个 Uvicorn worker。

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import string
 import re
 import threading
 import time
@@ -24,7 +25,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from fastapi import FastAPI, Request as FastAPIRequest
+from fastapi import FastAPI, Form, Request as FastAPIRequest
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -89,8 +90,6 @@ from account_passwords import (
     generate_totp_code,
 )
 from resource_accounts import ResourceStore, ResourceStoreError
-from site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
-from accounts import SESSION_COOKIE, create_account_router
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -125,7 +124,6 @@ MAX_POLL_RESULTS = 100
 MAX_HISTORY_RECORDS = 30
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 DATA_DIR = "runtime"
-STATIC_DIR = Path("static")
 HISTORY_DIR = os.path.join(DATA_DIR, "history")
 HISTORY_ID_DIR = os.path.join(DATA_DIR, "history_id")
 CODEX_AUTH_DIR = os.path.join(DATA_DIR, "codex_auth")
@@ -196,6 +194,11 @@ MAIL_ACCOUNTS_LOCK = threading.Lock()
 MAIL_WATCHERS_LOCK = threading.Lock()
 MAIL_RELAY_REPLAY_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
+ACCESS_PASSWORD = ""
+ACCESS_PASSWORD_FROM_ENV = False
+ADMIN_ACCESS_PASSWORD = ""
+ADMIN_ACCESS_PASSWORD_FROM_ENV = False
+ACCESS_COOKIE_NAME = "chatgpt_code_access"
 ERROR_LOGGER = logging.getLogger("mailapi.errors")
 OPENAI_CODE_SENDERS = {
     item.strip().lower()
@@ -235,6 +238,33 @@ class AccountConfig(TypedDict, total=False):
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+def generate_access_password(length: int = 20) -> str:
+    chars = string.ascii_letters + string.digits
+    return "".join(secrets.choice(chars) for _ in range(length))
+
+
+def init_access_password() -> None:
+    global ACCESS_PASSWORD, ACCESS_PASSWORD_FROM_ENV
+    global ADMIN_ACCESS_PASSWORD, ADMIN_ACCESS_PASSWORD_FROM_ENV
+    configured = os.getenv("ACCESS_PASSWORD", "").strip()
+    if configured:
+        ACCESS_PASSWORD = configured
+        ACCESS_PASSWORD_FROM_ENV = True
+    else:
+        ACCESS_PASSWORD = generate_access_password()
+        ACCESS_PASSWORD_FROM_ENV = False
+
+    configured_admin = os.getenv("ADMIN_ACCESS_PASSWORD", "").strip()
+    if configured_admin:
+        ADMIN_ACCESS_PASSWORD = configured_admin
+        ADMIN_ACCESS_PASSWORD_FROM_ENV = True
+    else:
+        # Keep existing deployments working until they configure a separate
+        # administrator password.
+        ADMIN_ACCESS_PASSWORD = ACCESS_PASSWORD
+        ADMIN_ACCESS_PASSWORD_FROM_ENV = False
 
 
 def should_use_console_auth() -> bool:
@@ -379,6 +409,9 @@ def should_reauth_after_google_refresh_error(error: Exception) -> bool:
             "self-signed certificate",
         )
     )
+
+
+init_access_password()
 
 
 DEFAULT_ACCOUNTS: List[AccountConfig] = [
@@ -2125,8 +2158,6 @@ def next_outlook_account_config() -> AccountConfig:
     }
 
 
-app.state.site_accounts = SiteAccountStore(Path(DATA_DIR) / "site_accounts.json")
-
 ACCOUNTS = load_accounts()
 MAIL_FILTERS = load_mail_filters()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
@@ -2220,9 +2251,21 @@ def load_histories():
 
 
 def request_access_role(request: FastAPIRequest) -> Optional[str]:
-    user = getattr(request.state, "site_user", None)
-    if user:
-        return "admin" if user["role"] in ADMIN_ROLES else "user"
+    cookie_token = request.cookies.get(ACCESS_COOKIE_NAME, "")
+    header_token = request.headers.get("x-access-token", "")
+    query_token = request.query_params.get("access_token", "")
+    bearer = request.headers.get("authorization", "")
+    bearer_token = ""
+    if bearer.startswith("Bearer "):
+        bearer_token = bearer.split(" ", 1)[1]
+
+    tokens = (cookie_token, header_token, query_token, bearer_token)
+    if ADMIN_ACCESS_PASSWORD and any(token == ADMIN_ACCESS_PASSWORD for token in tokens):
+        return "admin"
+    if ACCESS_PASSWORD and any(token == ACCESS_PASSWORD for token in tokens):
+        return "user"
+    if not ACCESS_PASSWORD and not ADMIN_ACCESS_PASSWORD:
+        return "user"
     return None
 
 
@@ -2230,21 +2273,11 @@ def request_access_ok(request: FastAPIRequest) -> bool:
     return request_access_role(request) is not None
 
 
-def can_access_resource(request: FastAPIRequest, key: str) -> bool:
-    if request_access_role(request) == "admin" and not is_user_preview(request):
-        return True
-    user = getattr(request.state, "site_user", None)
-    if not user:
-        return False
-    subject_id = request.query_params.get("user_id", user["id"]) if is_user_preview(request) else user["id"]
-    return request.app.state.site_accounts.resource_allowed(subject_id, key)
-
-
 def can_access_account(request: FastAPIRequest, email: str) -> bool:
-    if request_access_role(request) == "admin" and not is_user_preview(request):
+    role = request_access_role(request)
+    if role == "admin" and request.query_params.get("preview") != "1":
         return True
-    email = AccountCredentialStore.email_key(email)
-    return CREDENTIAL_STORE.get(email, "listed") is not False and can_access_resource(request, "gpt:email:" + email)
+    return CREDENTIAL_STORE.get(email, "listed") is not False
 
 
 def is_user_preview(request: FastAPIRequest) -> bool:
@@ -2257,7 +2290,7 @@ def requires_admin_access(request: FastAPIRequest) -> bool:
         path == "/admin"
         or path.startswith("/admin/")
         or path == "/preview"
-        or path in {"/static/admin.html", "/static/access.html"}
+        or path == "/static/admin.html"
         or path == "/api/admin"
         or path.startswith("/api/admin/")
         or path == "/api/codex"
@@ -2275,35 +2308,85 @@ async def error_log_guard(request: FastAPIRequest, call_next):
         raise
 
 
-@app.exception_handler(SiteAccountError)
-async def site_account_error(request: FastAPIRequest, error: SiteAccountError):
-    return JSONResponse({"detail": str(error)}, status_code=error.status_code,
-                        headers={"Cache-Control": "no-store, private"})
-
-
 @app.middleware("http")
 async def access_guard(request: FastAPIRequest, call_next):
+    if request.url.path == "/api/internal/mail-relay":
+        return await call_next(request)
+
     path = request.url.path
-    request.state.site_user = request.app.state.site_accounts.session_user(request.cookies.get(SESSION_COOKIE, ""))
-    callback = (
-        path in {"/auth/callback", "/api/admin/outlook/auth/callback", "/api/internal/mail-relay"}
-        or path.startswith("/oauth2callback/")
-        or (path == "/" and request.query_params.get("code") and request.query_params.get("state"))
-    )
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and not callback:
-        origin = request.headers.get("origin")
-        if (origin and origin.rstrip("/") != str(request.base_url).rstrip("/")) or request.headers.get("sec-fetch-site") == "cross-site":
-            return JSONResponse({"detail": "不允许跨站请求"}, status_code=403)
-    public = callback or path in {"/login", "/api/auth/login"}
+    if path in {
+        "/login",
+        "/login.html",
+        "/auth/callback",
+        "/api/admin/outlook/auth/callback",
+    } or path.startswith("/oauth2callback/"):
+        return await call_next(request)
+    if path == "/" and request.query_params.get("code") and request.query_params.get("state"):
+        return await call_next(request)
+
     role = request_access_role(request)
-    if not public and (role is None or (requires_admin_access(request) and role != "admin")):
+    if requires_admin_access(request):
+        if role == "admin":
+            return await call_next(request)
         if path.startswith("/api/"):
-            return JSONResponse({"detail": "需要管理员权限" if role else "请先登录"}, status_code=403 if role else 401)
-        return RedirectResponse("/" if role else "/login", status_code=303)
-    response = await call_next(request)
-    response.headers["Cache-Control"] = "no-store, private"
-    response.headers["Pragma"] = "no-cache"
-    return response
+            if role == "user":
+                return JSONResponse(content={"detail": "需要管理员访问口令"}, status_code=403)
+            return JSONResponse(content={"detail": "未授权访问，请先登录"}, status_code=401)
+        if role == "user":
+            return RedirectResponse(url="/")
+        return RedirectResponse(url="/login")
+
+    if role is not None:
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        return JSONResponse(content={"detail": "未授权访问，请先登录"}, status_code=401)
+
+    return RedirectResponse(url="/login")
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    if not ACCESS_PASSWORD and not ADMIN_ACCESS_PASSWORD:
+        return RedirectResponse(url="/")
+
+    return """
+    <!doctype html>
+    <html lang="zh-CN">
+    <head>
+      <meta charset="UTF-8" />
+      <title>访问口令</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f4f6; display: grid; place-items: center; min-height: 100vh; }
+        .card { width: 360px; background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 12px 25px rgba(0,0,0,0.08); }
+        h2 { margin: 0 0 16px; }
+        input { width: 100%; padding: 10px 12px; margin-top: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
+        button { margin-top: 12px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px; background: #0ea5e9; color: #fff; font-weight: 700; cursor: pointer; }
+      </style>
+    </head>
+    <body>
+      <form class="card" method="post" action="/login">
+        <h2>输入访问口令</h2>
+        <div>请输入分享口令后进入页面。</div>
+        <input type="password" name="access_token" placeholder="口令" required />
+        <button type="submit">进入</button>
+      </form>
+    </body>
+    </html>
+    """
+
+
+@app.post("/login")
+def login_submit(access_token: str = Form(...)):
+    if not ACCESS_PASSWORD and not ADMIN_ACCESS_PASSWORD:
+        return RedirectResponse(url="/", status_code=302)
+
+    if access_token == ADMIN_ACCESS_PASSWORD or access_token == ACCESS_PASSWORD:
+        response = RedirectResponse(url="/", status_code=302)
+        response.set_cookie(ACCESS_COOKIE_NAME, access_token, httponly=True, max_age=86400, samesite="Lax")
+        return response
+
+    return HTMLResponse("口令错误", status_code=401)
 
 
 def remove_google_auth_session(session: Dict[str, object], state: str) -> None:
@@ -3082,10 +3165,14 @@ def totp_secret_for_account(cfg: AccountConfig) -> Optional[str]:
 
 @app.on_event("startup")
 def start_watchers():
-    app.state.site_accounts.ensure_admin(
-        os.getenv("ADMIN_ACCESS_PASSWORD", "").strip() or os.getenv("ACCESS_PASSWORD", "").strip()
+    source = "环境变量 ACCESS_PASSWORD" if ACCESS_PASSWORD_FROM_ENV else "随机生成（重启后可能变化）"
+    print(f"访问口令：{ACCESS_PASSWORD}（来源：{source}）")
+    admin_source = (
+        "环境变量 ADMIN_ACCESS_PASSWORD"
+        if ADMIN_ACCESS_PASSWORD_FROM_ENV
+        else "与 ACCESS_PASSWORD 相同（兼容模式）"
     )
-    print("正式版已启用网站账号登录；最高管理员用户名：admin")
+    print(f"管理员访问口令来源：{admin_source}")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
     print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
     save_mail_accounts()
@@ -3110,25 +3197,20 @@ def index(request: FastAPIRequest):
 
 @app.get("/preview")
 def preview_page(request: FastAPIRequest):
-    target_id = request.query_params.get("user_id")
-    if target_id and not request.app.state.site_accounts.get_user(target_id):
-        return JSONResponse({"detail": "未找到预览账号"}, status_code=404)
     return render_index_page(request, preview=True)
 
 
 def render_index_page(request: FastAPIRequest, preview: bool = False):
-    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    page = Path("static/index.html").read_text(encoding="utf-8")
     role = request_access_role(request)
     admin_link = '<a class="small-btn" href="/admin">账号控制台</a>'
     preview_banner = (
-        '<div class="preview-banner" role="status">用户账号主页预览：仅显示所选账号分组中已分配且上架的资源；请在网站账号页面选择预览对象。'
+        '<div class="preview-banner" role="status">用户账号主页预览：当前显示普通用户可见的账号和功能。'
         '<a href="/admin">返回账号控制台</a></div>'
         if preview
         else ""
     )
-    subject_id = request.query_params.get("user_id", request.state.site_user["id"])
-    preview_script = ("<script>window.__USER_PREVIEW__ = true;window.__PREVIEW_USER_ID__ = "
-                      + json.dumps(subject_id) + ";</script>") if preview else ""
+    preview_script = '<script>window.__USER_PREVIEW__ = true;</script>' if preview else ""
     return HTMLResponse(
         page
         .replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if role == "admin" and not preview else "")
@@ -3141,7 +3223,7 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
 @app.get("/admin")
 def admin_page():
     return FileResponse(
-        STATIC_DIR / "admin.html",
+        "static/admin.html",
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
@@ -3997,7 +4079,8 @@ def account_groups() -> List[Dict[str, Any]]:
 @app.get("/api/accounts")
 def get_accounts(request: FastAPIRequest):
     items = account_groups()
-    items = [item for item in items if can_access_account(request, item["email"])]
+    if request_access_role(request) != "admin" or is_user_preview(request):
+        items = [item for item in items if item["listed"]]
     return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
 
 
@@ -4014,27 +4097,27 @@ async def resource_payload(request: FastAPIRequest, label: str) -> Dict[str, Any
     return payload
 
 
-def resource_list_response(store: ResourceStore, request: FastAPIRequest, kind: str) -> JSONResponse:
+def resource_list_response(store: ResourceStore) -> JSONResponse:
     return JSONResponse(
-        content={"items": [item for item in store.list_public() if can_access_resource(request, kind + ":" + item["id"])], "updated_at": now_iso()},
+        content={"items": store.list_public(), "updated_at": now_iso()},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
 
 @app.get("/api/coding-plans")
-def get_coding_plans(request: FastAPIRequest):
-    return resource_list_response(CODING_PLAN_STORE, request, "coding-plan")
+def get_coding_plans():
+    return resource_list_response(CODING_PLAN_STORE)
 
 
 @app.get("/api/relay-accounts")
-def get_relay_accounts(request: FastAPIRequest):
-    return resource_list_response(RELAY_ACCOUNT_STORE, request, "relay-account")
+def get_relay_accounts():
+    return resource_list_response(RELAY_ACCOUNT_STORE)
 
 
 @app.get("/api/coding-plans/{plan_id}/api-key")
 @app.post("/api/coding-plans/{plan_id}/api-key")
-def get_coding_plan_api_key(plan_id: str, request: FastAPIRequest):
-    value = CODING_PLAN_STORE.get_secret(plan_id) if can_access_resource(request, "coding-plan:" + plan_id) else None
+def get_coding_plan_api_key(plan_id: str):
+    value = CODING_PLAN_STORE.get_secret(plan_id)
     if value is None:
         return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
     return JSONResponse(
@@ -4045,8 +4128,8 @@ def get_coding_plan_api_key(plan_id: str, request: FastAPIRequest):
 
 @app.get("/api/relay-accounts/{account_id}/password")
 @app.post("/api/relay-accounts/{account_id}/password")
-def get_relay_account_password(account_id: str, request: FastAPIRequest):
-    value = RELAY_ACCOUNT_STORE.get_secret(account_id) if can_access_resource(request, "relay-account:" + account_id) else None
+def get_relay_account_password(account_id: str):
+    value = RELAY_ACCOUNT_STORE.get_secret(account_id)
     if value is None:
         return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
     return JSONResponse(
@@ -4284,17 +4367,6 @@ def clear_history(account_name: str):
         },
     )
     return JSONResponse(content={"ok": True, "account": account_name})
-
-
-def resource_catalog() -> List[Dict[str, Any]]:
-    items = [{"key": "gpt:" + item["key"], "kind": "gpt", "name": item["email"], "listed": item["listed"]}
-             for item in account_groups() if "@" in item["email"]]
-    for kind, store in (("coding-plan", CODING_PLAN_STORE), ("relay-account", RELAY_ACCOUNT_STORE)):
-        items.extend({"key": kind + ":" + item["id"], "kind": kind, "name": item["name"]} for item in store.list_public())
-    return items
-
-
-app.include_router(create_account_router(STATIC_DIR, resource_catalog))
 
 
 if __name__ == "__main__":

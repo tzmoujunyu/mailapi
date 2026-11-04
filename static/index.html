@@ -91,8 +91,6 @@
       .resource-secret { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
       @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr; } }
     </style>
-    <link rel="stylesheet" href="/static/session.css">
-    <script src="/static/session.js" defer></script>
   </head>
   <body>
     <div class="container">
@@ -130,7 +128,7 @@
     <!-- PREVIEW_SCRIPT -->
     <script>
       const previewMode = window.__USER_PREVIEW__ === true;
-      function previewUrl(path) { return previewMode ? `${path}${path.includes('?') ? '&' : '?'}preview=1${window.__PREVIEW_USER_ID__ ? `&user_id=${encodeURIComponent(window.__PREVIEW_USER_ID__)}` : ''}` : path; }
+      function previewUrl(path) { return previewMode ? `${path}${path.includes('?') ? '&' : '?'}preview=1` : path; }
       const rowsNode = document.getElementById('rows');
       const HISTORY_REFRESH_MS = 3000;
       let expandedKey = '';

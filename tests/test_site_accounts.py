@@ -1,8 +1,5 @@
-"""Permission-boundary regression tests through both production and test-version HTTP APIs."""
+"""Permission-boundary regression tests through the test-version HTTP API."""
 import importlib
-import importlib.util
-from contextlib import ExitStack, redirect_stdout
-from io import StringIO
 import os
 from pathlib import Path
 import tempfile
@@ -12,31 +9,20 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from test_app.accounts import SESSION_COOKIE
+from test_app.site_accounts import SiteAccountStore
+from test_app.services.account_credentials import AccountCredentialStore
+from test_app.services.resource_accounts import ResourceStore
 
 
 class SiteAccountHTTPTests(unittest.TestCase):
-    production = False
-
     @classmethod
     def setUpClass(cls):
         cls.application_directory = tempfile.TemporaryDirectory()
-        if cls.production:
-            root = Path(__file__).resolve().parents[1]
-            previous_directory = os.getcwd()
-            os.chdir(cls.application_directory.name)
-            Path("static").mkdir()
-            try:
-                with patch.dict(os.environ, {"GMAIL_ACCOUNTS": "[]", "MAIL_RELAY_SECRET": "production-test-relay-secret-32-characters"}):
-                    spec = importlib.util.spec_from_file_location("mailapi_production_permission_tests", root / "code-receive.py")
-                    cls.module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(cls.module)
-            finally:
-                os.chdir(previous_directory)
-        else:
-            with patch.dict(os.environ, {"TEST_DATA_DIR": cls.application_directory.name}):
-                cls.module = importlib.import_module("test_app.main")
+        with patch.dict(os.environ, {"TEST_DATA_DIR": cls.application_directory.name}):
+            cls.module = importlib.import_module("test_app.main")
         seed_path = Path(cls.application_directory.name) / "seed.json"
-        seed = cls.module.SiteAccountStore(seed_path)
+        seed = SiteAccountStore(seed_path)
         seed.ensure_admin("admin-password")
         admin_token, admin = seed.login("admin", "admin-password")
         cls.identities = {"admin": admin}
@@ -60,14 +46,14 @@ class SiteAccountHTTPTests(unittest.TestCase):
         root = Path(self.directory.name)
         site_path = root / "site_accounts.json"
         site_path.write_text(self.seed_data, encoding="utf-8")
-        self.store = self.module.SiteAccountStore(site_path)
+        self.store = SiteAccountStore(site_path)
         self.module.app.state.site_accounts = self.store
-        self.credentials = self.module.AccountCredentialStore(root / "credentials.json")
+        self.credentials = AccountCredentialStore(root / "credentials.json")
         for email in ("owned@example.com", "other@example.com"):
             self.credentials.set(email, "password", email + "-gpt-password")
             self.credentials.set(email, "secret", "JBSWY3DPEHPK3PXP")
-        self.plans = self.module.ResourceStore(root / "plans.json", "api_key", "API key")
-        self.relays = self.module.ResourceStore(root / "relays.json", "password", "密码")
+        self.plans = ResourceStore(root / "plans.json", "api_key", "API key")
+        self.relays = ResourceStore(root / "relays.json", "password", "密码")
         self.plan = self.plans.create({"name": "Team API", "api_key": "owned-api-key-secret"})
         self.other_plan = self.plans.create({"name": "Private API", "api_key": "other-api-key-secret"})
         self.relay = self.relays.create({"name": "Team relay", "url": "https://relay.example.com", "account": "relay-login", "password": "owned-relay-password"})
@@ -90,7 +76,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.enterContext(patch.object(self.module, name, value))
         self.clients = {}
         for name, token in self.tokens.items():
-            client = TestClient(self.module.app, cookies={self.module.SESSION_COOKIE: token}, follow_redirects=False)
+            client = TestClient(self.module.app, cookies={SESSION_COOKIE: token}, follow_redirects=False)
             self.addCleanup(client.close)
             self.clients[name] = client
         self.admin = self.clients["admin"]
@@ -136,12 +122,6 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.assertEqual(client.get(path + "?access_token=admin-password", headers={"x-access-token": "admin-password", "authorization": "Bearer admin-password"}).status_code, 401)
         self.assertEqual(client.get("/").headers["location"], "/login")
         self.assertEqual(client.get("/static/access.html").headers["location"], "/login")
-
-    def test_other_version_session_cookie_cannot_authenticate(self):
-        cookie = "mailapi_test_session" if self.production else "mailapi_session"
-        client = TestClient(self.module.app, cookies={cookie: self.tokens["admin"]})
-        self.addCleanup(client.close)
-        self.assertEqual(client.get("/api/auth/me").status_code, 401)
 
     def test_both_admin_roles_create_users_but_only_admin_deletes(self):
         for role in ("user", "manager"):
@@ -282,7 +262,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.admin.get("/preview?user_id=missing").status_code, 404)
 
     def test_persistence_password_hashes_and_session_expiry(self):
-        reopened = self.module.SiteAccountStore(self.store.path)
+        reopened = SiteAccountStore(self.store.path)
         reopened.ensure_admin("different-bootstrap-password")
         self.assertIsNotNone(reopened.login("admin", "admin-password"))
         self.assertTrue(reopened.resource_allowed(self.identities["alice"]["id"], self.keys[0]))
@@ -292,7 +272,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.assertNotIn(secret, stored)
         self.assertEqual(self.store.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.store.path.parent.stat().st_mode & 0o777, 0o700)
-        with patch(self.module.SiteAccountStore.__module__ + ".time.time", return_value=time.time() + 86401):
+        with patch("test_app.site_accounts.time.time", return_value=time.time() + 86401):
             self.assertIsNone(reopened.session_user(self.tokens["alice"]))
 
     def test_resource_catalog_and_identity_responses_do_not_expose_credentials(self):
@@ -317,38 +297,6 @@ class SiteAccountHTTPTests(unittest.TestCase):
         visible = self.alice.get("/api/relay-accounts").json()["items"]
         self.assertEqual([(value["name"], value["url"]) for value in visible], [("新中转站", "https://new.example.com/panel")])
         self.assertNotIn("relay-password", self.alice.get("/api/relay-accounts").text)
-
-
-class ProductionSiteAccountHTTPTests(SiteAccountHTTPTests):
-    production = True
-
-    def test_startup_bootstraps_admin_once_from_the_existing_admin_password(self):
-        module = self.module
-        for configured, legacy in (("initial-admin-password", "legacy-access-password"), ("", "legacy-access-password"), ("", "")):
-            with self.subTest(configured=bool(configured), legacy=bool(legacy)), ExitStack() as stack:
-                store = module.SiteAccountStore(Path(self.directory.name) / ("bootstrap-" + str(bool(configured)) + str(bool(legacy)) + ".json"))
-                stack.enter_context(patch.object(module.app.state, "site_accounts", store))
-                stack.enter_context(patch.dict(os.environ, {"ADMIN_ACCESS_PASSWORD": configured, "ACCESS_PASSWORD": legacy}))
-                for name in ("save_mail_accounts", "load_histories", "load_codex_accounts", "import_codex_auth_file", "start_mail_watcher"):
-                    stack.enter_context(patch.object(module, name))
-                stack.enter_context(patch.object(module.threading, "Thread"))
-                migrate = stack.enter_context(patch.object(module.CREDENTIAL_STORE, "migrate"))
-                output = stack.enter_context(redirect_stdout(StringIO()))
-                if not configured and not legacy:
-                    with self.assertRaises(module.SiteAccountError):
-                        module.start_watchers()
-                    continue
-                module.start_watchers()
-                password = configured or legacy
-                _, admin = store.login("admin", password)
-                self.assertEqual([user["username"] for user in store.list_users(admin["id"])], ["admin"])
-                self.assertEqual(store.list_groups(admin["id"]), [])
-                self.assertIs(migrate.call_args.args[3], os.environ)
-                with patch.dict(os.environ, {"ADMIN_ACCESS_PASSWORD": "changed-bootstrap-password"}):
-                    module.start_watchers()
-                self.assertIsNotNone(store.login("admin", password))
-                self.assertIsNone(store.login("admin", "changed-bootstrap-password"))
-                self.assertNotIn(password, output.getvalue())
 
 
 if __name__ == "__main__":

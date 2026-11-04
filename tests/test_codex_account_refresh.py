@@ -26,6 +26,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
+                    "ACCESS_PASSWORD": "test-access-password",
                     "ADMIN_ACCESS_PASSWORD": "test-admin-password",
                     "MAIL_RELAY_SECRET": "test-mail-relay-secret-32-characters",
                 },
@@ -64,23 +65,9 @@ class CodexAccountRefreshTests(unittest.TestCase):
             stack.enter_context(patch.object(module, "CODE_HISTORY", {}))
             for name in ("save_mail_accounts", "save_codex_accounts", "stop_mail_watcher", "delete_codex_record_auth_files"):
                 stack.enter_context(patch.object(module, name))
-            site_accounts = module.SiteAccountStore(Path(directory) / "site_accounts.json")
-            site_accounts.ensure_admin("test-admin-password")
-            admin_token, admin = site_accounts.login("admin", "test-admin-password")
-            user = site_accounts.create_user(admin["id"], "test-user", "test-user-password")
-            self.tokens = {"admin": admin_token, "user": site_accounts.login("test-user", "test-user-password")[0]}
-            site_accounts.save_group(admin["id"], None, {
-                "name": "Test resources", "member_ids": [admin["id"], user["id"]],
-                "resource_keys": ["gpt:email:user@example.com", "gpt:email:only@example.com"],
-            }, {"gpt:email:user@example.com", "gpt:email:only@example.com"})
-            stack.enter_context(patch.object(module.app.state, "site_accounts", site_accounts))
-            client = TestClient(module.app, cookies={module.SESSION_COOKIE: admin_token})
+            client = TestClient(module.app, headers={"x-access-token": module.ADMIN_ACCESS_PASSWORD})
             yield client, store
             client.close()
-
-    def login_as(self, client, role):
-        client.cookies.clear()
-        client.cookies.set(self.module.SESSION_COOKIE, self.tokens[role])
 
     def test_unified_accounts_share_credentials_without_exposing_secrets(self):
         with self.account_client() as (client, store):
@@ -140,13 +127,15 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 self.assertEqual(client.post(f"/api/accounts/email:only@example.com/{path}").status_code, 404)
             self.assertEqual(client.put('/api/admin/accounts/email:only@example.com/gpt-password', json={"password": ""}).status_code, 400)
             self.assertEqual(client.post('/api/accounts/email:missing@example.com/gpt-password').status_code, 404)
-            client.cookies.clear()
+            client.headers.pop('x-access-token')
             self.assertEqual(client.get('/api/accounts').status_code, 401)
             self.assertEqual(client.post('/api/accounts/email:only@example.com/totp-secret').status_code, 401)
 
-    def test_site_roles_gate_console_and_homepage_link(self):
-        with self.account_client() as (client, store):
-            self.login_as(client, "user")
+    def test_separate_admin_access_password_gates_console_and_homepage_link(self):
+        with self.account_client() as (client, store), patch.object(
+            self.module, "ADMIN_ACCESS_PASSWORD", "admin-only-password"
+        ):
+            client.headers["x-access-token"] = self.module.ACCESS_PASSWORD
             self.assertEqual(client.get("/api/accounts").status_code, 200)
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 403)
             self.assertEqual(client.get("/api/codex/accounts").status_code, 403)
@@ -154,10 +143,10 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual(homepage.status_code, 200)
             self.assertNotIn("/admin", homepage.text)
             console = client.get("/admin", follow_redirects=False)
-            self.assertEqual(console.status_code, 303)
+            self.assertEqual(console.status_code, 307)
             self.assertEqual(console.headers["location"], "/")
 
-            self.login_as(client, "admin")
+            client.headers["x-access-token"] = "admin-only-password"
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
             self.assertEqual(client.get("/api/codex/accounts").status_code, 200)
             self.assertIn('href="/admin"', client.get("/").text)
@@ -176,28 +165,30 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual([item['email'] for item in preview_items], ['only@example.com'])
             self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password?preview=1').status_code, 404)
             self.assertEqual(client.get('/api/history/account-1?preview=1').status_code, 404)
-            self.login_as(client, "user")
-            self.assertEqual(client.get('/preview', follow_redirects=False).status_code, 303)
+            client.headers['x-access-token'] = self.module.ACCESS_PASSWORD
+            self.assertEqual(client.get('/preview', follow_redirects=False).status_code, 307)
             self.assertEqual(client.get('/preview', follow_redirects=False).headers['location'], '/')
 
     def test_login_form_accepts_both_roles(self):
-        with self.account_client() as (client, store):
-            client.cookies.clear()
+        with self.account_client() as (client, store), patch.object(
+            self.module, "ADMIN_ACCESS_PASSWORD", "admin-only-password"
+        ):
+            client.headers.pop("x-access-token")
             user_login = client.post(
                 "/login",
-                data={"username": "test-user", "password": "test-user-password"},
+                data={"access_token": self.module.ACCESS_PASSWORD},
                 follow_redirects=False,
             )
-            self.assertEqual(user_login.status_code, 303)
+            self.assertEqual(user_login.status_code, 302)
             self.assertEqual(client.get("/api/admin/mail/accounts", follow_redirects=False).status_code, 403)
 
             client.cookies.clear()
             admin_login = client.post(
                 "/login",
-                data={"username": "admin", "password": "test-admin-password"},
+                data={"access_token": "admin-only-password"},
                 follow_redirects=False,
             )
-            self.assertEqual(admin_login.status_code, 303)
+            self.assertEqual(admin_login.status_code, 302)
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
 
     def test_unlisting_blocks_user_reads_and_relisting_restores_them(self):
@@ -230,15 +221,15 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 reads.append(('POST', '/api/accounts/email:user@example.com/totp-code'))
                 for method, path in reads:
                     self.assertEqual(client.request(method, path).status_code, 200, path)
-                self.login_as(client, "user")
+                client.headers['x-access-token'] = module.ACCESS_PASSWORD
                 self.assertEqual([item['email'] for item in client.get('/api/accounts').json()['items']], ['only@example.com'])
                 self.assertEqual(client.get('/api/codes').json()['items'], [])
                 for method, path in reads:
                     self.assertEqual(client.request(method, path).status_code, 404, path)
                 self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 403)
-                self.login_as(client, "admin")
+                client.headers['x-access-token'] = module.ADMIN_ACCESS_PASSWORD
                 self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 200)
-                self.login_as(client, "user")
+                client.headers['x-access-token'] = module.ACCESS_PASSWORD
                 self.assertEqual(len(client.get('/api/accounts').json()['items']), 2)
                 self.assertEqual(client.get('/api/codes').json()['items'][0]['last_code'], '123456')
                 self.assertEqual(client.get('/api/history/account-1').json()['items'], [{'code': '654321'}])
@@ -259,9 +250,9 @@ class CodexAccountRefreshTests(unittest.TestCase):
                     self.assertEqual(client.put(endpoint, json=payload).status_code, 400)
             self.assertEqual(client.put('/api/admin/accounts/email:missing@example.com/listing', json={'listed': False}).status_code, 404)
             self.assertEqual(client.put(endpoint, json={'listed': False}).status_code, 200)
-            self.login_as(client, "user")
+            client.headers['x-access-token'] = self.module.ACCESS_PASSWORD
             self.assertEqual([item['email'] for item in client.get('/api/accounts').json()['items']], ['user@example.com'])
-            client.cookies.clear()
+            client.headers.pop('x-access-token')
             self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 401)
 
     def test_current_totp_endpoint_returns_code_without_secret(self):
@@ -278,7 +269,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertNotIn('invalid-legacy-secret', client.post(path).text)
             self.assertEqual(client.put('/api/admin/accounts/email:only@example.com/totp-secret', json={'secret':'123456'}).status_code, 400)
             self.assertEqual(store.get('only@example.com', 'secret'), 'invalid-legacy-secret')
-            client.cookies.clear()
+            client.headers.pop('x-access-token')
             self.assertEqual(client.post(path).status_code, 401)
 
     def test_removing_one_integration_preserves_shared_credentials(self):
@@ -325,7 +316,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             query = self.module.urllib.parse.parse_qs(self.module.urllib.parse.urlparse(response.json()['auth_url']).query)
             self.assertEqual(self.module.CODEX_AUTH_SESSIONS[query['state'][0]]['target_email'], 'user@example.com')
             self.assertEqual(client.get('/api/codex/auth/start?format=json&account_id=missing').status_code, 404)
-            client.cookies.clear()
+            client.headers.pop('x-access-token')
             self.assertEqual(client.get('/api/codex/auth/start?format=json').status_code, 401)
 
     def test_outlook_missing_configuration_renders_utf8_setup_page(self):
