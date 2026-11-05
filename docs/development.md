@@ -1,6 +1,7 @@
 # 正式版与测试版
 
-架构分层、代码归属、数据边界和回退原则见[架构说明](architecture.md)。本页只保留开发者
+架构分层、代码归属、数据边界和回退原则见[架构说明](architecture.md)。迁移机器需要的依赖、
+配置和运行数据见[迁移环境清单](environment.md)。本页只保留开发者
 日常启动、验证和同步所需的操作步骤。
 
 正式入口 `python code-receive.py` 和测试入口 `python code-receive-test.py` 都加载

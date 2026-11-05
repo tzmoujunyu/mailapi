@@ -8,7 +8,7 @@
 首次启动测试版前复制 `.env.test.example` 为 `.env.test` 并设置 `TEST_ADMIN_PASSWORD`；
 正式版首次初始化 admin 使用 `ADMIN_ACCESS_PASSWORD`（未设置时回退到 `ACCESS_PASSWORD`）。
 两版都使用用户名 `admin` 加密码登录，登录后从 `/admin/access` 管理网站账号和分组。
-参见[权限说明及测试开发与同步流程](docs/development.md)和[架构说明](docs/architecture.md)。
+参见[权限说明及测试开发与同步流程](docs/development.md)、[架构说明](docs/architecture.md)和[迁移环境清单](docs/environment.md)。
 
 ## 启动
 
