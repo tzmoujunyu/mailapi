@@ -194,6 +194,13 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual(admin_login.status_code, 302)
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
 
+    def test_legacy_access_cookie_does_not_crash_site_session_endpoint(self):
+        with self.account_client() as (client, _):
+            client.headers["x-access-token"] = self.module.ACCESS_PASSWORD
+            response = client.get("/api/auth/me")
+            self.assertEqual(response.status_code, 401)
+            self.assertIn("网站账号", response.json()["detail"])
+
     def test_unlisting_blocks_user_reads_and_relisting_restores_them(self):
         with self.account_client() as (client, store):
             module = self.module

@@ -31,7 +31,10 @@ def create_account_router(static_dir, resource_catalog):
         return request.app.state.site_accounts
 
     def user_id(request):
-        return request.state.site_user["id"]
+        user = request.state.site_user
+        if not user:
+            raise SiteAccountError("请先使用网站账号登录", 401)
+        return user["id"]
 
     def login_response(request, username, password, *, browser=False, access_token=None):
         if access_token:
