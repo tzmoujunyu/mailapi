@@ -328,7 +328,9 @@ class SiteAccountStore:
             if any(item["id"] != group["id"] and item["name"].casefold() == group["name"].casefold() for item in data["groups"].values()):
                 raise SiteAccountError("分组名称已存在", 409)
             for field, allowed in (("member_ids", data["users"]), ("resource_keys", valid_resources)):
-                values = group[field]
+                if field not in payload:
+                    continue
+                values = payload[field]
                 if not isinstance(values, list) or any(not isinstance(value, str) or value not in allowed for value in values):
                     raise SiteAccountError("分组包含无效成员或资源")
                 group[field] = list(dict.fromkeys(values))

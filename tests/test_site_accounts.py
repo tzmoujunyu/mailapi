@@ -97,6 +97,18 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return [item["email"] for item in response.json()["items"]]
 
+    def test_group_member_update_preserves_omitted_resource_assignments(self):
+        self.assertEqual(self.admin.delete("/api/admin/coding-plans/" + self.plan["id"]).status_code, 200)
+        path = "/api/admin/groups/" + self.group["id"]
+        member_ids = [self.identities["bob"]["id"]]
+        response = self.manager.put(path, json={"name": "Agent-1", "member_ids": member_ids})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["item"]["member_ids"], member_ids)
+        self.assertEqual(response.json()["item"]["resource_keys"], self.keys)
+        self.assertEqual(self.emails(self.alice), [])
+        self.assertEqual(self.emails(self.bob), ["owned@example.com"])
+        self.assertEqual(self.manager.put(path, json={"resource_keys": self.keys}).status_code, 400)
+
     def test_login_uses_new_credentials_and_http_only_cookie(self):
         client = TestClient(self.module.app, follow_redirects=False)
         self.addCleanup(client.close)

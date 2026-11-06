@@ -13,6 +13,15 @@ table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 14p
 th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb; vertical-align: top; overflow-wrap: anywhere; }
 th { background: #f7f8fa; font-size: 13px; }
 tbody tr:last-child td { border-bottom: 0; }
+.group-overview { text-align: center; }
+.group-overview .table-wrap { margin: 14px auto 0; }
+.group-overview table { min-width: 520px; }
+.group-overview th, .group-overview td { padding: 8px 10px; text-align: center; vertical-align: middle; }
+.group-overview tbody + tbody { border-top: 1px solid #dfe3e8; }
+.group-overview .group-category { font-weight: 600; }
+.group-overview th[scope="row"] { background: white; font-size: inherit; font-weight: 500; }
+.group-overview .actions { justify-content: center; }
+.group-overview .tag { margin: 2px; }
 button { border: 1px solid #c7ced6; border-radius: 6px; background: white; color: #1f2937; padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer; }
 button:hover { background: #f3f5f7; }
 button:disabled { opacity: .55; cursor: wait; }

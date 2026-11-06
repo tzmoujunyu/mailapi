@@ -13,6 +13,17 @@
   <header><h1>网站账号与分组</h1><a href="/admin">资源账号控制台</a><a href="/">账号主页</a></header>
   <main>
     <p id="message" role="status" aria-live="polite"></p>
+    <section class="group-overview" aria-labelledby="overview-title">
+      <h2 id="overview-title">组别总览</h2>
+      <p class="muted">按「类别-编号」归类，例如 Agent-1。无编号的分组按原名归类。</p>
+      <button id="add-overview-group" type="button" class="primary" disabled>创建小组</button>
+      <div class="table-wrap">
+        <table id="group-overview" aria-labelledby="overview-title">
+          <thead><tr><th scope="col">类别</th><th scope="col">小组</th><th scope="col">成员</th><th scope="col">操作</th></tr></thead>
+          <tbody><tr><td colspan="4" class="muted">正在加载分组…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
     <section>
       <div class="section-head"><h2>网站账号</h2><div class="actions"><button id="add-user" type="button" class="primary">创建账号</button><button id="batch-users" type="button">批量</button></div></div>
       <p class="muted">用户按所属分组使用资源。两类管理员均可创建账号和管理分组；仅 admin 可删除账号、调整角色或重置普通管理员密码。</p>
@@ -49,7 +60,7 @@
       <h2 id="group-title">创建分组</h2>
       <label>分组名称<input id="group-name" required maxlength="80" autocomplete="off"></label>
       <fieldset><legend>分组成员</legend><div id="member-options" class="options"></div></fieldset>
-      <fieldset><legend>分配资源</legend><p class="muted">新资源请先到资源账号控制台添加，再返回分组进行分配。</p><div id="resource-options" class="options"></div></fieldset>
+      <fieldset id="group-resources"><legend>分配资源</legend><p class="muted">新资源请先到资源账号控制台添加，再返回分组进行分配。</p><div id="resource-options" class="options"></div></fieldset>
       <p class="error" id="group-error" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close="group-dialog">取消</button><button class="primary" type="submit">保存分组</button></div>
     </form>

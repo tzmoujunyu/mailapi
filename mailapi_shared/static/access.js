@@ -6,7 +6,7 @@ let groups = [];
 let resources = [];
 let editingUser = null;
 let editingGroup = null;
-let loading = false;
+let loadVersion = 0;
 const byId = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const tags = values => values.length ? values.map(value => `<span class="tag">${escapeHtml(value)}</span>`).join('') : '<span class="muted">暂无</span>';
@@ -19,6 +19,40 @@ async function api(url, options = {}) {
 }
 const jsonRequest = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
+function groupActions(group, editLabel) {
+  const id = escapeHtml(group.id);
+  return `<div class="actions">
+    <button type="button" data-edit-group="${id}">${editLabel}</button>
+    <button type="button" class="danger" data-delete-group="${id}">删除分组</button>
+  </div>`;
+}
+
+function renderGroupOverview(memberTags) {
+  const categories = new Map();
+  const sorted = [...groups].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' }));
+  for (const group of sorted) {
+    const numbered = /^(.+)-(\d+)$/.exec(group.name);
+    const name = numbered ? numbered[1].trim() : group.name;
+    const key = name.toLowerCase();
+    if (!categories.has(key)) categories.set(key, { name, subgroups: [] });
+    categories.get(key).subgroups.push({ group, label: numbered ? `小组 ${numbered[2]}` : '未编号' });
+  }
+
+  const bodies = [...categories.values()].map(({ name, subgroups }) => {
+    const rows = subgroups.map(({ group, label }, index) => {
+      const category = index === 0
+        ? `<th class="group-category" scope="rowgroup" rowspan="${subgroups.length}">${escapeHtml(name)}</th>` : '';
+      return `<tr>${category}<th scope="row">${escapeHtml(label)}</th>
+        <td>${memberTags(group)}</td><td>${groupActions(group, '编辑小组与成员')}</td></tr>`;
+    });
+    return `<tbody>${rows.join('')}</tbody>`;
+  }).join('');
+
+  const overview = byId('group-overview');
+  for (const body of [...overview.tBodies]) body.remove();
+  overview.insertAdjacentHTML('beforeend', bodies || '<tbody><tr><td colspan="4" class="muted">暂无分组，可先创建小组。</td></tr></tbody>');
+}
+
 function render() {
   byId('users').innerHTML = users.map(user => {
     const actions = [`<a href="/preview?user_id=${encodeURIComponent(user.id)}">按此账号预览</a>`];
@@ -27,17 +61,23 @@ function render() {
     return `<tr><td>${escapeHtml(user.username)}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
   }).join('');
   const userNames = new Map(users.map(user => [user.id, user.username]));
+  const memberTags = group => tags(group.member_ids.map(id => userNames.get(id) || '已删除账号'));
   const resourceNames = new Map(resources.map(item => [item.key, `${kindNames[item.kind]} · ${item.name}${item.listed === false ? '（已下架）' : ''}`]));
-  byId('groups').innerHTML = groups.length ? groups.map(group => `<tr><td>${escapeHtml(group.name)}</td><td>${tags(group.member_ids.map(id => userNames.get(id) || '已删除账号'))}</td><td>${tags(group.resource_keys.map(key => resourceNames.get(key) || '已移除资源'))}</td><td><div class="actions"><button type="button" data-edit-group="${escapeHtml(group.id)}">编辑成员与资源</button><button type="button" class="danger" data-delete-group="${escapeHtml(group.id)}">删除分组</button></div></td></tr>`).join('') : '<tr><td colspan="4" class="muted">暂无分组，创建后即可分配成员和资源。</td></tr>';
+  byId('groups').innerHTML = groups.length ? groups.map(group => `<tr>
+    <td>${escapeHtml(group.name)}</td><td>${memberTags(group)}</td>
+    <td>${tags(group.resource_keys.map(key => resourceNames.get(key) || '已移除资源'))}</td>
+    <td>${groupActions(group, '编辑成员与资源')}</td>
+  </tr>`).join('') : '<tr><td colspan="4" class="muted">暂无分组，创建后即可分配成员和资源。</td></tr>';
+  renderGroupOverview(memberTags);
 }
 
 async function load() {
-  if (loading) return;
-  loading = true;
+  const version = ++loadVersion;
   try {
     const [session, userData, groupData, resourceData] = await Promise.all([
       api('/api/auth/me'), api('/api/admin/users'), api('/api/admin/groups'), api('/api/admin/resources'),
     ]);
+    if (version !== loadVersion) return;
     currentUser = session.user;
     users = userData.items;
     groups = groupData.items;
@@ -47,8 +87,12 @@ async function load() {
     byId('batch-users').disabled = currentUser.role !== 'admin';
     byId('batch-users').hidden = currentUser.role !== 'admin';
     byId('add-group').disabled = false;
-  } catch (error) { byId('message').textContent = error.message; byId('message').className = 'error'; }
-  finally { loading = false; }
+    byId('add-overview-group').disabled = false;
+  } catch (error) {
+    if (version !== loadVersion) return;
+    byId('message').textContent = error.message;
+    byId('message').className = 'error';
+  }
 }
 
 function openUser(user = null) {
@@ -65,13 +109,17 @@ function openUser(user = null) {
   byId('user-dialog').showModal();
 }
 
-function openGroup(group = null) {
+function openGroup(group = null, { membersOnly = false } = {}) {
   editingGroup = group;
   byId('group-form').reset();
-  byId('group-title').textContent = group ? `编辑分组 · ${group.name}` : '创建分组';
+  const action = membersOnly ? '小组' : '分组';
+  byId('group-title').textContent = group ? `编辑${action} · ${group.name}` : `创建${action}`;
   byId('group-name').value = group?.name || '';
   byId('member-options').innerHTML = users.map(user => `<label class="option"><input type="checkbox" value="${escapeHtml(user.id)}" ${group?.member_ids.includes(user.id) ? 'checked' : ''}><span>${escapeHtml(user.username)} <small>${roleNames[user.role]}</small></span></label>`).join('');
-  byId('resource-options').innerHTML = resources.length ? resources.map(item => `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="tag">${kindNames[item.kind]}</span>${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span></label>`).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
+  byId('group-resources').hidden = membersOnly;
+  if (!membersOnly) {
+    byId('resource-options').innerHTML = resources.length ? resources.map(item => `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="tag">${kindNames[item.kind]}</span>${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span></label>`).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
+  }
   byId('group-error').textContent = '';
   byId('group-dialog').showModal();
 }
@@ -109,7 +157,8 @@ byId('user-form').addEventListener('submit', event => submitForm(event, 'user-er
 
 byId('group-form').addEventListener('submit', event => submitForm(event, 'group-error', async () => {
   const checked = id => [...byId(id).querySelectorAll('input:checked')].map(input => input.value);
-  const payload = { name: byId('group-name').value, member_ids: checked('member-options'), resource_keys: checked('resource-options') };
+  const payload = { name: byId('group-name').value, member_ids: checked('member-options') };
+  if (!byId('group-resources').hidden) payload.resource_keys = checked('resource-options');
   await api(editingGroup ? `/api/admin/groups/${encodeURIComponent(editingGroup.id)}` : '/api/admin/groups', jsonRequest(editingGroup ? 'PUT' : 'POST', payload));
   byId('group-dialog').close();
   byId('message').className = '';
@@ -149,19 +198,25 @@ byId('users').addEventListener('click', event => {
     remove(button, `/api/admin/users/${encodeURIComponent(user.id)}`, `删除网站账号“${user.username}”？其登录会话和分组成员身份将一并移除。`);
   }
 });
-byId('groups').addEventListener('click', event => {
+function handleGroupAction(event) {
   const edit = event.target.closest('[data-edit-group]');
-  if (edit) openGroup(groups.find(group => group.id === edit.dataset.editGroup));
+  if (edit) {
+    const group = groups.find(group => group.id === edit.dataset.editGroup);
+    if (group) openGroup(group, { membersOnly: event.currentTarget.id === 'group-overview' });
+  }
   const button = event.target.closest('[data-delete-group]');
   if (button) {
     const group = groups.find(group => group.id === button.dataset.deleteGroup);
-    remove(button, `/api/admin/groups/${encodeURIComponent(group.id)}`, `删除分组“${group.name}”？成员通过此分组获得的资源权限将立即取消。`);
+    if (group) remove(button, `/api/admin/groups/${encodeURIComponent(group.id)}`, `删除分组“${group.name}”？成员通过此分组获得的资源权限将立即取消。`);
   }
-});
+}
+byId('groups').addEventListener('click', handleGroupAction);
+byId('group-overview').addEventListener('click', handleGroupAction);
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => byId(button.dataset.close).close()));
 byId('add-user').addEventListener('click', () => openUser());
 byId('batch-users').addEventListener('click', openBatchUsers);
 byId('add-group').addEventListener('click', () => openGroup());
+byId('add-overview-group').addEventListener('click', () => openGroup(null, { membersOnly: true }));
 byId('add-user').disabled = true;
 byId('add-group').disabled = true;
 window.addEventListener('focus', () => { if (!document.querySelector('dialog[open]')) load(); });
