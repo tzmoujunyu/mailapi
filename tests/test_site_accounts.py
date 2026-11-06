@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from mailapi_shared.coding_plan_quota import CodingPlanQuotaCache
 from test_app.accounts import SESSION_COOKIE
 from test_app.site_accounts import SiteAccountStore
 from test_app.services.account_credentials import AccountCredentialStore
@@ -188,6 +189,37 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.assertEqual(self.alice.post(path).status_code, 404)
         self.assertEqual(self.alice.post(f"/api/coding-plans/{self.plan['id']}/api-key").json()["api_key"], "owned-api-key-secret")
         self.assertEqual(self.alice.post(f"/api/relay-accounts/{self.relay['id']}/password").json()["password"], "owned-relay-password")
+
+    def test_coding_plan_quota_uses_existing_group_grants_and_cached_results(self):
+        plan_id = self.plan["id"]
+        path = f"/api/coding-plans/{plan_id}/quota"
+        admin_path = f"/api/admin/coding-plans/{plan_id}"
+        windows = [{"label": "5 小时", "remaining_percent": 72, "reset_at": None}]
+        with (
+            patch.object(self.module, "CODING_PLAN_QUOTAS", CodingPlanQuotaCache()),
+            patch.object(self.module, "EXTERNAL_WATCHERS", True),
+            patch("mailapi_shared.coding_plan_quota.fetch_coding_plan_quota", return_value=windows) as fetch,
+        ):
+            self.assertEqual(self.alice.post(path).status_code, 409)
+            self.assertEqual(self.admin.put(admin_path, json={"provider": "kimi"}).status_code, 200)
+            self.assertEqual(self.bob.post(path).status_code, 404)
+            suffix = "?preview=1&user_id=" + self.identities["bob"]["id"]
+            self.assertEqual(self.admin.post(path + suffix).status_code, 404)
+            self.assertIsNone(self.alice.get("/api/coding-plans").json()["items"][0]["quota"])
+            fetch.assert_not_called()
+            with patch.object(self.module, "EXTERNAL_WATCHERS", False):
+                self.assertEqual(self.alice.post(path).status_code, 409)
+            fetch.assert_not_called()
+
+            response = self.alice.post(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("owned-api-key-secret", response.text)
+            self.assertEqual(response.json()["quota"]["windows"], windows)
+            item = self.alice.get("/api/coding-plans").json()["items"][0]
+            self.assertEqual(item["quota"]["windows"], windows)
+            fetch.assert_called_once_with("kimi", "owned-api-key-secret")
+            self.assertEqual(self.admin.put(admin_path, json={"api_key": "replacement-key"}).status_code, 200)
+            self.assertIsNone(self.alice.get("/api/coding-plans").json()["items"][0]["quota"])
 
     def test_codes_history_and_query_parameters_cannot_cross_groups(self):
         response = self.alice.get("/api/codes")

@@ -39,6 +39,8 @@ function page(file, preview = false, previewUserId = '') {
     fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : fixture(), password: 'password-value', code: '081804' }) }; },
   });
   const sourceFile = process.env.MAILAPI_UI_ROOT ? file.replace(/^static\//, `${process.env.MAILAPI_UI_ROOT}/`) : file;
+  const quotaScript = sourceFile.replace(/[^/]+$/, 'coding-plan-quota.js');
+  vm.runInContext(fs.readFileSync(quotaScript, 'utf8'), context);
   vm.runInContext(fs.readFileSync(sourceFile, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1], context);
   async function click(id, selector, dataset) {
     const button = { dataset, textContent: '复制', disabled: false };
@@ -288,4 +290,34 @@ test('console loads the relay website for edits and submits it for new accounts'
   const request = app.calls.find(([url, options]) => url === '/api/admin/relay-accounts' && options.method === 'POST');
   assert.ok(request);
   assert.equal(JSON.parse(request[1].body).url, 'https://new.example/panel');
+});
+
+test('homepage and console show returned quota windows without changing the copy action', async () => {
+  const item = { id: 'plan-1', name: '编码套餐', provider: 'kimi', api_key_masked: '••••••', quota_query_enabled: true,
+    quota: { updated_at: '2026-11-06T00:00:00Z', windows: [{ label: '5 小时', remaining_percent: 0, reset_at: '2026-11-06T01:00:00Z' }] } };
+  for (const file of ['static/index.html', 'static/admin.html']) {
+    const app = page(file); await flush();
+    const html = vm.runInContext(`codingPlanRow(${JSON.stringify(item)})`, app.context);
+    assert.match(html, /Kimi Code/);
+    assert.match(html, /5 小时剩余 <strong>0%/);
+    assert.match(html, /重置/);
+    assert.match(html, /data-coding-plan-quota="plan-1">刷新额度/);
+    if (file.endsWith('index.html')) assert.match(html, /data-resource-copy="coding-plan"/);
+    assert.ok(!app.calls.some(([url]) => url.includes('/quota')));
+  }
+});
+
+test('manual quota refresh preserves preview scope and admin can enable an existing plan', async () => {
+  const home = page('static/index.html', true, 'selected-user'); await flush();
+  await home.click('coding-plan-rows', '[data-coding-plan-quota]', { codingPlanQuota: 'plan-1' });
+  assert.ok(home.calls.some(([url, options]) =>
+    url === '/api/coding-plans/plan-1/quota?preview=1&user_id=selected-user' && options.method === 'POST'));
+
+  const admin = page('static/admin.html'); await flush();
+  vm.runInContext(`openCodingPlanDialog({ id: 'plan-1', name: '旧套餐' })`, admin.context);
+  admin.nodes.get('coding-plan-provider').value = 'zhipu';
+  await admin.nodes.get('coding-plan-form').listeners.submit[0]({ preventDefault() {} });
+  const request = admin.calls.find(([url, options]) => url === '/api/admin/coding-plans/plan-1' && options.method === 'PUT');
+  assert.equal(JSON.parse(request[1].body).provider, 'zhipu');
+  assert.ok(!Object.hasOwn(JSON.parse(request[1].body), 'api_key'));
 });

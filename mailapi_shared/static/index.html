@@ -80,6 +80,11 @@
       .resource-table th:nth-child(1) { width: 32%; }
       .resource-table th:nth-child(2) { width: 42%; }
       .resource-table th:nth-child(3) { width: 26%; }
+      .coding-plan-table { min-width: 710px; }
+      .coding-plan-table th:nth-child(1) { width: 30%; }
+      .coding-plan-table th:nth-child(2) { width: 21%; }
+      .coding-plan-table th:nth-child(3) { width: 37%; }
+      .coding-plan-table th:nth-child(4) { width: 12%; }
       .resource-table.relay-table { min-width: 760px; }
       .resource-table.relay-table th:nth-child(1) { width: 25%; }
       .resource-table.relay-table th:nth-child(2) { width: 23%; }
@@ -110,9 +115,9 @@
         <div class="resource-head"><h2 id="coding-plan-title">国产模型Coding Plan</h2></div>
         <div id="coding-plan-error" class="status-bad" role="status"></div>
         <div class="table-wrap">
-          <table class="resource-table">
-            <thead><tr><th>Coding Plan</th><th>API key</th><th>复制</th></tr></thead>
-            <tbody id="coding-plan-rows"><tr><td colspan="3" class="muted">加载中...</td></tr></tbody>
+          <table class="resource-table coding-plan-table">
+            <thead><tr><th>Coding Plan</th><th>API key</th><th>额度</th><th>复制</th></tr></thead>
+            <tbody id="coding-plan-rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -128,6 +133,7 @@
       </section>
     </div>
     <!-- PREVIEW_SCRIPT -->
+    <script src="/static/coding-plan-quota.js"></script>
     <script>
       const previewMode = window.__USER_PREVIEW__ === true;
       function previewUrl(path) { return previewMode ? `${path}${path.includes('?') ? '&' : '?'}preview=1${window.__PREVIEW_USER_ID__ ? `&user_id=${encodeURIComponent(window.__PREVIEW_USER_ID__)}` : ''}` : path; }
@@ -304,7 +310,8 @@
       }
       function codingPlanRow(item) {
         const masked = item.api_key_masked || item.api_key || '未设置';
-        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></td></tr>`;
+        const provider = codingPlanProviders[item.provider];
+        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml, escapeAttr, 'small-btn')}</td><td><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></td></tr>`;
       }
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
@@ -312,7 +319,7 @@
         return `<tr><td><div class="resource-name">${name}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td><div class="resource-secret"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="relay-password" data-id="${escapeAttr(item.id || '')}">复制</button></div></td><td>${escapeHtml(item.note || '-')}</td></tr>`;
       }
       function renderResources() {
-        codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="3" class="muted">暂无 Coding Plan。</td></tr>';
+        codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="4" class="muted">暂无 Coding Plan。</td></tr>';
         relayAccountRows.innerHTML = relayAccounts.length ? relayAccounts.map(relayAccountRow).join('') : '<tr><td colspan="4" class="muted">暂无中转站账号。</td></tr>';
       }
       async function copyResourceSecret(button) {
@@ -354,6 +361,20 @@
           document.getElementById('relay-account-error').textContent = '中转站账号加载失败，请稍后重试。';
         } finally { resourcesRefreshing = false; }
       }
+      async function refreshPlanQuota(button) {
+        button.disabled = true;
+        try {
+          const path = `/api/coding-plans/${encodeURIComponent(button.dataset.codingPlanQuota)}/quota`;
+          const response = await fetch(previewUrl(path), { method: 'POST', cache: 'no-store' });
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.detail || '额度查询失败，请稍后重试');
+          }
+          await refreshResources();
+        } catch (error) {
+          document.getElementById('coding-plan-error').textContent = error.message;
+        } finally { button.disabled = false; }
+      }
       async function copySecret(button) {
         button.disabled = true; const original = button.textContent; const startedAt = performance.now();
         try { if (button.dataset.copyType === 'mail') { await writeClipboard(button.dataset.value); button.textContent = '已复制'; return; } const path = button.dataset.copyType === 'totp' ? 'totp-code' : 'gpt-password'; const field = button.dataset.copyType === 'totp' ? 'code' : 'password'; const response = await fetch(previewUrl(`/api/accounts/${encodeURIComponent(button.dataset.name)}/${path}`), { method: 'POST', cache: 'no-store' }); const data = await response.json(); if (!response.ok || !data[field]) throw new Error(data.detail || '读取失败'); syncServerClock(data, startedAt); await writeClipboard(data[field]); if (button.dataset.copyType === 'totp' && Number.isFinite(data.expires_at)) { copiedTotpExpiry.set(button.dataset.name, data.expires_at); updateTotpCountdown(); } button.textContent = button.dataset.copyType === 'totp' ? '验证码已复制' : '已复制'; } catch (error) { button.textContent = '复制失败'; button.title = error.message; }
@@ -384,7 +405,12 @@
         } finally { refreshing = false; }
       }
       rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
-      codingPlanRows.addEventListener('click', event => { const copy = event.target.closest('[data-resource-copy]'); if (copy) copyResourceSecret(copy); });
+      codingPlanRows.addEventListener('click', event => {
+        const quota = event.target.closest('[data-coding-plan-quota]');
+        if (quota) return refreshPlanQuota(quota);
+        const copy = event.target.closest('[data-resource-copy]');
+        if (copy) return copyResourceSecret(copy);
+      });
       relayAccountRows.addEventListener('click', event => { const copy = event.target.closest('[data-resource-copy]'); if (copy) copyResourceSecret(copy); });
       refreshAccounts();
       refreshResources();

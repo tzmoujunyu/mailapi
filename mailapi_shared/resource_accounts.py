@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
+from .coding_plan_quota import CODING_PLAN_ENDPOINTS
+
 
 MAX_NAME_LENGTH = 120
 MAX_NOTE_LENGTH = 500
@@ -65,6 +67,9 @@ class ResourceStore:
                     item["url"] = self._url(raw.get("url"))
                 except ResourceStoreError:
                     item["url"] = ""
+            elif self.secret_field == "api_key":
+                provider = raw.get("provider")
+                item["provider"] = provider if isinstance(provider, str) and provider in CODING_PLAN_ENDPOINTS else ""
             items.append(item)
         try:
             os.chmod(self.path, 0o600)
@@ -144,6 +149,13 @@ class ResourceStore:
                 required=True,
             )
             item["url"] = self._url(payload.get("url", current.get("url")))
+        elif self.secret_field == "api_key":
+            provider = payload.get("provider", current.get("provider", ""))
+            if not isinstance(provider, str) or (provider and provider not in CODING_PLAN_ENDPOINTS):
+                raise ResourceStoreError("不支持的 Coding Plan 平台")
+            if current.get("provider") and provider and provider != current["provider"] and not payload.get("api_key"):
+                raise ResourceStoreError("更换平台时请填写对应的 API Key")
+            item["provider"] = provider
         return item
 
     @staticmethod
@@ -162,7 +174,7 @@ class ResourceStore:
         }
         if self.secret_field == "api_key":
             masked = self._mask(item["api_key"])
-            result.update({"api_key": masked, "api_key_masked": masked, "has_api_key": True})
+            result.update({"api_key": masked, "api_key_masked": masked, "has_api_key": True, "provider": item["provider"]})
         else:
             result.update({"account": item.get("account", ""), "url": item.get("url", "")})
             masked = self._mask(item["password"])
@@ -177,6 +189,13 @@ class ResourceStore:
         with self._lock:
             item = next((item for item in self._items if item["id"] == item_id), None)
             return item.get(self.secret_field) if item else None
+
+    def get_coding_plan_auth(self, item_id: str) -> Optional[tuple[str, str]]:
+        with self._lock:
+            item = next((item for item in self._items if item["id"] == item_id), None)
+            if item and self.secret_field == "api_key":
+                return item["provider"], item["api_key"]
+        return None
 
     def create(self, payload: Any) -> Dict[str, Any]:
         with self._lock:

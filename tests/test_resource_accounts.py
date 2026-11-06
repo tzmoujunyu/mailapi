@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,20 @@ class ResourceStoreTests(unittest.TestCase):
 
             self.assertEqual(updated["name"], "Kimi Pro")
             self.assertEqual(store.get_secret(item["id"]), "sk-test-123456")
+
+    def test_legacy_coding_plan_can_enable_quota_without_reentering_its_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "coding-plans.json"
+            path.write_text(json.dumps({"items": [{"id": "old", "name": "Plan", "api_key": "old-key"}]}))
+            store = ResourceStore(path, "api_key", "API key")
+            self.assertEqual(store.list_public()[0]["provider"], "")
+            self.assertEqual(store.update("old", {"provider": "kimi"})["provider"], "kimi")
+            reopened = ResourceStore(path, "api_key", "API key")
+            self.assertEqual(reopened.get_coding_plan_auth("old"), ("kimi", "old-key"))
+            with self.assertRaises(ResourceStoreError):
+                reopened.update("old", {"provider": "zhipu"})
+            with self.assertRaises(ResourceStoreError):
+                reopened.update("old", {"provider": "https://other.example"})
 
     def test_relay_account_requires_account_and_masks_password(self):
         with tempfile.TemporaryDirectory() as directory:

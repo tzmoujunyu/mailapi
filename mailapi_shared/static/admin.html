@@ -75,6 +75,11 @@
       .resource-table th:nth-child(2) { width: 24%; }
       .resource-table th:nth-child(3) { width: 28%; }
       .resource-table th:nth-child(4) { width: 24%; }
+      .coding-plan-table th:nth-child(1) { width: 22%; }
+      .coding-plan-table th:nth-child(2) { width: 14%; }
+      .coding-plan-table th:nth-child(3) { width: 32%; }
+      .coding-plan-table th:nth-child(4) { width: 15%; }
+      .coding-plan-table th:nth-child(5) { width: 17%; }
       .resource-link { color: #2563eb; text-decoration: none; }
       .resource-link:hover { text-decoration: underline; }
       .muted { color: #6b7280; font-size: 13px; }
@@ -238,14 +243,14 @@
         </section>
         <section class="section">
           <div class="section-head">
-            <div><h2>国产模型Coding Plan</h2><p class="muted">维护国产模型 Coding Plan 名称、备注和 API key。列表只显示掩码，修改时 API key 留空会保留原值。</p></div>
+            <div><h2>国产模型Coding Plan</h2><p class="muted">选择套餐平台后可查询剩余额度。列表只显示 API Key 掩码，编辑同一平台的套餐时留空会保留原值。</p></div>
             <button class="btn btn-primary" type="button" id="add-coding-plan">添加 Coding Plan</button>
           </div>
           <div id="coding-plan-message" class="message muted"></div>
           <div class="table-wrap">
-            <table class="resource-table">
-              <thead><tr><th>Coding Plan</th><th>API key</th><th>备注</th><th>管理</th></tr></thead>
-              <tbody id="coding-plan-rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
+            <table class="resource-table coding-plan-table">
+              <thead><tr><th>Coding Plan</th><th>API key</th><th>额度</th><th>备注</th><th>管理</th></tr></thead>
+              <tbody id="coding-plan-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -331,6 +336,11 @@
         <h2 id="coding-plan-title">添加 Coding Plan</h2>
         <div id="coding-plan-error" class="bad" role="alert"></div>
         <label>Coding Plan 名称<input id="coding-plan-name" type="text" maxlength="120" placeholder="例如：Kimi" required /></label>
+        <label>平台<select id="coding-plan-provider">
+          <option value="">仅保存 API Key</option>
+          <option value="zhipu">智谱 GLM Coding Plan（国内）</option>
+          <option value="kimi">Kimi Code（国内）</option>
+        </select></label>
         <label>备注<input id="coding-plan-note" type="text" maxlength="500" placeholder="可选" /></label>
         <label>API key<input id="coding-plan-key" type="password" maxlength="4096" autocomplete="new-password" placeholder="新增时必填，修改时留空保留原值" /></label>
         <div class="dialog-actions"><button id="coding-plan-cancel" class="btn" type="button">取消</button><button id="coding-plan-save" class="btn btn-primary" type="submit">保存</button></div>
@@ -442,6 +452,7 @@
       </form>
     </dialog>
 
+    <script src="/static/coding-plan-quota.js"></script>
     <script>
       const accountRows = document.getElementById('account-rows');
       let accountsLoading = false;
@@ -472,6 +483,7 @@
       const codingPlanDialog = document.getElementById('coding-plan-dialog');
       const codingPlanForm = document.getElementById('coding-plan-form');
       const codingPlanName = document.getElementById('coding-plan-name');
+      const codingPlanProvider = document.getElementById('coding-plan-provider');
       const codingPlanNote = document.getElementById('coding-plan-note');
       const codingPlanKey = document.getElementById('coding-plan-key');
       const codingPlanSave = document.getElementById('coding-plan-save');
@@ -567,7 +579,8 @@
 
       function codingPlanRow(item) {
         const masked = item.api_key_masked || item.api_key || '未设置';
-        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong></td><td>${escapeHtml(masked)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-coding-plan-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-coding-plan-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+        const provider = codingPlanProviders[item.provider];
+        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml, escapeAttr, 'btn')}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-coding-plan-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-coding-plan-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
       }
 
       function relayAccountRow(item) {
@@ -580,7 +593,7 @@
         try {
           const data = await api('/api/coding-plans');
           codingPlans = data.items || [];
-          codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="4" class="muted">暂无 Coding Plan。</td></tr>';
+          codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="5" class="muted">暂无 Coding Plan。</td></tr>';
         } catch (error) { setMessage(codingPlanMessage, error.message, true); }
       }
 
@@ -596,6 +609,7 @@
         editingCodingPlanId = item?.id || '';
         document.getElementById('coding-plan-title').textContent = item ? '修改 Coding Plan' : '添加 Coding Plan';
         codingPlanName.value = item?.name || '';
+        codingPlanProvider.value = item?.provider || '';
         codingPlanNote.value = item?.note || '';
         codingPlanKey.value = '';
         codingPlanKey.required = !item;
@@ -622,7 +636,7 @@
       document.getElementById('coding-plan-cancel').addEventListener('click', () => codingPlanDialog.close());
       codingPlanForm.addEventListener('submit', async (event) => {
         event.preventDefault();
-        const payload = { name: codingPlanName.value.trim(), note: codingPlanNote.value.trim() };
+        const payload = { name: codingPlanName.value.trim(), provider: codingPlanProvider.value, note: codingPlanNote.value.trim() };
         if (codingPlanKey.value.trim()) payload.api_key = codingPlanKey.value.trim();
         try {
           codingPlanSave.disabled = true;
@@ -637,6 +651,17 @@
       });
 
       codingPlanRows.addEventListener('click', async (event) => {
+        const quota = event.target.closest('[data-coding-plan-quota]');
+        if (quota) {
+          quota.disabled = true;
+          try {
+            const path = `/api/coding-plans/${encodeURIComponent(quota.dataset.codingPlanQuota)}/quota`;
+            await api(path, { method: 'POST' });
+            await loadCodingPlans();
+          } catch (error) { setMessage(codingPlanMessage, error.message, true); }
+          finally { quota.disabled = false; }
+          return;
+        }
         const button = event.target.closest('[data-coding-plan-action]');
         if (!button) return;
         const item = codingPlans.find(value => value.id === button.dataset.id);

@@ -91,6 +91,7 @@ from .account_passwords import (
     normalize_totp_secret,
     generate_totp_code,
 )
+from .coding_plan_quota import CodingPlanQuotaCache
 from .resource_accounts import ResourceStore, ResourceStoreError
 from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
 from .accounts import SESSION_COOKIE, create_account_router
@@ -2284,6 +2285,7 @@ GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
 TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
 CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"))
 CODING_PLAN_STORE = ResourceStore(CODING_PLANS_FILE, "api_key", "API key")
+CODING_PLAN_QUOTAS = CodingPlanQuotaCache()
 RELAY_ACCOUNT_STORE = ResourceStore(RELAY_ACCOUNTS_FILE, "password", "密码")
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
@@ -4224,8 +4226,15 @@ async def resource_payload(request: FastAPIRequest, label: str) -> Dict[str, Any
 
 
 def resource_list_response(store: ResourceStore, request: FastAPIRequest, kind: str) -> JSONResponse:
+    items = [item for item in store.list_public() if can_access_resource(request, kind + ":" + item["id"])]
+    if kind == "coding-plan":
+        for item in items:
+            auth = store.get_coding_plan_auth(item["id"])
+            if auth and auth[0]:
+                item["quota_query_enabled"] = EXTERNAL_WATCHERS
+                item["quota"] = CODING_PLAN_QUOTAS.snapshot(item["id"], *auth)
     return JSONResponse(
-        content={"items": [item for item in store.list_public() if can_access_resource(request, kind + ":" + item["id"])], "updated_at": now_iso()},
+        content={"items": items, "updated_at": now_iso()},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
@@ -4250,6 +4259,23 @@ def get_coding_plan_api_key(plan_id: str, request: FastAPIRequest):
         content={"api_key": value},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
+
+
+@app.post("/api/coding-plans/{plan_id}/quota")
+def refresh_coding_plan_quota(plan_id: str, request: FastAPIRequest):
+    resource_key = "coding-plan:" + plan_id
+    auth = CODING_PLAN_STORE.get_coding_plan_auth(plan_id) if can_access_resource(request, resource_key) else None
+    if auth is None:
+        return JSONResponse({"detail": "未找到 Coding Plan"}, status_code=404)
+    if not auth[0]:
+        return JSONResponse({"detail": "请在管理页设置 Coding Plan 平台"}, status_code=409)
+    if not EXTERNAL_WATCHERS:
+        return JSONResponse({"detail": "当前环境未启用外部额度查询"}, status_code=409)
+
+    quota = CODING_PLAN_QUOTAS.refresh(plan_id, *auth)
+    if CODING_PLAN_STORE.get_coding_plan_auth(plan_id) != auth:
+        return JSONResponse({"detail": "Coding Plan 配置已变更，请重新查询"}, status_code=409)
+    return JSONResponse({"quota": quota})
 
 
 @app.get("/api/relay-accounts/{account_id}/password")
@@ -4288,6 +4314,7 @@ async def update_coding_plan(plan_id: str, request: FastAPIRequest):
 def delete_coding_plan(plan_id: str):
     if not CODING_PLAN_STORE.delete(plan_id):
         return JSONResponse(content={"detail": "未找到 Coding Plan"}, status_code=404)
+    CODING_PLAN_QUOTAS.discard(plan_id)
     return JSONResponse(content={"ok": True})
 
 
