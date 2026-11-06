@@ -10,10 +10,10 @@ from mailapi_shared import coding_plan_quota as quota
 
 
 class CodingPlanQuotaTests(unittest.TestCase):
-    def query(self, provider, payload):
+    def query(self, provider, payload, api_key="test-api-key"):
         with patch.object(quota, "build_opener") as opener:
             opener.return_value.open.return_value = io.BytesIO(json.dumps(payload).encode())
-            windows = quota.fetch_coding_plan_quota(provider, "test-api-key")
+            windows = quota.fetch_coding_plan_quota(provider, api_key)
         return windows, opener.return_value.open.call_args.args[0]
 
     def test_zhipu_uses_coding_key_and_reports_model_and_tool_windows(self):
@@ -56,6 +56,29 @@ class CodingPlanQuotaTests(unittest.TestCase):
             ("5 小时", 100), ("每月总额度", 87.7),
         ])
 
+    def test_xiaomi_uses_personal_token_plan_quota_and_utc_period_end(self):
+        windows, request = self.query("xiaomi", {
+            "object": "token_plan",
+            "period": {"end_at": "2027-09-21 23:59:59"},
+            "quota": {"total_credits": 10_000_000, "remaining_credits": 8_500_000},
+        }, api_key="tp-test-key")
+        self.assertEqual(request.full_url, "https://token-plan-cn.xiaomimimo.com/v1/platform/token_plan")
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.get_header("Authorization"), "Bearer tp-test-key")
+        self.assertEqual(windows, [{
+            "label": "周期额度",
+            "remaining_percent": 85,
+            "reset_at": None,
+            "period_end_at": "2027-09-21T23:59:59+00:00",
+        }])
+
+    def test_xiaomi_rejects_keys_outside_the_personal_plan_before_querying(self):
+        with patch.object(quota, "build_opener") as opener:
+            for key in ("sk-test-key", "ttp-test-key"):
+                with self.subTest(key=key), self.assertRaisesRegex(quota.CodingPlanQuotaError, "个人版"):
+                    quota.fetch_coding_plan_quota("xiaomi", key)
+            opener.assert_not_called()
+
     def test_invalid_provider_and_upstream_errors_do_not_expose_secrets(self):
         with patch.object(quota, "build_opener") as opener:
             with self.assertRaises(quota.CodingPlanQuotaError):
@@ -70,18 +93,25 @@ class CodingPlanQuotaTests(unittest.TestCase):
         with self.assertRaisesRegex(quota.CodingPlanQuotaError, "平台未返回可显示的额度"):
             self.query("kimi", {"usages": {"limit_5h": {"reset_time": "2026-11-06T00:00:00Z"}}})
 
-    def test_cache_throttles_queries_and_keeps_last_success_on_failure(self):
+    def test_cache_refreshes_at_five_minutes_and_keeps_last_success_on_failure(self):
         cache = quota.CodingPlanQuotaCache()
-        with patch.object(quota, "fetch_coding_plan_quota", return_value=[{"remaining_percent": 25}]) as fetch:
+        with (
+            patch.object(quota.time, "monotonic", return_value=1000) as clock,
+            patch.object(quota, "fetch_coding_plan_quota", return_value=[{"remaining_percent": 25}]) as fetch,
+        ):
+            self.assertEqual(cache.status("plan", "kimi", "old-key"), (None, True))
             result = cache.refresh("plan", "kimi", "old-key")
+            clock.return_value = 1299
+            self.assertEqual(cache.status("plan", "kimi", "old-key"), (result, False))
             self.assertEqual(cache.refresh("plan", "kimi", "old-key"), result)
             fetch.assert_called_once()
-            self.assertIsNone(cache.snapshot("plan", "kimi", "new-key"))
-
-        with patch.object(quota, "QUERY_COOLDOWN", 0), patch.object(
-            quota, "fetch_coding_plan_quota", side_effect=quota.CodingPlanQuotaError("平台额度接口暂不可用")
-        ):
+            self.assertEqual(cache.status("plan", "kimi", "new-key"), (None, True))
+            clock.return_value = 1300
+            self.assertEqual(cache.status("plan", "kimi", "old-key"), (result, True))
+            fetch.side_effect = quota.CodingPlanQuotaError("平台额度接口暂不可用")
             failed = cache.refresh("plan", "kimi", "old-key")
+            self.assertEqual(cache.status("plan", "kimi", "old-key"), (failed, False))
+            self.assertEqual(fetch.call_count, 2)
         self.assertEqual(failed["windows"], result["windows"])
         self.assertEqual(failed["updated_at"], result["updated_at"])
         self.assertIn("暂不可用", failed["error"])
@@ -99,6 +129,7 @@ class CodingPlanQuotaTests(unittest.TestCase):
             running = pool.submit(cache.refresh, "plan", "kimi", "test-key")
             try:
                 self.assertTrue(started.wait(timeout=2))
+                self.assertEqual(cache.status("plan", "kimi", "test-key"), ({"pending": True}, False))
                 self.assertTrue(cache.refresh("plan", "kimi", "test-key")["pending"])
             finally:
                 complete.set()

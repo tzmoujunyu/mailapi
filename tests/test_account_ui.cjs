@@ -301,23 +301,49 @@ test('homepage and console show returned quota windows without changing the copy
     assert.match(html, /Kimi Code/);
     assert.match(html, /5 小时剩余 <strong>0%/);
     assert.match(html, /重置/);
-    assert.match(html, /data-coding-plan-quota="plan-1">刷新额度/);
+    assert.match(html, /更新于/);
     if (file.endsWith('index.html')) assert.match(html, /data-resource-copy="coding-plan"/);
     assert.ok(!app.calls.some(([url]) => url.includes('/quota')));
+    const xiaomi = { ...item, provider: 'xiaomi', quota: { windows: [
+      { label: '周期额度', remaining_percent: 85, period_end_at: '2027-09-21T23:59:59Z' },
+    ] } };
+    const xiaomiHtml = vm.runInContext(`codingPlanRow(${JSON.stringify(xiaomi)})`, app.context);
+    assert.match(xiaomiHtml, /小米 MiMo Token Plan/);
+    assert.match(xiaomiHtml, /周期额度剩余 <strong>85%/);
+    assert.match(xiaomiHtml, /周期结束/);
   }
 });
 
-test('manual quota refresh preserves preview scope and admin can enable an existing plan', async () => {
-  const home = page('static/index.html', true, 'selected-user'); await flush();
-  await home.click('coding-plan-rows', '[data-coding-plan-quota]', { codingPlanQuota: 'plan-1' });
-  assert.ok(home.calls.some(([url, options]) =>
-    url === '/api/coding-plans/plan-1/quota?preview=1&user_id=selected-user' && options.method === 'POST'));
+test('visible homepage and console automatically query due plans while preserving preview scope', async () => {
+  for (const [file, refresh, suffix] of [
+    ['static/index.html', 'refreshResources()', '?preview=1&user_id=selected-user'],
+    ['static/admin.html', 'loadCodingPlans()', ''],
+  ]) {
+    const app = page(file, Boolean(suffix), 'selected-user'); await flush();
+    const item = { id: 'plan-1', provider: 'xiaomi', quota_query_enabled: true, quota_refresh_due: true };
+    const queries = [];
+    app.context.fetch = async (url, options) => {
+      if (url.includes('/quota')) queries.push([url, options.method]);
+      return { ok: true, json: async () => ({ items: url === `/api/coding-plans${suffix}` ? [item] : [] }) };
+    };
+    app.context.document.hidden = true;
+    await vm.runInContext(refresh, app.context);
+    assert.equal(queries.length, 0);
+    app.context.document.hidden = false;
+    await vm.runInContext(refresh, app.context);
+    assert.deepEqual(queries, [[`/api/coding-plans/plan-1/quota${suffix}`, 'POST']]);
+    item.quota_refresh_due = false;
+    await vm.runInContext(refresh, app.context);
+    assert.equal(queries.length, 1);
+  }
+});
 
+test('admin can enable Xiaomi quota for an existing plan and retain its key', async () => {
   const admin = page('static/admin.html'); await flush();
   vm.runInContext(`openCodingPlanDialog({ id: 'plan-1', name: '旧套餐' })`, admin.context);
-  admin.nodes.get('coding-plan-provider').value = 'zhipu';
+  admin.nodes.get('coding-plan-provider').value = 'xiaomi';
   await admin.nodes.get('coding-plan-form').listeners.submit[0]({ preventDefault() {} });
   const request = admin.calls.find(([url, options]) => url === '/api/admin/coding-plans/plan-1' && options.method === 'PUT');
-  assert.equal(JSON.parse(request[1].body).provider, 'zhipu');
+  assert.equal(JSON.parse(request[1].body).provider, 'xiaomi');
   assert.ok(!Object.hasOwn(JSON.parse(request[1].body), 'api_key'));
 });

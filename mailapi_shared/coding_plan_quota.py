@@ -16,9 +16,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 CODING_PLAN_ENDPOINTS = {
     "zhipu": "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
     "kimi": "https://api.kimi.com/coding/v1/usages",
+    "xiaomi": "https://token-plan-cn.xiaomimimo.com/v1/platform/token_plan",
 }
 QUERY_TIMEOUT = 8
-QUERY_COOLDOWN = 30
+QUERY_INTERVAL_SECONDS = 5 * 60
 MAX_RESPONSE_BYTES = 256 * 1024
 
 
@@ -49,7 +50,7 @@ def _number(value):
     return result if math.isfinite(result) else None
 
 
-def _reset_time(value):
+def _utc_timestamp(value, *, naive_utc=False):
     number = _number(value)
     try:
         if number is not None and number > 0:
@@ -59,6 +60,8 @@ def _reset_time(value):
             reset = datetime.fromisoformat(value)
         else:
             return None
+        if reset.tzinfo is None and naive_utc:
+            reset = reset.replace(tzinfo=timezone.utc)
         return reset.astimezone(timezone.utc).isoformat() if reset.tzinfo else None
     except (OSError, ValueError, OverflowError):
         return None
@@ -70,7 +73,7 @@ def _window(label, used_percent, reset_time):
     return {
         "label": label,
         "remaining_percent": round(max(0, 100 - used_percent), 1),
-        "reset_at": _reset_time(reset_time),
+        "reset_at": _utc_timestamp(reset_time),
     }
 
 
@@ -140,14 +143,30 @@ def _kimi_windows(data):
     return [windows[key] for key in ("limit_5h", "limit_7d", "limit_month_code", "limit_month_total") if key in windows]
 
 
+def _xiaomi_windows(data):
+    if data.get("object") != "token_plan":
+        return []
+    quota = _object(data.get("quota"))
+    total = _number(quota.get("total_credits"))
+    remaining = _number(quota.get("remaining_credits"))
+    if total is None or total <= 0 or remaining is None or remaining < 0:
+        return []
+    used_percent = (1 - min(remaining / total, 1)) * 100
+    window = _window("周期额度", used_percent, None)
+    window["period_end_at"] = _utc_timestamp(_object(data.get("period")).get("end_at"), naive_utc=True)
+    return [window]
+
+
 def fetch_coding_plan_quota(provider: str, api_key: str) -> list[dict]:
     url = CODING_PLAN_ENDPOINTS.get(provider)
     if not url:
         raise CodingPlanQuotaError("请先设置 Coding Plan 平台")
     if not api_key or any(not 33 <= ord(char) <= 126 for char in api_key):
         raise CodingPlanQuotaError("API Key 格式无效")
+    if provider == "xiaomi" and not api_key.startswith("tp-"):
+        raise CodingPlanQuotaError("请使用小米 MiMo 个人版 Token Plan 的专属 API Key（tp- 开头）")
 
-    authorization = f"Bearer {api_key}" if provider == "kimi" else api_key
+    authorization = api_key if provider == "zhipu" else f"Bearer {api_key}"
     request = Request(url, headers={"Accept": "application/json", "User-Agent": "MailAPI"})
     request.add_unredirected_header("Authorization", authorization)
     try:
@@ -170,7 +189,8 @@ def fetch_coding_plan_quota(provider: str, api_key: str) -> list[dict]:
     if str(payload.get("code")) in {"401", "403", "1001", "1002", "40111", "40112"}:
         raise CodingPlanQuotaError("平台拒绝查询，请检查 Coding Plan API Key 和订阅")
     data = _object(payload.get("data", payload))
-    windows = _zhipu_windows(data) if provider == "zhipu" else _kimi_windows(data)
+    parser = {"zhipu": _zhipu_windows, "kimi": _kimi_windows, "xiaomi": _xiaomi_windows}[provider]
+    windows = parser(data)
     if not windows:
         raise CodingPlanQuotaError("平台未返回可显示的额度，请检查订阅和 Coding Plan API Key")
     return windows
@@ -185,7 +205,7 @@ class _QuotaEntry:
 
 
 class CodingPlanQuotaCache:
-    """Share manual checks across users and keep the last result on failures."""
+    """Share one quota check per interval and keep the last result on failures."""
 
     def __init__(self):
         self._entries: dict[str, _QuotaEntry] = {}
@@ -195,13 +215,19 @@ class CodingPlanQuotaCache:
     def _credential(provider: str, api_key: str) -> tuple[str, bytes]:
         return provider, hashlib.sha256(api_key.encode()).digest()
 
-    def snapshot(self, plan_id: str, provider: str, api_key: str) -> dict | None:
+    @staticmethod
+    def _refresh_due(entry: _QuotaEntry) -> bool:
+        return time.monotonic() - entry.checked_at >= QUERY_INTERVAL_SECONDS
+
+    def status(self, plan_id: str, provider: str, api_key: str) -> tuple[dict | None, bool]:
         credential = self._credential(provider, api_key)
         with self._lock:
             entry = self._entries.get(plan_id)
             if not entry or entry.credential != credential:
-                return None
-            return {**(entry.snapshot or {}), "pending": True} if entry.pending else entry.snapshot
+                return None, True
+            if entry.pending:
+                return {**(entry.snapshot or {}), "pending": True}, False
+            return entry.snapshot, self._refresh_due(entry)
 
     def refresh(self, plan_id: str, provider: str, api_key: str) -> dict:
         credential = self._credential(provider, api_key)
@@ -211,8 +237,9 @@ class CodingPlanQuotaCache:
                 entry = self._entries[plan_id] = _QuotaEntry(credential)
             if entry.pending:
                 return {**(entry.snapshot or {}), "pending": True}
-            if entry.snapshot is not None and time.monotonic() - entry.checked_at < QUERY_COOLDOWN:
-                return entry.snapshot
+            if not self._refresh_due(entry):
+                return entry.snapshot or {}
+            entry.checked_at = time.monotonic()
             entry.pending = True
 
         snapshot = entry.snapshot
@@ -224,7 +251,6 @@ class CodingPlanQuotaCache:
         finally:
             with self._lock:
                 entry.snapshot = snapshot
-                entry.checked_at = time.monotonic()
                 entry.pending = False
         return snapshot
 

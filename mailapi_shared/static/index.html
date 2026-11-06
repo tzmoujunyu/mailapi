@@ -311,7 +311,7 @@
       function codingPlanRow(item) {
         const masked = item.api_key_masked || item.api_key || '未设置';
         const provider = codingPlanProviders[item.provider];
-        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml, escapeAttr, 'small-btn')}</td><td><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></td></tr>`;
+        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml)}</td><td><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></td></tr>`;
       }
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
@@ -356,24 +356,11 @@
           document.getElementById('coding-plan-error').textContent = '';
           document.getElementById('relay-account-error').textContent = '';
           renderResources();
+          refreshVisibleCodingPlanQuotas(codingPlans, previewUrl);
         } catch (error) {
           document.getElementById('coding-plan-error').textContent = 'Coding Plan 加载失败，请稍后重试。';
           document.getElementById('relay-account-error').textContent = '中转站账号加载失败，请稍后重试。';
         } finally { resourcesRefreshing = false; }
-      }
-      async function refreshPlanQuota(button) {
-        button.disabled = true;
-        try {
-          const path = `/api/coding-plans/${encodeURIComponent(button.dataset.codingPlanQuota)}/quota`;
-          const response = await fetch(previewUrl(path), { method: 'POST', cache: 'no-store' });
-          if (!response.ok) {
-            const data = await response.json().catch(() => ({}));
-            throw new Error(data.detail || '额度查询失败，请稍后重试');
-          }
-          await refreshResources();
-        } catch (error) {
-          document.getElementById('coding-plan-error').textContent = error.message;
-        } finally { button.disabled = false; }
       }
       async function copySecret(button) {
         button.disabled = true; const original = button.textContent; const startedAt = performance.now();
@@ -405,12 +392,7 @@
         } finally { refreshing = false; }
       }
       rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
-      codingPlanRows.addEventListener('click', event => {
-        const quota = event.target.closest('[data-coding-plan-quota]');
-        if (quota) return refreshPlanQuota(quota);
-        const copy = event.target.closest('[data-resource-copy]');
-        if (copy) return copyResourceSecret(copy);
-      });
+      codingPlanRows.addEventListener('click', event => { const copy = event.target.closest('[data-resource-copy]'); if (copy) return copyResourceSecret(copy); });
       relayAccountRows.addEventListener('click', event => { const copy = event.target.closest('[data-resource-copy]'); if (copy) copyResourceSecret(copy); });
       refreshAccounts();
       refreshResources();

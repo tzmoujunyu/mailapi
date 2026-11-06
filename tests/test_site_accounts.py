@@ -205,9 +205,12 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.assertEqual(self.bob.post(path).status_code, 404)
             suffix = "?preview=1&user_id=" + self.identities["bob"]["id"]
             self.assertEqual(self.admin.post(path + suffix).status_code, 404)
-            self.assertIsNone(self.alice.get("/api/coding-plans").json()["items"][0]["quota"])
+            item = self.alice.get("/api/coding-plans").json()["items"][0]
+            self.assertIsNone(item["quota"])
+            self.assertTrue(item["quota_refresh_due"])
             fetch.assert_not_called()
             with patch.object(self.module, "EXTERNAL_WATCHERS", False):
+                self.assertFalse(self.alice.get("/api/coding-plans").json()["items"][0]["quota_refresh_due"])
                 self.assertEqual(self.alice.post(path).status_code, 409)
             fetch.assert_not_called()
 
@@ -217,6 +220,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.assertEqual(response.json()["quota"]["windows"], windows)
             item = self.alice.get("/api/coding-plans").json()["items"][0]
             self.assertEqual(item["quota"]["windows"], windows)
+            self.assertFalse(item["quota_refresh_due"])
             fetch.assert_called_once_with("kimi", "owned-api-key-secret")
             self.assertEqual(self.admin.put(admin_path, json={"api_key": "replacement-key"}).status_code, 200)
             self.assertIsNone(self.alice.get("/api/coding-plans").json()["items"][0]["quota"])

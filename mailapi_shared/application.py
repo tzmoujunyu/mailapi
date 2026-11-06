@@ -4231,8 +4231,10 @@ def resource_list_response(store: ResourceStore, request: FastAPIRequest, kind: 
         for item in items:
             auth = store.get_coding_plan_auth(item["id"])
             if auth and auth[0]:
+                snapshot, refresh_due = CODING_PLAN_QUOTAS.status(item["id"], *auth)
                 item["quota_query_enabled"] = EXTERNAL_WATCHERS
-                item["quota"] = CODING_PLAN_QUOTAS.snapshot(item["id"], *auth)
+                item["quota_refresh_due"] = EXTERNAL_WATCHERS and refresh_due
+                item["quota"] = snapshot
     return JSONResponse(
         content={"items": items, "updated_at": now_iso()},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
