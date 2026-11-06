@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>登录</title>
+  <title>用户登录</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f4f6f8; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -12,22 +12,41 @@
     .badge { color: #92400e; background: #fef3c7; padding: 3px 8px; border-radius: 4px; font-size: 12px; }
     p { font-size: 13px; color: #6b7280; line-height: 1.6; }
     label { display: block; font-size: 14px; margin: 16px 0; }
+    label[hidden] { display: none; }
     input { width: 100%; padding: 10px; margin-top: 7px; border: 1px solid #c7ced6; border-radius: 6px; font: inherit; }
     input:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
     button { width: 100%; padding: 10px; color: white; background: #2563eb; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
+    .mode-link { display: block; margin-top: 12px; padding: 9px; text-align: center; color: #1d4ed8; border: 1px solid #c7ced6; border-radius: 6px; text-decoration: none; }
     .error { min-height: 20px; color: #b91c1c; }
   </style>
 </head>
 <body>
-  <form method="post" action="/login">
+  <form id="login-form" method="post" action="/login">
     <span class="badge">账号中心</span>
-    <h1>登录账号中心</h1>
-    <p>使用管理员创建的网站账号登录，查看分配给你的资源。</p>
+    <h1 id="login-title">用户登录</h1>
+    <p id="login-description">使用管理员创建的网站账号登录，查看分配给你的资源。</p>
     <label>用户名<input name="username" autocomplete="username" maxlength="64" required autofocus></label>
     <label>密码<input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
-    <label>动态验证码（管理员填写）<input name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"></label>
+    <label id="totp-field" hidden>动态验证码<input name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" disabled></label>
     <p class="error" role="alert"><!-- LOGIN_ERROR --></p>
     <button type="submit">登录</button>
+    <a class="mode-link" id="login-mode" href="/login?mode=admin">管理员登录</a>
   </form>
+  <script>
+    if (new URLSearchParams(location.search).get('mode') === 'admin') {
+      document.title = '管理员登录';
+      document.getElementById('login-title').textContent = document.title;
+      document.getElementById('login-description').textContent = '登录后可进入账号控制台。';
+      document.getElementById('login-form').action = '/login?mode=admin';
+
+      const codeField = document.getElementById('totp-field');
+      codeField.hidden = false;
+      codeField.querySelector('input').disabled = false;
+
+      const modeLink = document.getElementById('login-mode');
+      modeLink.href = '/login';
+      modeLink.textContent = '返回用户登录';
+    }
+  </script>
 </body>
 </html>
