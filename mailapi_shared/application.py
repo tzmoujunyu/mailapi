@@ -159,7 +159,7 @@ def _parse_bool(value: str, default: bool = False) -> bool:
 
 def _validate_configured_test_data(path: Path) -> Path:
     default_data = _production_data / "test"
-    if path == _production_data or (
+    if _production_data.is_relative_to(path) or (
         _production_data in path.parents
         and path != default_data
         and default_data not in path.parents
@@ -299,7 +299,6 @@ CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS = int(
 CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS", "7200"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 CODEX_EXHAUSTED_USED_PERCENT = 99.9
-AUTH_LOCK = threading.Lock()
 GOOGLE_OAUTH_TRANSPORT_LOCK = threading.Lock()
 HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
@@ -362,11 +361,19 @@ def should_use_console_auth() -> bool:
 AUTH_SESSIONS: Dict[str, Dict[str, object]] = {}
 
 
+class GmailAuthCancelled(Exception):
+    pass
+
+
 def oauth_callback_url(account_name: str) -> str:
     return f"{GMAIL_OAUTH_REDIRECT_BASE}/"
 
 
-def create_auth_session(cfg: AccountConfig, managed: bool = False) -> Dict[str, object]:
+def create_auth_session(
+    cfg: AccountConfig,
+    managed: bool = False,
+    stop_event: Optional[threading.Event] = None,
+) -> Dict[str, object]:
     flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
     flow.redirect_uri = oauth_callback_url(cfg["name"])
     auth_url, state = flow.authorization_url(
@@ -386,15 +393,23 @@ def create_auth_session(cfg: AccountConfig, managed: bool = False) -> Dict[str, 
         "cfg": dict(cfg),
     }
     with AUTH_SESSION_LOCK:
+        if stop_event is not None and stop_event.is_set():
+            raise GmailAuthCancelled
         previous = AUTH_SESSIONS.get(cfg["name"])
         if previous:
             AUTH_SESSIONS.pop(str(previous.get("state") or ""), None)
+            previous["cancelled"] = True
+            previous_event = previous["event"]
+            if isinstance(previous_event, threading.Event):
+                previous_event.set()
         AUTH_SESSIONS[cfg["name"]] = session
         AUTH_SESSIONS[state] = session
     return session
 
 
-def wait_for_auth_session(cfg: AccountConfig, session: Dict[str, object]) -> Credentials:
+def wait_for_auth_session(
+    cfg: AccountConfig, session: Dict[str, object], stop_event: threading.Event
+) -> Credentials:
     auth_url = str(session["auth_url"])
     event = session["event"]
     if not hasattr(event, "wait"):
@@ -404,10 +419,15 @@ def wait_for_auth_session(cfg: AccountConfig, session: Dict[str, object]) -> Cre
     print(f"[{cfg['name']}] 授权回调将使用现有 Web 端口：{GMAIL_OAUTH_REDIRECT_BASE}/")
     wait_count = 0
     while not event.wait(CHECK_INTERVAL_SECONDS):
+        if stop_event.is_set():
+            raise GmailAuthCancelled
         wait_count += 1
         if AUTH_REMINDER_EVERY > 0 and wait_count % AUTH_REMINDER_EVERY == 0:
             print(f"[{cfg['name']}] 仍在等待 Google 授权，请打开以下链接：\n{auth_url}")
         save_state(cfg["name"], {"status": "等待 Google 授权，请查看终端授权链接"})
+
+    if stop_event.is_set() or session.get("cancelled"):
+        raise GmailAuthCancelled
 
     error = session.get("error")
     if error:
@@ -424,19 +444,19 @@ def request_gmail_credentials(cfg: AccountConfig, flow: InstalledAppFlow) -> Cre
     return flow.run_console()
 
 
-def request_gmail_browser_auth(cfg: AccountConfig) -> Credentials:
+def request_gmail_browser_auth(cfg: AccountConfig, stop_event: threading.Event) -> Credentials:
+    if stop_event.is_set():
+        raise GmailAuthCancelled
     print(f"[{cfg['name']}] 开始浏览器授权：{cfg['email']}（token: {cfg['token_file']}）")
     if should_use_console_auth():
         flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
         return request_gmail_credentials(cfg, flow)
 
-    session = create_auth_session(cfg)
+    session = create_auth_session(cfg, stop_event=stop_event)
     try:
-        return wait_for_auth_session(cfg, session)
+        return wait_for_auth_session(cfg, session, stop_event)
     finally:
-        with AUTH_SESSION_LOCK:
-            AUTH_SESSIONS.pop(cfg["name"], None)
-            AUTH_SESSIONS.pop(str(session.get("state", "")), None)
+        remove_google_auth_session(session)
 
 
 def is_google_cert_error(detail: str) -> bool:
@@ -2085,6 +2105,18 @@ def migrate_gmail_token_layout(account_name: str, configured_path: str) -> str:
     backup_dir = os.path.join(GMAIL_TOKEN_BACKUP_DIR, account_name)
     ensure_private_directory(backup_dir)
 
+    if IS_TEST:
+        # A copied account config can still refer to the production token.
+        data_dir = Path(DATA_DIR).resolve()
+        source = Path(configured_path).resolve()
+        if TEST_DATA_EPHEMERAL and source.is_relative_to(_production_data):
+            source = data_dir / source.relative_to(_production_data)
+        configured_path = (
+            str(Path(DATA_DIR) / source.relative_to(data_dir))
+            if source.is_relative_to(data_dir)
+            else target
+        )
+
     candidates = [configured_path, target]
     legacy = legacy_gmail_token_path(account_name)
     if legacy:
@@ -2470,10 +2502,11 @@ async def access_guard(request: FastAPIRequest, call_next):
     return response
 
 
-def remove_google_auth_session(session: Dict[str, object], state: str) -> None:
+def remove_google_auth_session(session: Dict[str, object]) -> None:
     with AUTH_SESSION_LOCK:
-        AUTH_SESSIONS.pop(str(session.get("account_name") or ""), None)
-        AUTH_SESSIONS.pop(state, None)
+        for key in (str(session["account_name"]), str(session["state"])):
+            if AUTH_SESSIONS.get(key) is session:
+                AUTH_SESSIONS.pop(key)
 
 
 def finish_google_auth_session(
@@ -2494,7 +2527,7 @@ def finish_google_auth_session(
     event = session["event"]
     if session.get("managed"):
         cfg = complete_managed_gmail_auth(session, credentials)
-        remove_google_auth_session(session, callback.state)
+        remove_google_auth_session(session)
         return cfg
     if hasattr(event, "set"):
         event.set()
@@ -2547,33 +2580,34 @@ def oauth2_callback(account_name: str, request: FastAPIRequest):
     return complete_oauth_callback(request)
 
 
-def get_gmail_service(cfg: AccountConfig):
+def get_gmail_service(cfg: AccountConfig, stop_event: threading.Event):
     creds = None
     token_file = cfg["token_file"]
     if os.path.exists(token_file):
         creds = Credentials.from_authorized_user_file(token_file, SCOPES)
 
     if not creds or not creds.valid:
-        with AUTH_LOCK:
-            if os.path.exists(token_file):
-                creds = Credentials.from_authorized_user_file(token_file, SCOPES)
-                if creds and creds.expired and creds.refresh_token:
-                    try:
-                        creds.refresh(GoogleRequest())
-                    except Exception as e:  # noqa: BLE001
-                        log_exception(f"刷新 Gmail token account={cfg['name']}", e)
-                        if not should_reauth_after_google_refresh_error(e):
-                            raise RuntimeError(format_google_auth_error(e)) from e
-                        backup_path = backup_token_file(token_file)
-                        suffix = f"，旧 token 已备份到 {backup_path}" if backup_path else ""
-                        print(f"[{cfg['name']}] token 刷新失败，将重新授权{suffix}：{format_google_auth_error(e)}")
-                        creds = None
-            if not creds or not creds.valid:
-                if not os.path.exists(cfg["credential_file"]):
-                    raise FileNotFoundError(
-                        f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"
-                    )
-                creds = request_gmail_browser_auth(cfg)
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(GoogleRequest())
+            except Exception as e:  # noqa: BLE001
+                if stop_event.is_set():
+                    raise GmailAuthCancelled from e
+                log_exception(f"刷新 Gmail token account={cfg['name']}", e)
+                if not should_reauth_after_google_refresh_error(e):
+                    raise RuntimeError(format_google_auth_error(e)) from e
+                backup_path = backup_token_file(token_file)
+                suffix = f"，旧 token 已备份到 {backup_path}" if backup_path else ""
+                print(f"[{cfg['name']}] token 刷新失败，将重新授权{suffix}：{format_google_auth_error(e)}")
+                creds = None
+        if not creds or not creds.valid:
+            if not os.path.exists(cfg["credential_file"]):
+                raise FileNotFoundError(
+                    f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"
+                )
+            creds = request_gmail_browser_auth(cfg, stop_event)
+        if stop_event.is_set():
+            raise GmailAuthCancelled
         write_json_atomic(token_file, json.loads(creds.to_json()))
 
     return build("gmail", "v1", credentials=creds)
@@ -2771,7 +2805,9 @@ def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event
     save_state(name, {"status": "启动中"})
 
     try:
-        service = get_gmail_service(cfg)
+        service = get_gmail_service(cfg, stop_event)
+        if stop_event.is_set():
+            return
         profile = service.users().getProfile(userId="me").execute()
         history_id = read_history_id(cfg) or int(profile["historyId"])
 
@@ -2822,6 +2858,8 @@ def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event
                 save_state(name, {"status": f"运行错误: {e}"})
 
             stop_event.wait(CHECK_INTERVAL_SECONDS)
+    except GmailAuthCancelled:
+        return
     except Exception as e:  # noqa: BLE001
         log_exception(f"启动 Gmail 监听 account={name}", e)
         save_state(name, {"status": f"启动失败: {e}"})

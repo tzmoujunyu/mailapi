@@ -37,6 +37,17 @@ class AuthStorageTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertEqual(target.read_text(encoding="utf-8"), "same-token")
 
+    def test_preserves_token_when_relative_and_absolute_paths_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / "account-1.json"
+            target.write_text("current-token", encoding="utf-8")
+
+            result = migrate_auth_file(os.path.relpath(target), target, root / "backups")
+
+            self.assertEqual(result, "unchanged")
+            self.assertEqual(target.read_text(encoding="utf-8"), "current-token")
+
     def test_preserves_conflicting_target_before_migration(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

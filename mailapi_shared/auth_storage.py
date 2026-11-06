@@ -74,7 +74,7 @@ def migrate_auth_file(
 ) -> MigrationResult:
     source_path = Path(source)
     target_path = Path(target)
-    if source_path == target_path:
+    if source_path.resolve() == target_path.resolve():
         secure_auth_file(target_path)
         return "unchanged" if target_path.exists() else "missing"
     if not source_path.is_file():
