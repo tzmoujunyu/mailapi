@@ -44,14 +44,6 @@
       .plan-free, .tag-email { background: #f3f4f6; color: #374151; }
       .plan-other { background: #fef3c7; color: #92400e; }
       .tag-codex { background: #dbeafe; color: #1d4ed8; }
-      .quota-cell { display: flex; flex-direction: column; gap: 6px; }
-      .quota-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
-      .quota-title { color: #6b7280; }
-      .quota-value { font-weight: 800; }
-      .quota-track { width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: #bfdbfe; }
-      .quota-fill { height: 100%; border-radius: inherit; background: #3b82f6; }
-      .quota-empty .quota-track { background: #fecaca; }
-      .quota-empty .quota-fill { background: #ef4444; }
       .status-block { display: grid; gap: 6px; }
       .status-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
       .detail-row td { padding: 0; background: #f8fafc; }
@@ -97,6 +89,7 @@
       @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr; } }
     </style>
   <link rel="stylesheet" href="/static/session.css">
+    <link rel="stylesheet" href="/static/quota.css">
     <script src="/static/session.js" defer></script>
   </head>
   <body>
@@ -116,7 +109,7 @@
         <div id="coding-plan-error" class="status-bad" role="status"></div>
         <div class="table-wrap">
           <table class="resource-table coding-plan-table">
-            <thead><tr><th>Coding Plan</th><th>API key</th><th>额度</th><th>复制</th></tr></thead>
+            <thead><tr><th>Coding Plan</th><th>API key</th><th>剩余额度</th><th>复制</th></tr></thead>
             <tbody id="coding-plan-rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
           </table>
         </div>
@@ -208,9 +201,10 @@
         const reset = item.reset_credits; const resetText = reset && Number.isFinite(reset.available) ? `${reset.available}张重置卡${reset.earliest_expires_at ? `（最早${formatTsSeconds(reset.earliest_expires_at)}到期）` : ''}` : ''; return `<div class="account-main"><span class="account-email">${escapeHtml(email)}</span>${planBadge(item, !row.codex)}</div><div class="muted">${escapeHtml(detail)}</div>${resetText ? `<div class="muted">${escapeHtml(resetText)}</div>` : ''}`;
       }
       function quotaCell(usage) {
-        if (!usage || usage.used_percent === null || usage.used_percent === undefined) return '<span class="muted">未提供</span>';
-        const remain = Math.max(0, Math.min(100, Math.round(100 - Number(usage.used_percent))));
-        return `<div class="quota-cell ${remain <= 0 ? 'quota-empty' : ''}"><div class="quota-head"><span class="quota-title">7天</span><span class="quota-value">${remain}%</span></div><div class="quota-track"><div class="quota-fill" style="width:${remain}%"></div></div><div class="muted">${escapeHtml(formatTsSeconds(usage.resets_at))}</div><div class="muted">${escapeHtml(resetRemain(usage.resets_at))}后刷新</div></div>`;
+        if (usage?.used_percent == null) return '<span class="muted">未提供</span>';
+        const remain = Math.round(100 - Number(usage.used_percent));
+        const details = [formatTsSeconds(usage.resets_at), `${resetRemain(usage.resets_at)}后刷新`];
+        return renderQuotaMeter('7天', remain, details, escapeHtml) || '<span class="muted">未提供</span>';
       }
       function statusReasonText(reason) {
         const normalized = String(reason || '').trim().toLowerCase();
@@ -311,7 +305,7 @@
       function codingPlanRow(item) {
         const masked = item.api_key_masked || item.api_key || '未设置';
         const provider = codingPlanProviders[item.provider];
-        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml)}</td><td><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></td></tr>`;
+        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatDateTime)}</td><td><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></td></tr>`;
       }
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';

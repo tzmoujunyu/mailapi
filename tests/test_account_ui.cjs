@@ -292,14 +292,25 @@ test('console loads the relay website for edits and submits it for new accounts'
   assert.equal(JSON.parse(request[1].body).url, 'https://new.example/panel');
 });
 
-test('homepage and console show returned quota windows without changing the copy action', async () => {
+test('homepage and console render each Coding Plan window with the Codex quota meter', async () => {
   const item = { id: 'plan-1', name: '编码套餐', provider: 'kimi', api_key_masked: '••••••', quota_query_enabled: true,
-    quota: { updated_at: '2026-11-06T00:00:00Z', windows: [{ label: '5 小时', remaining_percent: 0, reset_at: '2026-11-06T01:00:00Z' }] } };
+    quota: { updated_at: '2026-11-06T00:00:00Z', windows: [
+      { label: '5 小时', remaining_percent: 0, reset_at: '2026-11-06T01:00:00Z' },
+      { label: '每周', remaining_percent: 72.5 },
+    ] } };
   for (const file of ['static/index.html', 'static/admin.html']) {
     const app = page(file); await flush();
+    const codex = vm.runInContext('quotaCell({ used_percent: 25 })', app.context);
+    assert.match(codex, /class="quota-track" role="meter"/);
+    assert.match(codex, /class="quota-fill" style="width:75%"/);
     const html = vm.runInContext(`codingPlanRow(${JSON.stringify(item)})`, app.context);
     assert.match(html, /Kimi Code/);
-    assert.match(html, /5 小时剩余 <strong>0%/);
+    assert.match(html, /class="quota-cell quota-empty"/);
+    assert.match(html, /class="quota-value">0%/);
+    assert.match(html, /role="meter" aria-label="5 小时剩余比例"[^>]*aria-valuenow="0"/);
+    assert.match(html, /class="quota-fill" style="width:0%"/);
+    assert.match(html, /role="meter" aria-label="每周剩余比例"[^>]*aria-valuenow="72.5"/);
+    assert.match(html, /class="quota-fill" style="width:72.5%"/);
     assert.match(html, /重置/);
     assert.match(html, /更新于/);
     if (file.endsWith('index.html')) assert.match(html, /data-resource-copy="coding-plan"/);
@@ -309,7 +320,7 @@ test('homepage and console show returned quota windows without changing the copy
     ] } };
     const xiaomiHtml = vm.runInContext(`codingPlanRow(${JSON.stringify(xiaomi)})`, app.context);
     assert.match(xiaomiHtml, /小米 MiMo Token Plan/);
-    assert.match(xiaomiHtml, /周期额度剩余 <strong>85%/);
+    assert.match(xiaomiHtml, /role="meter" aria-label="周期额度剩余比例"[^>]*aria-valuenow="85"/);
     assert.match(xiaomiHtml, /周期结束/);
   }
 });

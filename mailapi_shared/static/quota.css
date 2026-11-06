@@ -1,0 +1,9 @@
+.quota-stack { display: grid; gap: 10px; }
+.quota-cell { display: flex; flex-direction: column; gap: 6px; }
+.quota-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.quota-title { color: #6b7280; }
+.quota-value { font-weight: 800; }
+.quota-track { width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: #bfdbfe; }
+.quota-fill { height: 100%; border-radius: inherit; background: #3b82f6; }
+.quota-empty .quota-track { background: #fecaca; }
+.quota-empty .quota-fill { background: #ef4444; }

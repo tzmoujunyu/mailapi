@@ -119,10 +119,6 @@
         font-size: 11px;
         font-weight: 700;
       }
-      .quota { display: grid; gap: 5px; }
-      .quota-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
-      .track { height: 6px; overflow: hidden; border-radius: 5px; background: #dbeafe; }
-      .fill { height: 100%; background: #2563eb; }
       dialog {
         width: min(420px, calc(100vw - 24px));
         border: 1px solid #c7ced6;
@@ -189,6 +185,7 @@
       }
     </style>
   <link rel="stylesheet" href="/static/session.css">
+    <link rel="stylesheet" href="/static/quota.css">
     <script src="/static/session.js" defer></script>
   </head>
   <body>
@@ -249,7 +246,7 @@
           <div id="coding-plan-message" class="message muted"></div>
           <div class="table-wrap">
             <table class="resource-table coding-plan-table">
-              <thead><tr><th>Coding Plan</th><th>API key</th><th>额度</th><th>备注</th><th>管理</th></tr></thead>
+              <thead><tr><th>Coding Plan</th><th>API key</th><th>剩余额度</th><th>备注</th><th>管理</th></tr></thead>
               <tbody id="coding-plan-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
@@ -581,7 +578,7 @@
       function codingPlanRow(item) {
         const masked = item.api_key_masked || item.api_key || '未设置';
         const provider = codingPlanProviders[item.provider];
-        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-coding-plan-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-coding-plan-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatTime)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-coding-plan-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-coding-plan-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
       }
 
       function relayAccountRow(item) {
@@ -1091,9 +1088,9 @@
       }
 
       function quotaCell(usage) {
-        if (!usage || usage.used_percent === null || usage.used_percent === undefined) return '<span class="muted">未提供</span>';
-        const remain = Math.max(0, Math.min(100, Math.round(100 - Number(usage.used_percent))));
-        return `<div class="quota"><div class="quota-head"><span>周额度</span><strong>${remain}%</strong></div><div class="track"><div class="fill" style="width:${remain}%"></div></div><div class="muted">${escapeHtml(formatTime(usage.resets_at))} 重置</div></div>`;
+        if (usage?.used_percent == null) return '<span class="muted">未提供</span>';
+        const remain = Math.round(100 - Number(usage.used_percent));
+        return renderQuotaMeter('周额度', remain, [`${formatTime(usage.resets_at)} 重置`], escapeHtml) || '<span class="muted">未提供</span>';
       }
 
       function codexState(item) {
