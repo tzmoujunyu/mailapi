@@ -6,8 +6,8 @@
 
 正式入口 `python code-receive.py` 和测试入口 `python code-receive-test.py` 都加载
 `mailapi_shared.application`。入口文件只选择运行模式；登录、路由、网站账号、资源聚合、
-邮件监听和授权流程由同一份应用实现。正式版默认端口 8000，测试版默认端口 8001；测试版
-默认监听 `127.0.0.1`，需要直接通过服务器地址访问时设置 `TEST_HOST=0.0.0.0`。
+邮件监听和授权流程由同一份应用实现。正式版默认端口 8000，测试版默认端口 8001。测试版
+只监听回环地址，远程调试时用 SSH 端口转发访问。
 
 测试版首次启动：
 
@@ -18,9 +18,8 @@ chmod 600 .env.test
 python code-receive-test.py
 ```
 
-访问 `http://localhost:8001/login`，用户名为 `admin`，密码为上述独立密码。正式版也使用
-相同的用户名加密码登录；首次创建正式版 admin 时使用 `ADMIN_ACCESS_PASSWORD`，未设置时
-回退到现有 `ACCESS_PASSWORD`。
+访问 `http://localhost:8001/login`，用户名为 `admin`，密码为上述独立密码。正式版管理员
+还需要验证器动态码，配置步骤见[迁移环境清单](environment.md#正式版-env)。
 默认会为本次进程创建临时数据快照；测试版 admin 写入临时目录中的
 `site_accounts.json`，进程退出后随快照一起删除。初始化完成后可从配置中移除初始密码。
 
@@ -94,7 +93,7 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 
 | 接口 | 用途 |
 | --- | --- |
-| `POST /api/auth/login` | JSON 用户名和密码登录，响应设置会话 cookie |
+| `POST /api/auth/login` | JSON `username`、`password`，正式版管理员还需 `totp_code`。响应设置会话 cookie |
 | `GET /api/auth/me` | 当前账号和所属分组 |
 | `POST /api/auth/logout`、`POST /api/auth/password` | 退出、修改本人密码 |
 | `GET/POST /api/admin/users` | 列表、创建网站账号 |
@@ -118,7 +117,8 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 
 Gmail 可以复用根目录 `credentials.json` 中的 OAuth 客户端配置；这不是邮箱 token。
 在 Google 客户端中增加测试回调 `http://localhost:8001/`。
-公网地址可以在 `.env.test` 设置 `TEST_GMAIL_OAUTH_REDIRECT_BASE` 和 `TEST_APP_BASE_URL`。
+使用 SSH 转发时可以在 `.env.test` 设置 `TEST_GMAIL_OAUTH_REDIRECT_BASE` 和 `TEST_APP_BASE_URL`，
+使回调地址与浏览器使用的本机端口匹配。
 Outlook 在 `.env.test` 配置 `OUTLOOK_CLIENT_ID`、`OUTLOOK_CLIENT_SECRET` 和独立的
 `OUTLOOK_OAUTH_REDIRECT_URI`，指向测试服务的 `/api/admin/outlook/auth/callback`。
 

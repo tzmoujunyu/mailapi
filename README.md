@@ -6,21 +6,22 @@
 测试页面读取和修改这份副本，进程退出后临时目录自动删除。两边原有模块路径和静态目录
 保留为兼容入口，但实际登录、路由和业务实现只有一份。
 首次启动测试版前复制 `.env.test.example` 为 `.env.test` 并设置 `TEST_ADMIN_PASSWORD`；
-正式版首次初始化 admin 使用 `ADMIN_ACCESS_PASSWORD`（未设置时回退到 `ACCESS_PASSWORD`）。
-两版都使用用户名 `admin` 加密码登录，登录后从 `/admin/access` 管理网站账号和分组。
+正式版需要先为 `admin` 配置密码和验证器。登录后从 `/admin/access` 管理网站账号和分组。
 参见[权限说明及测试开发与同步流程](docs/development.md)、[架构说明](docs/architecture.md)和[迁移环境清单](docs/environment.md)。
 
 ## 启动
 
 ```bash
-export ACCESS_PASSWORD='你的口令'
-export ADMIN_ACCESS_PASSWORD='你的管理员口令'
+python -m mailapi_shared.admin_credentials --data-dir runtime
 python3 code-receive.py
 ```
 
-正式版暂时兼容已有 `ACCESS_PASSWORD` / `ADMIN_ACCESS_PASSWORD` 访问口令、请求头和旧 cookie；
-新建的网站账号统一使用用户名和密码登录。测试版默认不读取正式 `.env`，只使用 `.env.test` 和
-临时数据目录。
+首次启动或从旧版本升级时，在正式进程停止期间执行上面的凭据配置命令。命令会交互式读取至少
+15 个字符的新密码和验证器的 32 字符 Base32 密钥。正式版管理员使用用户名、密码和验证器动态码登录。
+普通用户继续使用现有用户名和密码。升级后可从 `.env` 移除旧共享口令。
+
+正式版默认只监听本机。经外部反代对公网服务时，需要配置 HTTPS 站点地址和反代 IP，详见[迁移环境清单](docs/environment.md#正式版-env)。
+测试版默认使用独立 `.env.test` 和临时数据目录，可通过 SSH 转发本机端口访问。
 
 依赖可通过 `pip install -r requirements.txt` 安装。网页控制台当前支持 Gmail 和 Outlook；Proton 旧实现仍保留在代码中，但不再提供新增和登录入口。
 
@@ -155,7 +156,7 @@ MAIL_RELAY_SECRET_FILE=mail_relay_secret
 MAIL_RELAY_ACCOUNT=account-4
 ```
 
-公网服务器必须使用有效 HTTPS。中继请求使用 HMAC-SHA256、五分钟时间窗和一次性 nonce 验证；它不使用网页的 `ACCESS_PASSWORD`。
+公网服务器必须使用有效 HTTPS。中继请求使用独立密钥，通过 HMAC-SHA256、五分钟时间窗和一次性 nonce 验证。
 
 如果服务器没有 HTTPS，可在本地电脑建立 SSH 隧道：
 

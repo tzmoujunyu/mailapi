@@ -36,7 +36,7 @@ conda activate mailapi
 python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-当前服务器环境路径是 `/home/moujy/.conda/envs/gmail`。项目目前没有完整依赖 lockfile，迁移验证后可以保存目标环境的 `python -m pip freeze` 作为版本记录。
+项目目前没有完整依赖 lockfile，迁移验证后可以保存目标环境的 `python -m pip freeze` 作为版本记录。
 
 ## 启动入口
 
@@ -45,7 +45,7 @@ python -m pip install -r requirements.txt -r requirements-dev.txt
 | 正式版 | `python code-receive.py` | 8000 | 使用 `runtime/` |
 | 测试版 | `python code-receive-test.py` | 8001 | 默认复制正式运行数据到临时目录 |
 
-正式版默认监听 `0.0.0.0`，测试版默认监听 `127.0.0.1`。可分别通过 `MAILAPI_HOST` 和 `TEST_HOST` 调整。
+两版默认监听 `127.0.0.1`。正式版监听其他地址时需要配置可信反代，测试版只允许回环地址。
 
 每个端口只运行一个服务进程。启动前检查旧进程，启动后检查端口：
 
@@ -58,21 +58,27 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 
 ### 正式版 `.env`
 
-首次网站账号初始化至少需要 `ADMIN_ACCESS_PASSWORD`，已有旧部署还应保留 `ACCESS_PASSWORD`。
+正式进程停止后，从项目根目录运行 `python -m mailapi_shared.admin_credentials --data-dir runtime`。
+命令会交互式读取至少 15 字符的密码和 32 字符的随机 Base32 TOTP 密钥。将同一密钥录入验证器
+的基于时间条目。若设置了 `MAILAPI_DATA_DIR`，命令应指向相同目录。
+配置其他普通管理员时加 `--username 用户名`。配置会撤销目标账号的已有会话。
 
 | 配置 | 作用 |
 | --- | --- |
-| `ACCESS_PASSWORD` | 旧版访问口令兼容 |
-| `ADMIN_ACCESS_PASSWORD` | 正式版 admin 初始化和旧管理员口令 |
 | `PORT`、`MAILAPI_HOST` | 正式网站端口和监听地址 |
+| `MAILAPI_TRUSTED_PROXY_IPS` | 反代连接源站时使用的确切 IP，逗号分隔 |
 | `MAILAPI_DATA_DIR` | 正式运行数据目录，默认 `runtime` |
 | `MAILAPI_EXTERNAL_WATCHERS` | 外部邮箱和 Codex 监听，默认开启 |
-| `APP_BASE_URL` | 网站公网基地址 |
+| `APP_BASE_URL` | 网站基地址，通过反代公开时填写 HTTPS 域名 |
 | `GMAIL_OAUTH_REDIRECT_BASE` | Gmail OAuth 回调基地址 |
 | `CODEX_OAUTH_REDIRECT_BASE`、`CODEX_LOGIN_ADDR` | Codex OAuth 回调配置 |
 | `MAIL_RELAY_SECRET_FILE` | 邮件中继密钥文件 |
 | `OUTLOOK_CLIENT_ID`、`OUTLOOK_CLIENT_SECRET`、`OUTLOOK_TENANT`、`OUTLOOK_OAUTH_REDIRECT_URI` | Outlook Graph OAuth |
 | `PROTON_CONFIG_FILE` | Proton 配置文件路径 |
+
+公网反代需保留站点 `Host`，覆盖客户端传入的 `X-Forwarded-Proto` 和 `X-Forwarded-For`，
+分别传入 `https` 与代理确认的客户端地址。源站网络层应只对反代开放服务端口，反代访问日志应省略
+OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求体上限为 1 MiB。
 
 ### 测试版 `.env.test`
 
@@ -81,7 +87,7 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 | 配置 | 作用 |
 | --- | --- |
 | `TEST_ADMIN_PASSWORD` | 测试版 admin 初始化口令 |
-| `TEST_PORT`、`TEST_HOST` | 测试网站端口和监听地址 |
+| `TEST_PORT`、`TEST_HOST` | 测试网站端口和回环地址 |
 | `TEST_DATA_DIR` | 独立测试数据目录，不设置时使用临时目录 |
 | `TEST_EXTERNAL_WATCHERS` | 是否连接真实邮箱和 Codex，默认关闭 |
 | `TEST_APP_BASE_URL`、`TEST_GMAIL_OAUTH_REDIRECT_BASE` | 测试版网站和 Gmail 回调地址 |

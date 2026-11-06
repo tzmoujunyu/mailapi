@@ -200,8 +200,8 @@
             <h2>账号管理</h2>
             <div class="actions">
               <button class="btn btn-primary" type="button" data-codex-auth="admin-import">添加 Codex 账号</button>
-              <a class="btn btn-primary" href="/api/admin/gmail/auth/start" target="_blank" rel="noopener">添加 Gmail</a>
-              <a class="btn" href="/api/admin/outlook/auth/start" target="_blank" rel="noopener">添加 Outlook</a>
+              <form action="/api/admin/gmail/auth/start" method="post" target="_blank" rel="noopener"><button class="btn btn-primary">添加 Gmail</button></form>
+              <form action="/api/admin/outlook/auth/start" method="post" target="_blank" rel="noopener"><button class="btn">添加 Outlook</button></form>
             </div>
           </div>
           <p class="muted">同一邮箱自动合并为一个账号，密码和 2FA 共享。下架后仅管理员可查看和使用，可随时重新上架。可单独移除 Codex 或邮箱，也可删除整个账号。</p>
@@ -522,7 +522,7 @@
         try {
           let path = `/api/codex/auth/start?format=json&reason=${encodeURIComponent(button.dataset.codexAuth)}`;
           if (button.dataset.id) path += `&account_id=${encodeURIComponent(button.dataset.id)}`;
-          const data = await api(path, { signal: AbortSignal.timeout(15000) });
+          const data = await api(path, { method: 'POST', signal: AbortSignal.timeout(15000) });
           if (request !== codexAuthRequest) return;
           if (!data.auth_url) throw new Error('未取得授权链接，请关闭后重试。');
           codexAuthUrl.value = data.auth_url;
@@ -1122,7 +1122,7 @@
           <button class="btn" type="button" data-codex-auth="admin-reauth" data-id="${escapeAttr(account.id)}">重新授权</button>
           <button class="btn btn-danger" data-codex-action="delete" data-id="${escapeAttr(account.id)}">移除 Codex</button></div>`).join('');
         const mailActions = item.mail.map(mail => `<div class="actions"><span class="muted">${escapeHtml(mail.provider || '邮箱')}</span>
-          ${['gmail', 'outlook'].includes(mail.provider) ? `<a class="btn" href="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" target="_blank" rel="noopener">重新授权</a>` : ''}
+          ${['gmail', 'outlook'].includes(mail.provider) ? `<form action="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" method="post" target="_blank" rel="noopener"><button class="btn">重新授权</button></form>` : ''}
           <button class="btn" data-mail-action="${mail.enabled === false ? 'enable' : 'disable'}" data-name="${escapeAttr(mail.name)}">${mail.enabled === false ? '启用监听' : '停用监听'}</button>
           <button class="btn btn-danger" data-mail-action="delete" data-name="${escapeAttr(mail.name)}">移除邮箱</button></div>`).join('');
         return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.email || '等待授权')}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? escapeHtml(subscriptionText(primary)) : '仅邮箱验证'}</div></td>

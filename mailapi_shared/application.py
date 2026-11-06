@@ -95,6 +95,7 @@ from .coding_plan_quota import CodingPlanQuotaCache
 from .resource_accounts import ResourceStore, ResourceStoreError
 from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
 from .accounts import SESSION_COOKIE, create_account_router
+from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
 
 
 def load_dotenv_file(path: str = ".env") -> None:
@@ -148,7 +149,7 @@ def _setting(name: str, test_name: Optional[str] = None, default: str = "") -> s
 APP_HOST = _setting(
     "MAILAPI_HOST",
     "TEST_HOST",
-    "127.0.0.1" if IS_TEST else "0.0.0.0",
+    "127.0.0.1",
 )
 
 
@@ -312,9 +313,6 @@ MAIL_ACCOUNTS_LOCK = threading.Lock()
 MAIL_WATCHERS_LOCK = threading.Lock()
 MAIL_RELAY_REPLAY_LOCK = threading.Lock()
 ERROR_LOGGER = logging.getLogger(f"mailapi.{APP_MODE}.errors")
-ACCESS_PASSWORD = os.getenv("ACCESS_PASSWORD", "").strip() if not IS_TEST else ""
-ADMIN_ACCESS_PASSWORD = os.getenv("ADMIN_ACCESS_PASSWORD", "").strip() if not IS_TEST else ""
-ACCESS_COOKIE_NAME = "chatgpt_code_access"
 OPENAI_CODE_SENDERS = {
     item.strip().lower()
     for item in os.getenv(
@@ -352,6 +350,7 @@ class AccountConfig(TypedDict, total=False):
 
 
 app = FastAPI(title="MailAPI 测试版" if IS_TEST else "MailAPI")
+app.add_middleware(BodyLimitMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -540,6 +539,7 @@ DEFAULT_ACCOUNTS: List[AccountConfig] = [] if IS_TEST else [
 ]
 
 
+ensure_private_directory(DATA_DIR)
 os.makedirs(HISTORY_DIR, exist_ok=True)
 os.makedirs(HISTORY_ID_DIR, exist_ok=True)
 ensure_private_directory(CODEX_AUTH_DIR)
@@ -548,7 +548,7 @@ ensure_private_directory(GMAIL_TOKEN_DIR)
 ensure_private_directory(GMAIL_TOKEN_BACKUP_DIR)
 ensure_private_directory(OUTLOOK_TOKEN_DIR)
 os.makedirs(PROTON_SESSION_DIR, exist_ok=True)
-os.makedirs(ERROR_LOG_DIR, exist_ok=True)
+ensure_private_directory(ERROR_LOG_DIR)
 
 
 def load_or_create_mail_relay_secret() -> str:
@@ -2277,7 +2277,7 @@ def next_outlook_account_config() -> AccountConfig:
     }
 
 
-app.state.site_accounts = SiteAccountStore(Path(DATA_DIR) / "site_accounts.json")
+app.state.site_accounts = SiteAccountStore(Path(DATA_DIR) / "site_accounts.json", require_admin_mfa=not IS_TEST)
 
 ACCOUNTS = load_accounts()
 MAIL_FILTERS = load_mail_filters()
@@ -2376,39 +2376,7 @@ def request_access_role(request: FastAPIRequest) -> Optional[str]:
     user = getattr(request.state, "site_user", None)
     if user:
         return "admin" if user["role"] in ADMIN_ROLES else "user"
-    cookie_token = request.cookies.get(ACCESS_COOKIE_NAME, "")
-    header_token = request.headers.get("x-access-token", "")
-    query_token = request.query_params.get("access_token", "")
-    bearer = request.headers.get("authorization", "")
-    bearer_token = bearer.split(" ", 1)[1] if bearer.startswith("Bearer ") else ""
-    tokens = (cookie_token, header_token, query_token, bearer_token)
-    if ADMIN_ACCESS_PASSWORD and any(token == ADMIN_ACCESS_PASSWORD for token in tokens):
-        return "admin"
-    if ACCESS_PASSWORD and any(token == ACCESS_PASSWORD for token in tokens):
-        return "user"
     return None
-
-
-def legacy_access_login(request: FastAPIRequest, access_token: str, *, browser: bool = False):
-    role = "admin" if access_token == ADMIN_ACCESS_PASSWORD else "user" if access_token == ACCESS_PASSWORD else None
-    if role is None:
-        if browser:
-            page = (STATIC_DIR / "login.html").read_text(encoding="utf-8")
-            return HTMLResponse(page.replace("<!-- LOGIN_ERROR -->", "用户名或密码错误"), status_code=401)
-        raise SiteAccountError("用户名或密码错误", 401)
-    if browser:
-        response = RedirectResponse("/", status_code=302)
-    else:
-        response = JSONResponse({"ok": True, "role": role})
-    response.set_cookie(
-        ACCESS_COOKIE_NAME,
-        access_token,
-        httponly=True,
-        max_age=86400,
-        samesite="lax",
-        secure=request.url.scheme == "https",
-    )
-    return response
 
 
 def request_access_ok(request: FastAPIRequest) -> bool:
@@ -2420,12 +2388,7 @@ def can_access_resource(request: FastAPIRequest, key: str) -> bool:
         return True
     user = getattr(request.state, "site_user", None)
     if not user:
-        if is_user_preview(request):
-            # Legacy production admin sessions have no website-account id.
-            # Preview still uses the public/listed resource view in that mode.
-            return request_access_role(request) == "admin"
-        # Legacy production user tokens retain the pre-account-console view.
-        return request_access_role(request) == "user" and not is_user_preview(request)
+        return False
     subject_id = request.query_params.get("user_id", user["id"]) if is_user_preview(request) else user["id"]
     return request.app.state.site_accounts.resource_allowed(subject_id, key)
 
@@ -2482,12 +2445,12 @@ async def access_guard(request: FastAPIRequest, call_next):
         or path.startswith("/oauth2callback/")
         or (path == "/" and request.query_params.get("code") and request.query_params.get("state"))
     )
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and not callback:
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and path != "/api/internal/mail-relay":
         origin = request.headers.get("origin")
-        request_host = request.headers.get("host", "").lower()
-        origin_host = urllib.parse.urlparse(origin).netloc.lower() if origin else ""
         fetch_site = request.headers.get("sec-fetch-site", "").lower()
-        if (origin_host and origin_host != request_host) or (fetch_site == "cross-site" and not origin):
+        if fetch_site in {"cross-site", "same-site"} or (
+            origin is not None and not same_origin(origin, request.url.scheme, request.headers.get("host", ""))
+        ):
             return JSONResponse({"detail": "不允许跨站请求"}, status_code=403)
     public = callback or path in {"/login", "/api/auth/login"}
     role = request_access_role(request)
@@ -2495,13 +2458,9 @@ async def access_guard(request: FastAPIRequest, call_next):
         if path.startswith("/api/"):
             return JSONResponse({"detail": "需要管理员权限" if role else "请先登录"}, status_code=403 if role else 401)
         if role:
-            status_code = 303 if request.state.site_user else 307
-            return RedirectResponse("/", status_code=status_code)
+            return RedirectResponse("/", status_code=303)
         return RedirectResponse("/login", status_code=303)
-    response = await call_next(request)
-    response.headers["Cache-Control"] = "no-store, private"
-    response.headers["Pragma"] = "no-cache"
-    return response
+    return await call_next(request)
 
 
 def remove_google_auth_session(session: Dict[str, object]) -> None:
@@ -3289,7 +3248,10 @@ def totp_secret_for_account(cfg: AccountConfig) -> Optional[str]:
 
 @app.on_event("startup")
 def start_watchers():
-    app.state.site_accounts.ensure_admin(_setting("ADMIN_ACCESS_PASSWORD", "TEST_ADMIN_PASSWORD") or os.getenv("ACCESS_PASSWORD", ""))
+    if IS_TEST:
+        app.state.site_accounts.ensure_admin(os.getenv("TEST_ADMIN_PASSWORD", "").strip())
+    else:
+        app.state.site_accounts.check_admin_setup()
     print(f"{APP_MODE} 版已启用网站账号登录；最高管理员用户名：admin")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
     print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
@@ -3629,7 +3591,7 @@ def delete_mail_filter(filter_id: str):
     return JSONResponse(content={"ok": True})
 
 
-@app.get("/api/admin/gmail/auth/start")
+@app.post("/api/admin/gmail/auth/start")
 def start_gmail_admin_auth(account_name: Optional[str] = None):
     if account_name:
         existing = find_gmail_account(account_name)
@@ -3650,7 +3612,7 @@ def start_gmail_admin_auth(account_name: Optional[str] = None):
     except Exception as e:  # noqa: BLE001
         log_exception(f"发起 Gmail 授权 account={cfg['name']}", e)
         return JSONResponse(content={"detail": format_google_auth_error(e)}, status_code=400)
-    return RedirectResponse(url=str(session["auth_url"]), status_code=302)
+    return RedirectResponse(url=str(session["auth_url"]), status_code=303)
 
 
 @app.post("/api/admin/gmail/auth/complete")
@@ -3700,7 +3662,7 @@ async def complete_gmail_admin_auth(request: FastAPIRequest):
     )
 
 
-@app.get("/api/admin/outlook/auth/start")
+@app.post("/api/admin/outlook/auth/start")
 def start_outlook_admin_auth(account_name: Optional[str] = None):
     if account_name:
         existing = find_outlook_account(account_name)
@@ -3740,7 +3702,7 @@ def start_outlook_admin_auth(account_name: Optional[str] = None):
             error,
         )
         return outlook_callback_page(False, str(error), 400)
-    return RedirectResponse(url=str(flow["auth_uri"]), status_code=302)
+    return RedirectResponse(url=str(flow["auth_uri"]), status_code=303)
 
 
 def outlook_callback_page(
@@ -4071,7 +4033,7 @@ def ensure_codex_login_server() -> None:
         print(f"Codex 授权回调监听中：http://{host}:{port}/auth/callback")
 
 
-@app.get("/api/codex/auth/start")
+@app.post("/api/codex/auth/start")
 def start_codex_auth(request: FastAPIRequest):
     reason = request.query_params.get("reason", "import").strip() or "import"
     account_id = request.query_params.get("account_id", "").strip()
@@ -4099,7 +4061,7 @@ def start_codex_auth(request: FastAPIRequest):
     headers = {"Cache-Control": "no-store, private", "Pragma": "no-cache"}
     if request.query_params.get("format") == "json":
         return JSONResponse(content={"auth_url": session["auth_url"]}, headers=headers)
-    return RedirectResponse(url=str(session["auth_url"]), status_code=302, headers=headers)
+    return RedirectResponse(url=str(session["auth_url"]), status_code=303, headers=headers)
 
 
 @app.post("/api/codex/auth/complete")
@@ -4543,15 +4505,30 @@ def resource_catalog() -> List[Dict[str, Any]]:
     return items
 
 
-app.state.legacy_access_login = legacy_access_login
 app.include_router(create_account_router(STATIC_DIR, resource_catalog))
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 def run() -> None:
     import uvicorn
 
+    trusted_proxies = [value.strip() for value in _setting("MAILAPI_TRUSTED_PROXY_IPS").split(",") if value.strip()]
+    loopback = APP_HOST in {"127.0.0.1", "::1", "localhost"}
+    server = app
+    if IS_TEST:
+        if not loopback:
+            raise ValueError("测试版必须绑定回环地址")
+        app.router.add_event_handler("shutdown", _cleanup_test_data)
+    elif trusted_proxies:
+        server = ProxyIngress(app, APP_BASE_URL, trusted_proxies)
+    elif not loopback:
+        raise ValueError("非回环监听必须配置 MAILAPI_TRUSTED_PROXY_IPS 和 HTTPS APP_BASE_URL")
+
     uvicorn.run(
-        app,
+        server,
         host=APP_HOST,
         port=APP_PORT,
+        proxy_headers=False,
+        access_log=False,
+        limit_concurrency=128,
     )

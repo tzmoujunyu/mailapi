@@ -4,6 +4,15 @@ google-auth
 google-auth-oauthlib
 msal>=1.31
 protonmail-api-client>=2.4.3
-python-multipart
+python-multipart>=0.0.33
 pyotp>=2.9
 uvicorn
+
+# Security floors for web, HTTP and OAuth dependencies.
+anyio>=4.16.0
+cryptography>=50.0.2
+httplib2>=0.32.1
+oauthlib>=4.0.1
+PyJWT>=2.15.1
+starlette>=1.10.0
+urllib3>=2.8.0

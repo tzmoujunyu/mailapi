@@ -88,7 +88,7 @@ class GmailAuthorizationTests(unittest.TestCase):
         )
         self.flow.return_value = flow
         name = self.cfg["name"]
-        self.assertEqual(self.app.start_gmail_admin_auth(name).status_code, 302)
+        self.assertEqual(self.app.start_gmail_admin_auth(name).status_code, 303)
         old_thread.join(timeout=1)
         self.assertFalse(old_thread.is_alive())
         session = self.app.AUTH_SESSIONS[name]

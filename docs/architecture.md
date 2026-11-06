@@ -51,27 +51,26 @@ flowchart TD
 | 入口 | `code-receive.py` | `code-receive-test.py` |
 | 模式变量 | `MAILAPI_MODE=production` | `MAILAPI_MODE=test` |
 | 默认端口 | `8000` | `8001` |
-| 默认主机 | `0.0.0.0` | `127.0.0.1` |
+| 默认主机 | `127.0.0.1`，公网通过可信反代接入 | `127.0.0.1`，仅允许回环 |
 | 数据目录 | `runtime/`，可用 `MAILAPI_DATA_DIR` 覆盖 | 默认创建临时快照，可用 `TEST_DATA_DIR` 指定独立目录 |
 | 网站账号 | `runtime/site_accounts.json` | 临时目录中的 `site_accounts.json` |
 | 外部监听 | `MAILAPI_EXTERNAL_WATCHERS`，默认开启 | `TEST_EXTERNAL_WATCHERS`，默认关闭 |
-| 初始化管理员 | `ADMIN_ACCESS_PASSWORD`，回退 `ACCESS_PASSWORD` | `TEST_ADMIN_PASSWORD` |
+| 初始化管理员 | 离线配置密码和 TOTP | `TEST_ADMIN_PASSWORD` |
 | OAuth/回调配置 | 正式环境变量 | `TEST_*` 配置或独立回调地址 |
 
 测试启动时从正式 `runtime/` 复制邮箱、Codex、凭据、历史和规则数据，故测试可以使用真实数据
 形状模拟操作；它会跳过正式网站账号、正式中继密钥和 `runtime/test/`。测试版的写入只进入
 快照，默认进程退出即删除。测试网站账号、分组和会话不是发布物，也不会自动同步到正式版。
 
-两版都使用用户名加密码登录。正式版额外保留旧访问口令、请求头和 cookie 的兼容读取，便于
-已有部署平滑过渡；这不改变新网站账号的权限模型。
+两版都使用网站账号会话。正式版的 admin 和普通管理员还需要一次性 TOTP 验证码。
 
 ## 请求和权限流程
 
-1. 请求进入共享 FastAPI 应用，`access_guard` 读取网站会话 cookie，并校验跨站请求来源。
+1. 公网请求先由 `web_security.py` 校验反代连接，再由共享应用读取会话 cookie 和校验请求来源。
 2. 登录接口由 `accounts.py` 处理；成功后只把随机会话 token 放入 cookie，服务端保存 token 摘要。
 3. 路由根据用户角色判断是否需要管理员权限。
 4. 资源、邮箱、验证码历史、密码和 2FA 读取统一经过账号/分组授权检查。
-5. 管理员修改网站账号或分组后，后续请求立即使用新权限；修改密码、退出、删除账号会撤销相关会话。
+5. 管理员修改网站账号或分组后，后续请求立即使用新权限。角色变更、修改密码、退出和删除账号会撤销相关会话。
 
 业务资源和网站身份是两类数据：邮箱/Codex 关联属于运行资源，网站账号和分组属于访问控制。
 测试快照复制前者，不复制后者，避免测试账号意外获得正式账号会话。

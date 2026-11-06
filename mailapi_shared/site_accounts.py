@@ -12,12 +12,15 @@ import tempfile
 import threading
 import time
 
+import pyotp
+
 
 SESSION_SECONDS = 86400
 PASSWORD_ITERATIONS = 600_000
 ADMIN_ROLES = {"manager", "admin"}
 MAX_BATCH_USERS = 100
 USERNAME_PATTERN = re.compile(r"[a-z0-9_.-]{3,64}")
+TOTP_PATTERN = re.compile(r"[0-9]{6}")
 
 
 class SiteAccountError(ValueError):
@@ -29,8 +32,12 @@ class SiteAccountError(ValueError):
 def password_hash(password):
     if not isinstance(password, str) or not 8 <= len(password) <= 256:
         raise SiteAccountError("密码长度须为 8–256 个字符")
+    try:
+        password_bytes = password.encode()
+    except UnicodeEncodeError as error:
+        raise SiteAccountError("密码包含无效字符") from error
     salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PASSWORD_ITERATIONS)
+    digest = hashlib.pbkdf2_hmac("sha256", password_bytes, salt.encode(), PASSWORD_ITERATIONS)
     return f"pbkdf2_sha256${PASSWORD_ITERATIONS}${salt}${digest.hex()}"
 
 
@@ -40,13 +47,18 @@ def password_matches(password, encoded):
     algorithm, iterations, salt, digest = encoded.split("$", 3)
     if algorithm != "pbkdf2_sha256":
         return False
-    actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iterations))
+    try:
+        password_bytes = password.encode()
+    except UnicodeEncodeError:
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", password_bytes, salt.encode(), int(iterations))
     return hmac.compare_digest(actual.hex(), digest)
 
 
 class SiteAccountStore:
-    def __init__(self, path):
+    def __init__(self, path, *, require_admin_mfa=False):
         self.path = Path(path)
+        self.require_admin_mfa = require_admin_mfa
         self._lock = threading.RLock()
         self._data = {"version": 1, "users": {}, "groups": {}, "sessions": {}}
         if self.path.exists():
@@ -104,6 +116,37 @@ class SiteAccountStore:
                     "id": user_id, "username": "admin", "role": "admin",
                     "password_hash": encoded, "created_at": int(time.time()),
                 }
+
+    def provision_admin(self, username, password, totp_secret):
+        username = username.strip().lower()
+        totp_secret = totp_secret.replace(" ", "").upper()
+        if not isinstance(password, str) or len(password) < 15:
+            raise SiteAccountError("管理员新密码至少需要 15 个字符")
+        if not re.fullmatch(r"[A-Z2-7]{32}", totp_secret):
+            raise SiteAccountError("请输入 32 个字符的 Base32 验证器密钥")
+        with self._edit() as data:
+            if not data["users"] and username == "admin":
+                user_id = secrets.token_hex(16)
+                data["users"][user_id] = {
+                    "id": user_id, "username": username, "role": "admin",
+                    "created_at": int(time.time()),
+                }
+            user = next((user for user in data["users"].values() if user["username"] == username), None)
+            if not user or user["role"] not in ADMIN_ROLES:
+                raise SiteAccountError("未找到管理员账号")
+            user["password_hash"] = password_hash(password)
+            user["totp_secret"] = totp_secret
+            user.pop("totp_last_step", None)
+            self._revoke_user_sessions(data, user["id"])
+
+    def check_admin_setup(self):
+        with self._lock:
+            if not any(user["role"] == "admin" and user.get("totp_secret")
+                       for user in self._data["users"].values()):
+                raise SiteAccountError("请先运行 python -m mailapi_shared.admin_credentials 配置 admin 密码和双因素认证")
+
+    def _needs_mfa(self, user):
+        return user["role"] in ADMIN_ROLES and (self.require_admin_mfa or user.get("totp_secret"))
 
     def list_users(self, actor_id):
         with self._lock:
@@ -173,7 +216,9 @@ class SiteAccountStore:
                 self._administrator(data, actor_id, admin_only=True)
                 if not isinstance(payload["role"], str) or payload["role"] not in {"user", "manager"}:
                     raise SiteAccountError("角色只能是用户或普通管理员")
-                user["role"] = payload["role"]
+                if user["role"] != payload["role"]:
+                    user["role"] = payload["role"]
+                    self._revoke_user_sessions(data, user_id)
             if "password" in payload:
                 if actor["role"] != "admin" and user["role"] != "user":
                     raise SiteAccountError("普通管理员只能重置用户的密码", 403)
@@ -186,6 +231,8 @@ class SiteAccountStore:
             user = data["users"].get(user_id)
             if not user or not password_matches(current_password, user["password_hash"]):
                 raise SiteAccountError("当前密码错误", 403)
+            if self._needs_mfa(user) and (not isinstance(new_password, str) or len(new_password) < 15):
+                raise SiteAccountError("管理员新密码至少需要 15 个字符")
             user["password_hash"] = password_hash(new_password)
             self._revoke_user_sessions(data, user_id)
 
@@ -202,20 +249,38 @@ class SiteAccountStore:
             for group in data["groups"].values():
                 group["member_ids"] = [member for member in group["member_ids"] if member != user_id]
 
-    def login(self, username, password):
+    def login(self, username, password, totp_code=None):
         username = username.strip().lower() if isinstance(username, str) else ""
         with self._lock:
             user = next((user for user in self._data["users"].values() if user["username"] == username), None)
-            # Do the same password derivation for unknown usernames.
-            encoded = user["password_hash"] if user else f"pbkdf2_sha256${PASSWORD_ITERATIONS}$" + "0" * 32 + "$" + "0" * 64
-            matched = password_matches(password, encoded)
-            if not user or not matched:
+        # Do the same password derivation for unknown usernames without holding the store lock.
+        encoded = user["password_hash"] if user else f"pbkdf2_sha256${PASSWORD_ITERATIONS}$" + "0" * 32 + "$" + "0" * 64
+        if not password_matches(password, encoded) or not user:
+            return None
+        with self._lock:
+            user = self._data["users"].get(user["id"])
+            if not user or user["password_hash"] != encoded:
                 return None
+            step = None
+            if self._needs_mfa(user):
+                secret = user.get("totp_secret")
+                if not secret or not isinstance(totp_code, str) or not TOTP_PATTERN.fullmatch(totp_code):
+                    return None
+                totp = pyotp.TOTP(secret)
+                current = int(time.time()) // totp.interval
+                last = user.get("totp_last_step", -1)
+                step = next((step for step in (current, current - 1, current + 1)
+                             if step > last and hmac.compare_digest(totp.generate_otp(step), totp_code)), None)
+                if step is None:
+                    return None
             token = secrets.token_urlsafe(32)
             with self._edit() as data:
+                if step is not None:
+                    data["users"][user["id"]]["totp_last_step"] = step
                 data["sessions"] = {key: value for key, value in data["sessions"].items() if value["expires_at"] > time.time()}
                 data["sessions"][hashlib.sha256(token.encode()).hexdigest()] = {
                     "user_id": user["id"], "expires_at": int(time.time()) + SESSION_SECONDS,
+                    "mfa_verified": step is not None,
                 }
             return token, self._public(user)
 
@@ -226,7 +291,10 @@ class SiteAccountStore:
             session = self._data["sessions"].get(hashlib.sha256(token.encode()).hexdigest())
             if not session or session["expires_at"] <= time.time():
                 return None
-            return self.get_user(session["user_id"])
+            user = self._data["users"].get(session["user_id"])
+            if not user or (self._needs_mfa(user) and not session.get("mfa_verified")):
+                return None
+            return self._public(user)
 
     def logout(self, token):
         with self._edit() as data:

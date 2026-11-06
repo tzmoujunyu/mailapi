@@ -4,8 +4,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from .site_accounts import SESSION_SECONDS, SiteAccountError
+from .web_security import LoginThrottle
 
 
 SESSION_COOKIE = "mailapi_session"
@@ -17,7 +19,7 @@ async def read_payload(request, fields):
         raise SiteAccountError("请求内容过长", 413)
     try:
         payload = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
         raise SiteAccountError("请求必须是 JSON 对象") from error
     if not isinstance(payload, dict) or set(payload) - fields:
         raise SiteAccountError("请求包含无效字段")
@@ -26,6 +28,7 @@ async def read_payload(request, fields):
 
 def create_account_router(static_dir, resource_catalog):
     router = APIRouter()
+    throttle = LoginThrottle()
 
     def store(request):
         return request.app.state.site_accounts
@@ -36,21 +39,19 @@ def create_account_router(static_dir, resource_catalog):
             raise SiteAccountError("请先使用网站账号登录", 401)
         return user["id"]
 
-    def login_response(request, username, password, *, browser=False, access_token=None):
-        if access_token:
-            legacy_login = getattr(request.app.state, "legacy_access_login", None)
-            if legacy_login:
-                return legacy_login(request, access_token, browser=browser)
-            if browser:
-                page = (static_dir / "login.html").read_text(encoding="utf-8")
-                return HTMLResponse(page.replace("<!-- LOGIN_ERROR -->", "用户名或密码错误"), status_code=401)
-            raise SiteAccountError("用户名或密码错误", 401)
-        result = store(request).login(username, password)
+    def login_error(browser, message, status, headers=None):
+        if browser:
+            page = (static_dir / "login.html").read_text(encoding="utf-8")
+            return HTMLResponse(page.replace("<!-- LOGIN_ERROR -->", message), status_code=status, headers=headers)
+        return JSONResponse({"detail": message}, status_code=status, headers=headers)
+
+    def login_response(request, username, password, totp_code, *, browser=False):
+        retry_after = throttle.check(request.client.host if request.client else "", username)
+        if retry_after:
+            return login_error(browser, "登录尝试过多，请稍后再试", 429, {"Retry-After": str(retry_after)})
+        result = store(request).login(username, password, totp_code)
         if result is None:
-            if browser:
-                page = (static_dir / "login.html").read_text(encoding="utf-8")
-                return HTMLResponse(page.replace("<!-- LOGIN_ERROR -->", "用户名或密码错误"), status_code=401)
-            raise SiteAccountError("用户名或密码错误", 401)
+            return login_error(browser, "用户名、密码或动态验证码错误", 401)
         token, user = result
         response = RedirectResponse("/", status_code=303) if browser else JSONResponse({"user": user})
         response.set_cookie(SESSION_COOKIE, token, httponly=True, max_age=SESSION_SECONDS,
@@ -69,20 +70,19 @@ def create_account_router(static_dir, resource_catalog):
         request: Request,
         username: Optional[str] = Form(None),
         password: Optional[str] = Form(None),
-        access_token: Optional[str] = Form(None),
+        totp_code: Optional[str] = Form(None),
     ):
-        if access_token:
-            return login_response(request, None, None, browser=True, access_token=access_token)
-        return login_response(request, username, password, browser=True)
+        return login_response(request, username, password, totp_code, browser=True)
 
     @router.post("/api/auth/login")
     async def login_api(request: Request):
-        payload = await read_payload(request, {"username", "password", "access_token"})
-        return login_response(
+        payload = await read_payload(request, {"username", "password", "totp_code"})
+        return await run_in_threadpool(
+            login_response,
             request,
             payload.get("username"),
             payload.get("password"),
-            access_token=payload.get("access_token"),
+            payload.get("totp_code"),
         )
 
     @router.post("/api/auth/logout")

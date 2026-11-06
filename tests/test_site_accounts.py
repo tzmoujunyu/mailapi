@@ -286,13 +286,16 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertNotEqual(replacement["id"], target)
         self.assertFalse(self.store.resource_allowed(replacement["id"], self.keys[0]))
 
-    def test_only_admin_changes_roles_and_manager_session_demotes_immediately(self):
+    def test_only_admin_changes_roles_and_role_change_revokes_sessions(self):
         target = self.identities["alice"]["id"]
         self.assertEqual(self.manager.put("/api/admin/users/" + target, json={"role": "manager"}).status_code, 403)
         self.assertEqual(self.admin.put("/api/admin/users/" + target, json={"role": "manager"}).status_code, 200)
+        self.assertEqual(self.alice.get("/api/admin/users").status_code, 401)
+        self.alice.cookies.clear()
+        self.assertEqual(self.alice.post("/api/auth/login", json={"username": "alice", "password": "alice-password"}).status_code, 200)
         self.assertEqual(self.alice.get("/api/admin/users").status_code, 200)
         self.assertEqual(self.admin.put("/api/admin/users/" + target, json={"role": "user"}).status_code, 200)
-        self.assertEqual(self.alice.get("/api/admin/users").status_code, 403)
+        self.assertEqual(self.alice.get("/api/admin/users").status_code, 401)
 
     def test_password_reset_revokes_old_sessions_and_protects_administrators(self):
         for name in ("admin", "manager"):
@@ -310,10 +313,11 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.alice.get("/api/auth/me").status_code, 401)
 
     def test_cross_site_mutations_are_rejected_and_logout_revokes_token(self):
-        self.assertEqual(self.alice.post("/api/auth/logout", headers={"Origin": "https://evil.example"}).status_code, 403)
-        self.assertEqual(self.alice.post("/api/auth/logout", headers={"sec-fetch-site": "cross-site"}).status_code, 403)
+        for headers in ({"Origin": "https://evil.example"}, {"Origin": "https://testserver"},
+                        {"Origin": "null"}, {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"}):
+            self.assertEqual(self.alice.post("/api/auth/logout", headers=headers).status_code, 403)
         self.assertEqual(self.alice.get("/api/auth/me").status_code, 200)
-        self.assertEqual(self.alice.post("/api/auth/logout").status_code, 200)
+        self.assertEqual(self.alice.post("/api/auth/logout", headers={"Origin": "http://testserver"}).status_code, 200)
         self.assertIsNone(self.store.session_user(self.tokens["alice"]))
 
     def test_admin_preview_uses_exact_user_grants_for_lists_and_secrets(self):

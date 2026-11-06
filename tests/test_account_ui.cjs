@@ -244,12 +244,12 @@ test('console can unlist and relist an account and preserves the row on failure'
 test('Codex login prepares a direct external URL without opening an intermediate popup', async () => {
   const app = page('static/admin.html'); await flush();
   const authUrl = 'https://auth.openai.com/oauth/authorize?state=test';
-  app.context.fetch = async url => { app.calls.push([url]); return { ok: true, json: async () => ({ auth_url: authUrl }) }; };
+  app.context.fetch = async (url, options) => { app.calls.push([url, options]); return { ok: true, json: async () => ({ auth_url: authUrl }) }; };
   await app.click('account-rows', '[data-codex-auth]', { codexAuth: 'admin-reauth', id: 'codex-1' });
   assert.equal(app.nodes.get('codex-auth-dialog').open, true);
   assert.equal(app.nodes.get('codex-auth-open').href, authUrl);
   assert.equal(app.nodes.get('codex-auth-open').hidden, false);
-  assert.ok(app.calls.some(([url]) => url.includes('format=json') && url.includes('account_id=codex-1')));
+  assert.ok(app.calls.some(([url, options]) => url.includes('format=json') && url.includes('account_id=codex-1') && options.method === 'POST'));
   await app.nodes.get('codex-auth-copy').listeners.click[0]();
   assert.ok(app.calls.some(([action, value]) => action === 'clipboard' && value === authUrl));
 });

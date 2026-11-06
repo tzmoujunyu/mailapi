@@ -7,12 +7,21 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pyotp
+
+from mailapi_shared.accounts import SESSION_COOKIE
+from mailapi_shared.site_accounts import SiteAccountStore
+
 
 ROOT = Path(__file__).resolve().parents[1]
+ADMIN_PASSWORD = "test-admin-password"
+USER_PASSWORD = "test-user-password"
+ADMIN_TOTP = pyotp.TOTP("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
 
 
 class CodexAccountRefreshTests(unittest.TestCase):
@@ -22,6 +31,18 @@ class CodexAccountRefreshTests(unittest.TestCase):
         cls.previous_directory = os.getcwd()
         temporary_path = Path(cls.temporary_directory.name)
         (temporary_path / "static").mkdir()
+        seed = SiteAccountStore(temporary_path / "site-seed.json", require_admin_mfa=True)
+        seed.provision_admin("admin", ADMIN_PASSWORD, ADMIN_TOTP.secret)
+        earlier = time.time() - 60
+        with patch("mailapi_shared.site_accounts.time.time", return_value=earlier):
+            cls.admin_token, admin = seed.login("admin", ADMIN_PASSWORD, ADMIN_TOTP.at(int(earlier)))
+        cls.user_id = seed.create_user(admin["id"], "reader", USER_PASSWORD)["id"]
+        cls.user_token, _ = seed.login("reader", USER_PASSWORD)
+        resources = ["gpt:email:user@example.com", "gpt:email:only@example.com"]
+        seed.save_group(admin["id"], None, {
+            "name": "Readers", "member_ids": [cls.user_id], "resource_keys": resources,
+        }, set(resources))
+        cls.site_seed = seed.path.read_bytes()
         os.chdir(temporary_path)
         try:
             with patch.dict(
@@ -68,9 +89,16 @@ class CodexAccountRefreshTests(unittest.TestCase):
             stack.enter_context(patch.object(module, "CODE_HISTORY", {}))
             for name in ("save_mail_accounts", "save_codex_accounts", "stop_mail_watcher", "delete_codex_record_auth_files"):
                 stack.enter_context(patch.object(module, name))
-            client = TestClient(module.app, headers={"x-access-token": module.ADMIN_ACCESS_PASSWORD})
+            site_path = Path(directory) / "site_accounts.json"
+            site_path.write_bytes(self.site_seed)
+            stack.enter_context(patch.object(module.app.state, "site_accounts", SiteAccountStore(site_path, require_admin_mfa=True)))
+            client = TestClient(module.app, cookies={SESSION_COOKIE: self.admin_token})
             yield client, store
             client.close()
+
+    def use_session(self, client, token):
+        client.cookies.clear()
+        client.cookies.set(SESSION_COOKIE, token)
 
     def test_unified_accounts_share_credentials_without_exposing_secrets(self):
         with self.account_client() as (client, store):
@@ -130,15 +158,13 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 self.assertEqual(client.post(f"/api/accounts/email:only@example.com/{path}").status_code, 404)
             self.assertEqual(client.put('/api/admin/accounts/email:only@example.com/gpt-password', json={"password": ""}).status_code, 400)
             self.assertEqual(client.post('/api/accounts/email:missing@example.com/gpt-password').status_code, 404)
-            client.headers.pop('x-access-token')
+            client.cookies.clear()
             self.assertEqual(client.get('/api/accounts').status_code, 401)
             self.assertEqual(client.post('/api/accounts/email:only@example.com/totp-secret').status_code, 401)
 
-    def test_separate_admin_access_password_gates_console_and_homepage_link(self):
-        with self.account_client() as (client, store), patch.object(
-            self.module, "ADMIN_ACCESS_PASSWORD", "admin-only-password"
-        ):
-            client.headers["x-access-token"] = self.module.ACCESS_PASSWORD
+    def test_admin_role_gates_console_and_homepage_link(self):
+        with self.account_client() as (client, _):
+            self.use_session(client, self.user_token)
             self.assertEqual(client.get("/api/accounts").status_code, 200)
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 403)
             self.assertEqual(client.get("/api/codex/accounts").status_code, 403)
@@ -146,10 +172,10 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual(homepage.status_code, 200)
             self.assertNotIn("/admin", homepage.text)
             console = client.get("/admin", follow_redirects=False)
-            self.assertEqual(console.status_code, 307)
+            self.assertEqual(console.status_code, 303)
             self.assertEqual(console.headers["location"], "/")
 
-            client.headers["x-access-token"] = "admin-only-password"
+            self.use_session(client, self.admin_token)
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
             self.assertEqual(client.get("/api/codex/accounts").status_code, 200)
             self.assertIn('href="/admin"', client.get("/").text)
@@ -157,49 +183,53 @@ class CodexAccountRefreshTests(unittest.TestCase):
     def test_admin_preview_renders_user_view_and_can_return_to_console(self):
         with self.account_client() as (client, store):
             store.set('user@example.com', 'listed', False)
-            response = client.get('/preview')
+            response = client.get('/preview?user_id=' + self.user_id)
             self.assertEqual(response.status_code, 200)
             self.assertIn('用户账号主页预览', response.text)
             self.assertIn('href="/admin"', response.text)
             self.assertNotIn('href="/admin">账号控制台', response.text)
             admin_items = client.get('/api/accounts').json()['items']
-            preview_items = client.get('/api/accounts?preview=1').json()['items']
+            suffix = '?preview=1&user_id=' + self.user_id
+            preview_items = client.get('/api/accounts' + suffix).json()['items']
             self.assertEqual(len(admin_items), 2)
             self.assertEqual([item['email'] for item in preview_items], ['only@example.com'])
-            self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password?preview=1').status_code, 404)
-            self.assertEqual(client.get('/api/history/account-1?preview=1').status_code, 404)
-            client.headers['x-access-token'] = self.module.ACCESS_PASSWORD
-            self.assertEqual(client.get('/preview', follow_redirects=False).status_code, 307)
+            self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password' + suffix).status_code, 404)
+            self.assertEqual(client.get('/api/history/account-1' + suffix).status_code, 404)
+            self.use_session(client, self.user_token)
+            self.assertEqual(client.get('/preview', follow_redirects=False).status_code, 303)
             self.assertEqual(client.get('/preview', follow_redirects=False).headers['location'], '/')
 
     def test_login_form_accepts_both_roles(self):
-        with self.account_client() as (client, store), patch.object(
-            self.module, "ADMIN_ACCESS_PASSWORD", "admin-only-password"
-        ):
-            client.headers.pop("x-access-token")
+        with self.account_client() as (client, _):
+            client.cookies.clear()
             user_login = client.post(
                 "/login",
-                data={"access_token": self.module.ACCESS_PASSWORD},
+                data={"username": "reader", "password": USER_PASSWORD},
                 follow_redirects=False,
             )
-            self.assertEqual(user_login.status_code, 302)
+            self.assertEqual(user_login.status_code, 303)
             self.assertEqual(client.get("/api/admin/mail/accounts", follow_redirects=False).status_code, 403)
 
             client.cookies.clear()
             admin_login = client.post(
                 "/login",
-                data={"access_token": "admin-only-password"},
+                data={"username": "admin", "password": ADMIN_PASSWORD, "totp_code": ADMIN_TOTP.now()},
                 follow_redirects=False,
             )
-            self.assertEqual(admin_login.status_code, 302)
+            self.assertEqual(admin_login.status_code, 303)
             self.assertEqual(client.get("/api/admin/mail/accounts").status_code, 200)
 
-    def test_legacy_access_cookie_does_not_crash_site_session_endpoint(self):
+    def test_production_rejects_all_legacy_access_methods(self):
         with self.account_client() as (client, _):
-            client.headers["x-access-token"] = self.module.ACCESS_PASSWORD
-            response = client.get("/api/auth/me")
-            self.assertEqual(response.status_code, 401)
-            self.assertIn("网站账号", response.json()["detail"])
+            client.cookies.clear()
+            client.cookies.set("chatgpt_code_access", "test-admin-password")
+            for name in ("test-access-password", "test-admin-password"):
+                response = client.get("/api/admin/users", params={"access_token": name}, headers={
+                    "x-access-token": name, "Authorization": "Bearer " + name,
+                })
+                self.assertEqual(response.status_code, 401)
+            self.assertEqual(client.post("/login", data={"access_token": "test-admin-password"}).status_code, 401)
+            self.assertEqual(client.post("/api/auth/login", json={"access_token": "test-admin-password"}).status_code, 400)
 
     def test_unlisting_blocks_user_reads_and_relisting_restores_them(self):
         with self.account_client() as (client, store):
@@ -231,15 +261,15 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 reads.append(('POST', '/api/accounts/email:user@example.com/totp-code'))
                 for method, path in reads:
                     self.assertEqual(client.request(method, path).status_code, 200, path)
-                client.headers['x-access-token'] = module.ACCESS_PASSWORD
+                self.use_session(client, self.user_token)
                 self.assertEqual([item['email'] for item in client.get('/api/accounts').json()['items']], ['only@example.com'])
                 self.assertEqual(client.get('/api/codes').json()['items'], [])
                 for method, path in reads:
                     self.assertEqual(client.request(method, path).status_code, 404, path)
                 self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 403)
-                client.headers['x-access-token'] = module.ADMIN_ACCESS_PASSWORD
+                self.use_session(client, self.admin_token)
                 self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 200)
-                client.headers['x-access-token'] = module.ACCESS_PASSWORD
+                self.use_session(client, self.user_token)
                 self.assertEqual(len(client.get('/api/accounts').json()['items']), 2)
                 self.assertEqual(client.get('/api/codes').json()['items'][0]['last_code'], '123456')
                 self.assertEqual(client.get('/api/history/account-1').json()['items'], [{'code': '654321'}])
@@ -260,9 +290,9 @@ class CodexAccountRefreshTests(unittest.TestCase):
                     self.assertEqual(client.put(endpoint, json=payload).status_code, 400)
             self.assertEqual(client.put('/api/admin/accounts/email:missing@example.com/listing', json={'listed': False}).status_code, 404)
             self.assertEqual(client.put(endpoint, json={'listed': False}).status_code, 200)
-            client.headers['x-access-token'] = self.module.ACCESS_PASSWORD
+            self.use_session(client, self.user_token)
             self.assertEqual([item['email'] for item in client.get('/api/accounts').json()['items']], ['user@example.com'])
-            client.headers.pop('x-access-token')
+            client.cookies.clear()
             self.assertEqual(client.put(endpoint, json={'listed': True}).status_code, 401)
 
     def test_current_totp_endpoint_returns_code_without_secret(self):
@@ -279,7 +309,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertNotIn('invalid-legacy-secret', client.post(path).text)
             self.assertEqual(client.put('/api/admin/accounts/email:only@example.com/totp-secret', json={'secret':'123456'}).status_code, 400)
             self.assertEqual(store.get('only@example.com', 'secret'), 'invalid-legacy-secret')
-            client.headers.pop('x-access-token')
+            client.cookies.clear()
             self.assertEqual(client.post(path).status_code, 401)
 
     def test_removing_one_integration_preserves_shared_credentials(self):
@@ -313,7 +343,11 @@ class CodexAccountRefreshTests(unittest.TestCase):
 
     def test_authorization_url_can_be_fetched_without_browser_redirect(self):
         with self.account_client() as (client, store), patch.object(self.module, 'ensure_codex_login_server'), patch.object(self.module, 'CODEX_AUTH_SESSIONS', {}):
-            response = client.get('/api/codex/auth/start?format=json&reason=admin-import')
+            for path in ('/api/codex/auth/start', '/api/admin/gmail/auth/start', '/api/admin/outlook/auth/start'):
+                self.assertEqual(client.get(path).status_code, 405)
+                self.assertEqual(client.post(path, headers={'Origin': 'https://evil.example'}).status_code, 403)
+            self.assertEqual(self.module.CODEX_AUTH_SESSIONS, {})
+            response = client.post('/api/codex/auth/start?format=json&reason=admin-import')
             self.assertEqual(response.status_code, 200)
             self.assertEqual(set(response.json()), {'auth_url'})
             self.assertIn('no-store', response.headers['cache-control'])
@@ -321,19 +355,19 @@ class CodexAccountRefreshTests(unittest.TestCase):
             session = self.module.CODEX_AUTH_SESSIONS[query['state'][0]]
             self.assertTrue(session['code_verifier'])
             self.assertEqual(query['code_challenge_method'], ['S256'])
-            self.assertEqual(client.get('/api/codex/auth/start', follow_redirects=False).status_code, 302)
-            response = client.get('/api/codex/auth/start?format=json&account_id=codex-1')
+            self.assertEqual(client.post('/api/codex/auth/start', follow_redirects=False).status_code, 303)
+            response = client.post('/api/codex/auth/start?format=json&account_id=codex-1')
             query = self.module.urllib.parse.parse_qs(self.module.urllib.parse.urlparse(response.json()['auth_url']).query)
             self.assertEqual(self.module.CODEX_AUTH_SESSIONS[query['state'][0]]['target_email'], 'user@example.com')
-            self.assertEqual(client.get('/api/codex/auth/start?format=json&account_id=missing').status_code, 404)
-            client.headers.pop('x-access-token')
-            self.assertEqual(client.get('/api/codex/auth/start?format=json').status_code, 401)
+            self.assertEqual(client.post('/api/codex/auth/start?format=json&account_id=missing').status_code, 404)
+            client.cookies.clear()
+            self.assertEqual(client.post('/api/codex/auth/start?format=json').status_code, 401)
 
     def test_outlook_missing_configuration_renders_utf8_setup_page(self):
         with self.account_client() as (client, store), patch.dict(os.environ, {
             'OUTLOOK_CLIENT_ID': '', 'OUTLOOK_CLIENT_SECRET': '',
         }), patch.object(self.module, 'OutlookAuthorization') as authorization:
-            response = client.get('/api/admin/outlook/auth/start', follow_redirects=False)
+            response = client.post('/api/admin/outlook/auth/start', follow_redirects=False)
             self.assertEqual(response.status_code, 503)
             self.assertEqual(response.headers['content-type'], 'text/html; charset=utf-8')
             self.assertIn('缺少 OUTLOOK_CLIENT_ID', response.content.decode('utf-8'))
@@ -350,20 +384,20 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 patch.object(self.module, 'OUTLOOK_AUTH_SESSIONS', {}):
             url = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?test=1'
             authorization.return_value.start.return_value = {'auth_uri': url}
-            response = client.get('/api/admin/outlook/auth/start', follow_redirects=False)
-            self.assertEqual(response.status_code, 302)
+            response = client.post('/api/admin/outlook/auth/start', follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
             self.assertEqual(response.headers['location'], url)
             state = authorization.return_value.start.call_args.args[0]
             self.assertEqual(self.module.OUTLOOK_AUTH_SESSIONS[state]['managed_action'], 'add')
 
     def test_outlook_start_errors_render_escaped_html(self):
         with self.account_client() as (client, store):
-            response = client.get('/api/admin/outlook/auth/start', params={'account_name': '<script>alert(1)</script>'})
+            response = client.post('/api/admin/outlook/auth/start', params={'account_name': '<script>alert(1)</script>'})
             self.assertEqual(response.status_code, 404)
             self.assertIn('&lt;script&gt;', response.text)
             self.assertNotIn('<script>alert(1)</script>', response.text)
             with patch.object(self.module, 'load_outlook_settings', side_effect=RuntimeError('connection failed')):
-                response = client.get('/api/admin/outlook/auth/start')
+                response = client.post('/api/admin/outlook/auth/start')
                 self.assertEqual(response.status_code, 400)
                 self.assertIn('text/html', response.headers['content-type'])
                 self.assertIn('connection failed', response.text)
