@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>网站账号与分组</title>
   <link rel="stylesheet" href="/static/session.css">
+  <link rel="stylesheet" href="/static/help-hints.css">
   <link rel="stylesheet" href="/static/access.css">
   <script src="/static/session.js" defer></script>
+  <script src="/static/help-hints.js" defer></script>
   <script src="/static/access.js" defer></script>
 </head>
 <body>
@@ -14,24 +16,38 @@
   <main>
     <p id="message" role="status" aria-live="polite"></p>
     <section class="group-overview" aria-labelledby="overview-title">
-      <h2 id="overview-title">组别总览</h2>
-      <p id="overview-help" class="muted">点击格子管理小组与成员，悬停后可删除。通过边缘的 ＋ 添加小组或类别。</p>
+      <div class="overview-heading">
+        <h2 id="overview-title">组别总览</h2>
+        <span class="help-hint">
+          <button type="button" class="help-hint-trigger" aria-label="组别总览说明" aria-expanded="false" aria-pressed="false" aria-controls="overview-help" aria-describedby="overview-help">?</button>
+          <span id="overview-help" class="help-hint-content" role="tooltip" popover="manual" hidden>点击格子管理小组与成员，悬停后可删除。通过边缘的 ＋ 添加小组或类别。点击问号可固定这条提示，再次点击关闭。</span>
+        </span>
+      </div>
       <div class="table-wrap">
         <table id="group-overview" aria-labelledby="overview-title" aria-describedby="overview-help">
           <tbody><tr><td class="muted">正在加载分组…</td></tr></tbody>
         </table>
       </div>
     </section>
-    <section>
-      <div class="section-head"><h2>网站账号</h2><div class="actions"><button id="add-user" type="button" class="primary">创建账号</button><button id="batch-users" type="button">批量</button></div></div>
-      <p class="muted">用户按所属分组使用资源。两类管理员均可创建账号和管理分组；仅 admin 可删除账号、调整角色或重置普通管理员密码。</p>
-      <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users"></tbody></table></div>
-    </section>
-    <section>
-      <div class="section-head"><h2>Group 分组</h2><button id="add-group" type="button" class="primary">创建分组</button></div>
-      <p class="muted">一个账号或资源可以加入多个分组。用户可使用各分组分配的资源；未分配的资源仅管理员可见。GPT 账号下架后对用户隐藏。</p>
-      <div class="table-wrap"><table><thead><tr><th>分组名称</th><th>成员</th><th>资源</th><th>操作</th></tr></thead><tbody id="groups"></tbody></table></div>
-    </section>
+    <div class="management-tabs" role="tablist" aria-label="管理功能">
+      <span class="management-tab-indicator" aria-hidden="true"></span>
+      <button id="users-tab" type="button" role="tab" aria-selected="true" aria-controls="users-panel" tabindex="0">网站账号</button>
+      <button id="groups-tab" type="button" role="tab" aria-selected="false" aria-controls="groups-panel" tabindex="-1">Group 分组</button>
+    </div>
+    <div id="management-viewport" class="management-viewport">
+      <div id="management-panels" class="management-panels">
+        <section id="users-panel" class="management-panel" role="tabpanel" aria-labelledby="users-tab">
+          <div class="section-head"><h2>网站账号</h2><div class="actions"><button id="add-user" type="button" class="primary">创建账号</button><button id="batch-users" type="button">批量</button></div></div>
+          <p class="muted">用户按所属分组使用资源。两类管理员均可创建账号和管理分组；仅 admin 可删除账号、调整角色或重置普通管理员密码。</p>
+          <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users"></tbody></table></div>
+        </section>
+        <section id="groups-panel" class="management-panel" role="tabpanel" aria-labelledby="groups-tab" aria-hidden="true" inert>
+          <div class="section-head"><h2>Group 分组</h2><button id="add-group" type="button" class="primary">创建分组</button></div>
+          <p class="muted">一个账号或资源可以加入多个分组。用户可使用各分组分配的资源；未分配的资源仅管理员可见。GPT 账号下架后对用户隐藏。</p>
+          <div class="table-wrap"><table><thead><tr><th>分组名称</th><th>成员</th><th>资源</th><th>操作</th></tr></thead><tbody id="groups"></tbody></table></div>
+        </section>
+      </div>
+    </div>
   </main>
   <dialog id="user-dialog">
     <form id="user-form">

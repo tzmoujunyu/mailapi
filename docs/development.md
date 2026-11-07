@@ -59,6 +59,22 @@ runtime/                    正式运行数据（不提交）
 自动测试可通过 `TEST_DATA_DIR` 使用指定的独立目录；该变量不能指向正式运行目录，指定目录由
 测试调用方负责清理。
 
+## 共用帮助提示
+
+页面引入 `/static/help-hints.css` 和 `/static/help-hints.js` 后，可以复用以下结构。
+每条提示使用独立的 ID。悬停或键盘聚焦时临时显示，点击问号固定显示，
+再次点击或按 Escape 关闭。
+
+```html
+<span class="help-hint">
+  <button type="button" class="help-hint-trigger" aria-label="功能说明"
+    aria-expanded="false" aria-pressed="false" aria-controls="feature-help"
+    aria-describedby="feature-help">?</button>
+  <span id="feature-help" class="help-hint-content" role="tooltip"
+    popover="manual" hidden>这里填写提示内容。</span>
+</span>
+```
+
 ## 账号和权限
 
 | 权限 | 用户 (`user`) | 普通管理员 (`manager`) | `admin` |

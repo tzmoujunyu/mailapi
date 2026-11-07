@@ -286,5 +286,48 @@ byId('batch-users').addEventListener('click', openBatchUsers);
 byId('add-group').addEventListener('click', () => openGroup());
 byId('add-user').disabled = true;
 byId('add-group').disabled = true;
+
+const managementTabs = [...document.querySelectorAll('.management-tabs [role="tab"]')];
+const managementPanels = [...document.querySelectorAll('.management-panel')];
+let activeManagementPanel = 0;
+
+function fitManagementPanel() {
+  byId('management-viewport').style.height = `${managementPanels[activeManagementPanel].offsetHeight}px`;
+}
+
+function selectManagementPanel(index) {
+  activeManagementPanel = index;
+  document.querySelector('.management-tabs').style.setProperty('--management-index', index);
+  byId('management-panels').style.setProperty('--management-index', index);
+  managementTabs.forEach((tab, position) => {
+    const selected = position === index;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    managementPanels[position].setAttribute('aria-hidden', String(!selected));
+    managementPanels[position].inert = !selected;
+  });
+  fitManagementPanel();
+}
+
+managementTabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => selectManagementPanel(index));
+  tab.addEventListener('keydown', event => {
+    const directions = {
+      ArrowLeft: (index + managementTabs.length - 1) % managementTabs.length,
+      ArrowRight: (index + 1) % managementTabs.length,
+      Home: 0,
+      End: managementTabs.length - 1,
+    };
+    if (!(event.key in directions)) return;
+    event.preventDefault();
+    const target = directions[event.key];
+    selectManagementPanel(target);
+    managementTabs[target].focus();
+  });
+});
+const managementSizeObserver = new ResizeObserver(fitManagementPanel);
+managementPanels.forEach(panel => managementSizeObserver.observe(panel));
+selectManagementPanel(0);
+
 window.addEventListener('focus', () => { if (!document.querySelector('dialog[open]')) load(); });
 load();

@@ -1,0 +1,7 @@
+.help-hint { display: inline-flex; align-items: center; vertical-align: middle; }
+.help-hint-trigger { display: inline-grid; place-items: center; flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 1px solid #c7ced6; border-radius: 50%; color: #64748b; background: #f8fafc; font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor: pointer; }
+.help-hint-trigger:hover, .help-hint-trigger:focus-visible { color: #1d4ed8; border-color: #93b4ef; background: #eff6ff; }
+.help-hint-trigger:focus-visible { outline: 2px solid #bfdbfe; outline-offset: 2px; }
+.help-hint[data-pinned="true"] .help-hint-trigger { color: white; border-color: #2563eb; background: #2563eb; }
+.help-hint-content { position: fixed; inset: auto; z-index: 1000; box-sizing: border-box; width: max-content; max-width: min(300px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; margin: 0; padding: 11px 13px; border: 1px solid #dfe3e8; border-radius: 8px; background: white; color: #374151; box-shadow: 0 6px 24px #1118271a; font: 13px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: left; overflow-wrap: anywhere; }
+.help-hint-content[hidden] { display: none; }

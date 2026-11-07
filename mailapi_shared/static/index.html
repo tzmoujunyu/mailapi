@@ -88,23 +88,50 @@
       .resource-secret { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
       @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr; } }
     </style>
-  <link rel="stylesheet" href="/static/session.css">
+    <link rel="stylesheet" href="/static/session.css">
+    <link rel="stylesheet" href="/static/help-hints.css">
+    <link rel="stylesheet" href="/static/home-directory.css">
     <link rel="stylesheet" href="/static/quota.css">
     <script src="/static/session.js" defer></script>
+    <script src="/static/help-hints.js" defer></script>
+    <script src="/static/home-directory.js" defer></script>
   </head>
-  <body>
-    <div class="container">
-      <div class="page-head"><div class="page-title"><h1>ChatGPT账号</h1><div class="page-subtitle"><a href="https://codexradar.com/#intelligence-efficiency" target="_blank" rel="noopener noreferrer">Codex雷达</a>：查看智能与效率分析</div><div class="page-subtitle">订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。</div></div><!-- ADMIN_CONSOLE_LINK --></div>
-      <p class="page-subtitle">Codex 使用提示：如遇到“设备数量已达上限”报错，请用指纹浏览器或浏览器无痕模式打开登陆链接登陆使用。</p>
-      <!-- PREVIEW_BANNER -->
-      <div id="load-error" class="status-bad" role="status"></div>
-      <div class="table-wrap">
-        <table class="account-table">
-          <thead><tr><th>账号</th><th>周额度</th><th>登陆方式</th><th>状态</th></tr></thead>
-          <tbody id="rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
-        </table>
+  <body class="home-page">
+    <nav class="home-directory" aria-label="账号主页目录">
+      <div class="home-directory-inner">
+        <span class="home-directory-label">目录</span>
+        <div class="home-directory-links">
+          <a href="#chatgpt-accounts" aria-current="location"><span class="directory-index">01</span>ChatGPT 账号</a>
+          <a href="#coding-plans"><span class="directory-index">02</span>Coding Plan</a>
+          <a href="#relay-accounts"><span class="directory-index">03</span>中转站账号</a>
+        </div>
       </div>
-      <section class="resource-section" aria-labelledby="coding-plan-title">
+    </nav>
+    <div class="container">
+      <section id="chatgpt-accounts" aria-labelledby="chatgpt-title">
+        <div class="page-head">
+          <div class="page-title">
+            <div class="page-heading">
+              <h1 id="chatgpt-title">ChatGPT账号</h1>
+              <span class="help-hint">
+                <button type="button" class="help-hint-trigger" aria-label="ChatGPT 账号使用说明" aria-expanded="false" aria-pressed="false" aria-controls="account-help" aria-describedby="account-help">?</button>
+                <span id="account-help" class="help-hint-content" role="tooltip" popover="manual" hidden>订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。<br>Codex 使用提示：如遇到“设备数量已达上限”报错，请用指纹浏览器或浏览器无痕模式打开登陆链接登陆使用。</span>
+              </span>
+            </div>
+            <div class="page-subtitle"><a href="https://codexradar.com/#intelligence-efficiency" target="_blank" rel="noopener noreferrer">Codex雷达</a>：查看智能与效率分析</div>
+          </div>
+          <!-- ADMIN_CONSOLE_LINK -->
+        </div>
+        <!-- PREVIEW_BANNER -->
+        <div id="load-error" class="status-bad" role="status"></div>
+        <div class="table-wrap">
+          <table class="account-table">
+            <thead><tr><th>账号</th><th>周额度</th><th>登陆方式</th><th>状态</th></tr></thead>
+            <tbody id="rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <section id="coding-plans" class="resource-section" aria-labelledby="coding-plan-title">
         <div class="resource-head"><h2 id="coding-plan-title">国产模型Coding Plan</h2></div>
         <div id="coding-plan-error" class="status-bad" role="status"></div>
         <div class="table-wrap">
@@ -114,7 +141,7 @@
           </table>
         </div>
       </section>
-      <section class="resource-section" aria-labelledby="relay-account-title">
+      <section id="relay-accounts" class="resource-section" aria-labelledby="relay-account-title">
         <div class="resource-head"><h2 id="relay-account-title">中转站账号</h2></div>
         <div id="relay-account-error" class="status-bad" role="status"></div>
         <div class="table-wrap">
