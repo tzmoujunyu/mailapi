@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>ChatGPT账号</title>
+    <title>GPT账号</title>
     <style>
       * { box-sizing: border-box; }
       body { margin: 0; padding: 12px; background: #f5f7fa; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -101,7 +101,7 @@
       <div class="home-directory-inner">
         <span class="home-directory-label">目录</span>
         <div class="home-directory-links">
-          <a href="#chatgpt-accounts" aria-current="location"><span class="directory-index">01</span>ChatGPT 账号</a>
+          <a href="#chatgpt-accounts" aria-current="location"><span class="directory-index">01</span>GPT 账号</a>
           <a href="#coding-plans"><span class="directory-index">02</span>Coding Plan</a>
           <a href="#relay-accounts"><span class="directory-index">03</span>中转站账号</a>
         </div>
@@ -112,9 +112,9 @@
         <div class="page-head">
           <div class="page-title">
             <div class="page-heading">
-              <h1 id="chatgpt-title">ChatGPT账号</h1>
+              <h1 id="chatgpt-title">GPT账号</h1>
               <span class="help-hint">
-                <button type="button" class="help-hint-trigger" aria-label="ChatGPT 账号使用说明" aria-expanded="false" aria-pressed="false" aria-controls="account-help" aria-describedby="account-help">?</button>
+                <button type="button" class="help-hint-trigger" aria-label="GPT 账号使用说明" aria-expanded="false" aria-pressed="false" aria-controls="account-help" aria-describedby="account-help">?</button>
                 <span id="account-help" class="help-hint-content" role="tooltip" popover="manual" hidden>订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。<br>Codex 使用提示：如遇到“设备数量已达上限”报错，请用指纹浏览器或浏览器无痕模式打开登陆链接登陆使用。</span>
               </span>
             </div>
@@ -216,10 +216,10 @@
       }
       function accountCell(row) {
         const item = row.codex || row.mail || {};
-        const email = item.email || item.label || 'Codex账号';
+        const email = row.credentials.login || row.credentials.email || item.email || item.label || 'GPT账号';
         const subscription = row.codex && row.codex.subscription || {};
         const plan = planValue(item);
-        let detail = '仅邮箱验证';
+        let detail = 'GPT 账号';
         if (row.codex && row.codex.reauth_required) detail = '重新授权后更新订阅';
         else if (row.codex && row.codex.subscription_error) detail = '订阅信息暂不可用';
         else if (row.codex && (subscription.has_subscription === false || plan === 'free' || plan === '-')) detail = '无订阅';
@@ -291,14 +291,20 @@
         const credentials = row.credentials;
         const password = credentials && credentials.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(credentials.gpt_password_account)}">复制</button>` : '<span class="muted">未设置</span>';
         const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" title="复制当前六位验证码，每30秒更新" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button><span data-totp-validity="${escapeAttr(credentials.totp_secret_account)}"></span>` : '<span class="muted">未配置</span>';
-        const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div class="email-result-line"><strong class="email-result-label">最新接收：</strong>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}</div><div class="mail-subject-line"><strong>主题：</strong>${mailSourceTag(mail.rule_name, mail.subject)}${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
-        return `<tr class="detail-row"><td colspan="4"><div class="detail-panel"><div class="login-detail"><div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div><div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div></div>${emailLine}</div></td></tr>`;
+        const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div class="email-result-line"><strong>监听邮箱：</strong>${escapeHtml(mail.email || mail.name)}</div><div class="email-result-line"><strong class="email-result-label">最新接收：</strong>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}</div><div class="mail-subject-line"><strong>主题：</strong>${mailSourceTag(mail.rule_name, mail.subject)}${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
+        const loginLines = [
+          credentials.has_gpt_password ? `<div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div>` : '',
+          credentials.has_totp_secret ? `<div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div>` : '',
+        ].join('');
+        return `<tr class="detail-row"><td colspan="4"><div class="detail-panel">${loginLines ? `<div class="login-detail">${loginLines}</div>` : ''}${emailLine}</div></td></tr>`;
       }
       function rowHtml(row) {
-        const codex = codexStatus(row.codex);
-        const emailStatuses = row.mails.length ? row.mails.map(mail => ({ text: mail.enabled === false ? '已停用' : (mail.status || '未知'), cls: mail.enabled === false ? 'status-warn' : (/失败|异常|错误|重新授权/.test(mail.status || '') ? 'status-bad' : (/监测中|监听中/.test(mail.status || '') ? 'status-good' : 'status-warn')), detail: row.mails.length > 1 ? mail.provider : '' })) : [{ text: '无邮箱验证', cls: 'status-neutral', detail: '' }];
+        const emailStatuses = row.mails.map(mail => ({ text: mail.enabled === false ? '已停用' : (mail.status || '未知'), cls: mail.enabled === false ? 'status-warn' : (/失败|异常|错误|重新授权/.test(mail.status || '') ? 'status-bad' : (/监测中|监听中/.test(mail.status || '') ? 'status-good' : 'status-warn')), detail: row.mails.length > 1 ? mail.email : '' }));
         const expanded = expandedKey === row.key;
-        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => quotaCell(item.usage)).join('<hr>') : quotaCell(null)}</td><td><button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button></td><td><div class="status-block">${row.codexItems.length ? row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') : statusLine(codex, 'Codex')}${emailStatuses.map(status => statusLine(status, '邮箱')).join('')}</div></td></tr>${expanded ? detailRow(row) : ''}`;
+        const hasDetails = row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length;
+        const loginActions = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button>` : '<span class="muted">仅账号名</span>';
+        const statuses = row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') + emailStatuses.map(status => statusLine(status, '邮箱')).join('');
+        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => quotaCell(item.usage)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>${expanded && hasDetails ? detailRow(row) : ''}`;
       }
       async function loadHistory(name) {
         if (rowsNode.querySelector('[data-copy-type]:disabled')) return;
@@ -402,8 +408,12 @@
           const data = await response.json();
           syncServerClock(data, startedAt);
           accountRows = (data.items || []).map(item => ({ key: item.key, credentials: item, codex: item.codex[0] || null, codexItems: item.codex, mail: item.mail[0] || null, mails: item.mail }));
-          if (expandedKey && !accountRows.some(row => row.key === expandedKey)) {
+          const expandedRow = accountRows.find(row => row.key === expandedKey);
+          if (expandedKey && (!expandedRow || !(expandedRow.credentials.has_gpt_password || expandedRow.credentials.has_totp_secret || expandedRow.mails.length))) {
             expandedKey = ''; historyName = ''; historyItems = []; historyRequest++;
+            clearInterval(historyTimer); historyTimer = null;
+          } else if (historyName && !expandedRow?.mails.some(mail => mail.name === historyName)) {
+            historyName = ''; historyItems = []; historyRequest++;
             clearInterval(historyTimer); historyTimer = null;
           }
           document.getElementById('load-error').textContent = '';

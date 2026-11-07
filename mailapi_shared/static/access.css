@@ -15,14 +15,6 @@ th { background: #f7f8fa; font-size: 13px; }
 tbody tr:last-child td { border-bottom: 0; }
 .group-overview { text-align: center; }
 .overview-heading { display: flex; align-items: center; justify-content: center; gap: 8px; }
-.management-tabs { position: relative; display: grid; grid-template-columns: 1fr 1fr; width: min(360px, 100%); margin: 22px auto 14px; padding: 4px; border: 1px solid #dfe3e8; border-radius: 9px; background: #e9edf3; }
-.management-tab-indicator { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 2); border-radius: 6px; background: white; box-shadow: 0 1px 4px #11182712; transform: translateX(calc(var(--management-index, 0) * 100%)); transition: transform .24s ease; }
-.management-tabs [role="tab"] { position: relative; z-index: 1; padding: 10px 14px; border: 0; background: transparent; color: #64748b; font-weight: 600; }
-.management-tabs [role="tab"][aria-selected="true"] { color: #1d4ed8; }
-.management-tabs [role="tab"]:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
-.management-viewport { overflow: hidden; transition: height .24s ease; }
-.management-panels { display: flex; align-items: flex-start; transform: translateX(calc(var(--management-index, 0) * -100%)); transition: transform .24s ease; }
-.management-panel { flex: 0 0 100%; min-width: 0; margin: 0; }
 .group-overview .table-wrap { margin: 18px auto 0; border: 0; border-radius: 0; }
 .group-overview table { min-width: 480px; border-collapse: separate; border-spacing: 0; }
 .group-overview th, .group-overview td { padding: 0; text-align: center; vertical-align: middle; border: 0; }
@@ -75,4 +67,3 @@ legend { font-size: 14px; font-weight: 600; }
 .option { display: flex; align-items: baseline; gap: 7px; font-size: 14px; overflow-wrap: anywhere; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 680px) { header { flex-wrap: wrap; gap: 12px; } h1 { flex-basis: 100%; } main { padding: 0 10px 16px; } section { padding: 14px; } }
-@media (prefers-reduced-motion: reduce) { .management-tab-indicator, .management-viewport, .management-panels { transition: none; } }

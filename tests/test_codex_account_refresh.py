@@ -318,7 +318,8 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual(client.delete('/api/admin/mail/accounts/account-1').status_code, 200)
             self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password').json()['password'], 'shared-password')
             self.assertEqual(client.delete('/api/codex/accounts/codex-1').status_code, 200)
-            self.assertIsNone(store.get('user@example.com', 'password'))
+            self.assertEqual(store.get('user@example.com', 'password'), 'shared-password')
+            self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password').status_code, 200)
 
     def test_deleting_group_removes_all_associations_only_for_that_email(self):
         with self.account_client() as (client, store):

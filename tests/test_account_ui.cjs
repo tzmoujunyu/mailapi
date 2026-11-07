@@ -83,10 +83,10 @@ test('website account console exposes the admin-only batch user form', () => {
   assert.match(script, /currentUser\.role !== 'admin'/);
 });
 
-test('Codex-only account can copy both credentials and shows neutral email status', async () => {
+test('Codex-only account can copy both credentials and omits mailbox details', async () => {
   const app = page('static/index.html'); await flush();
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:only@example.com' });
-  assert.match(app.nodes.get('rows').innerHTML, /status-neutral">无邮箱验证/);
+  assert.doesNotMatch(app.nodes.get('rows').innerHTML, /无邮箱验证/);
   assert.match(app.nodes.get('rows').innerHTML, /data-name="email:only@example.com"/);
   for (const type of ['password', 'totp']) await app.click('rows', '[data-copy-type]', { copyType: type, name: 'email:only@example.com' });
   assert.ok(app.calls.some(([url]) => url.endsWith('/totp-code')));
@@ -103,6 +103,25 @@ test('late history response cannot reopen collapsed content', async () => {
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   resolve({ ok: true, json: async () => ({ items: [{ code: 'late-code' }] }) }); await flush();
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /late-code|历史验证码|GPT密码/);
+});
+
+test('username-only and password-only GPT accounts omit unconfigured login capabilities', async () => {
+  const app = page('static/index.html'); await flush();
+  const item = {
+    key: 'account:standalone', login: 'team-login', email: 'team-login',
+    has_gpt_password: false, has_totp_secret: false, codex: [], mail: [],
+  };
+  app.context.fetch = async () => ({ ok: true, json: async () => ({ items: [item] }) });
+  await vm.runInContext('refreshAccounts()', app.context);
+  assert.match(app.nodes.get('rows').innerHTML, /team-login/);
+  assert.match(app.nodes.get('rows').innerHTML, /仅账号名/);
+  assert.doesNotMatch(app.nodes.get('rows').innerHTML, /data-expand-key|tag-email|身份验证器/);
+  item.has_gpt_password = true;
+  item.gpt_password_account = item.key;
+  await vm.runInContext('refreshAccounts()', app.context);
+  await app.click('rows', '[data-expand-key]', { expandKey: item.key });
+  assert.match(app.nodes.get('rows').innerHTML, /GPT密码/);
+  assert.doesNotMatch(app.nodes.get('rows').innerHTML, /身份验证器|email-detail/);
 });
 
 test('2FA countdown tracks copied code expiry across refreshes and prompts recopy', async () => {
@@ -201,11 +220,13 @@ test('2FA clock ignores slow samples and wall-clock jumps and catches up after p
   assert.equal(vm.runInContext("totpValidity('test').text", app.context), '已复制码已过期，请重新复制');
 });
 
-test('console uses unified rows and routes credential changes and integration deletion', async () => {
+test('console separates GPT and mailbox rows and routes credential changes', async () => {
   const app = page('static/admin.html'); await flush();
   const html = app.nodes.get('account-rows').innerHTML;
   assert.equal((html.match(/<tr>/g) || []).length, 2);
-  assert.match(html, /GPT密码/); assert.match(html, /移除邮箱/); assert.match(html, /移除 Codex/); assert.match(html, /删除整个账号/);
+  assert.match(html, /GPT密码/); assert.match(html, /监听邮箱/); assert.match(html, /移除 Codex/); assert.match(html, /删除 GPT 账号/);
+  assert.doesNotMatch(html, /data-mail-action/);
+  assert.match(app.nodes.get('mailbox-rows').innerHTML, /移除邮箱/);
   await app.click('account-rows', '[data-password-action]', { passwordAction: 'edit', name: 'email:only@example.com', email: 'only@example.com' });
   assert.equal(app.nodes.get('password-dialog').open, true);
   app.nodes.get('password-input').value = 'new-password';
@@ -236,7 +257,7 @@ test('console can unlist and relist an account and preserves the row on failure'
   app.context.fetch = async () => ({ ok: false, json: async () => ({ detail: '保存失败' }) });
   const button = await app.click('account-rows', '[data-listing-account]', { listingAccount: 'email:user@example.com', listed: 'false' });
   assert.equal(button.disabled, false);
-  assert.equal(app.nodes.get('mail-message').textContent, '保存失败');
+  assert.equal(app.nodes.get('gpt-message').textContent, '保存失败');
   assert.equal(app.nodes.get('account-rows').innerHTML, html);
 });
 

@@ -6,9 +6,11 @@
   <title>网站账号与分组</title>
   <link rel="stylesheet" href="/static/session.css">
   <link rel="stylesheet" href="/static/help-hints.css">
+  <link rel="stylesheet" href="/static/management-tabs.css">
   <link rel="stylesheet" href="/static/access.css">
   <script src="/static/session.js" defer></script>
   <script src="/static/help-hints.js" defer></script>
+  <script src="/static/management-tabs.js" defer></script>
   <script src="/static/access.js" defer></script>
 </head>
 <body>
@@ -29,7 +31,7 @@
         </table>
       </div>
     </section>
-    <div class="management-tabs" role="tablist" aria-label="管理功能">
+    <div class="management-tabs" role="tablist" aria-label="管理功能" data-viewport="management-viewport">
       <span class="management-tab-indicator" aria-hidden="true"></span>
       <button id="users-tab" type="button" role="tab" aria-selected="true" aria-controls="users-panel" tabindex="0">网站账号</button>
       <button id="groups-tab" type="button" role="tab" aria-selected="false" aria-controls="groups-panel" tabindex="-1">Group 分组</button>

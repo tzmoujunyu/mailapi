@@ -94,6 +94,11 @@ runtime/                    正式运行数据（不提交）
 所有列表、验证码、历史、密码、2FA 与资源密钥读取接口都执行同一权限检查。
 在网站账号表点击“按此账号预览”核对指定用户的分组视图；预览始终按用户资源权限展示。
 
+`/admin` 用滑块切换 GPT账号池、邮箱池、国产模型 Coding Plan 和中转站。GPT 登录名不要求是邮箱，
+密码、2FA、监听邮箱均可选。邮箱授权、启停和收件设置集中在邮箱池；新邮箱不自动生成 GPT 资源。
+GPT 的“监听邮箱”支持搜索、同名推荐、多选和清空，但同一邮箱只能归属一个 GPT 账号。
+推荐只影响排序和标签，不会自动选择。解除绑定后，普通用户的验证码及历史读取权限随即撤销。
+
 在 `/admin` 的国产模型 Coding Plan 区域编辑记录，选择智谱 GLM Coding Plan、Kimi Code 或小米
 MiMo Token Plan 的国内站。已有记录首次设置平台时可沿用对应的套餐 API Key。小米需要个人版
 Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结束时间。
@@ -118,6 +123,12 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 | `GET/POST /api/admin/groups` | 列表、创建分组 |
 | `PUT/DELETE /api/admin/groups/{id}` | 编辑、删除分组 |
 | `GET /api/admin/resources` | 可分配资源目录（不包含凭据） |
+| `POST /api/admin/gpt/accounts` | 创建独立 GPT 账号，`login` 必填，`password`、`secret`、`listed`、`mailbox_ids` 可选 |
+| `PUT /api/admin/gpt/accounts/{key}` | 编辑 GPT 账号；密码和 2FA 留空保留原值，清除使用原有删除接口 |
+| `GET /api/admin/gpt/accounts/{key}/mailboxes` | 邮箱选项、推荐、选中及占用状态，仅管理员可读 |
+
+GPT 资源 key 来自 `/api/admin/resources`，不应根据当前登录名自行构造。旧记录保留 `gpt:email:...`，
+新记录使用 `gpt:account:...`；改名保持 key 不变，删除后重建会生成新的 key。
 
 创建分组请求示例（ID 和资源 key 从上述列表接口取得）：
 

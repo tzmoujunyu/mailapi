@@ -128,6 +128,14 @@
       }
       dialog::backdrop { background: rgba(17, 24, 39, 0.42); }
       .password-form { display: grid; gap: 14px; }
+      .mail-settings { margin-top: 26px; padding-top: 22px; border-top: 1px solid #e5e7eb; }
+      #mailbox-dialog { width: min(620px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
+      #mailbox-options { display: grid; gap: 8px; max-height: 360px; overflow-y: auto; }
+      .password-form .mailbox-option { display: flex; align-items: flex-start; gap: 9px; padding: 10px; border: 1px solid #dfe3e8; border-radius: 6px; font-weight: 400; }
+      .password-form .mailbox-option input[type="checkbox"] { width: 16px; min-height: 16px; margin: 3px 0 0; flex: 0 0 auto; }
+      .mailbox-option span { min-width: 0; overflow-wrap: anywhere; }
+      .mailbox-option .plan { display: inline-block; margin-left: 6px; color: #1d4ed8; background: #eff6ff; }
+      .mailbox-option:has(input:disabled) { color: #94a3b8; background: #f8fafc; }
       .password-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 700; }
       .password-form input {
         width: 100%;
@@ -137,6 +145,8 @@
         padding: 7px 9px;
         font: inherit;
       }
+      .password-form .checkbox-label { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+      .password-form .checkbox-label input { width: 16px; min-height: 16px; }
       #filter-dialog { width: min(640px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
       .password-form select { width: 100%; padding: 9px; border: 1px solid #c7ced6; border-radius: 6px; background: white; font: inherit; }
       .advanced-fields { margin-top: 14px; }
@@ -184,9 +194,11 @@
         th, td { font-size: 13px; }
       }
     </style>
-  <link rel="stylesheet" href="/static/session.css">
+    <link rel="stylesheet" href="/static/session.css">
+    <link rel="stylesheet" href="/static/management-tabs.css">
     <link rel="stylesheet" href="/static/quota.css">
     <script src="/static/session.js" defer></script>
+    <script src="/static/management-tabs.js" defer></script>
   </head>
   <body>
     <div class="shell">
@@ -195,29 +207,25 @@
         <div class="actions"><a class="btn btn-primary" href="/preview">用户账号主页预览</a><a class="btn" href="/">返回账号主页</a></div>
       </header>
       <main class="content">
-        <section class="section">
+        <div class="management-tabs" role="tablist" aria-label="资源管理" data-viewport="console-viewport">
+          <span class="management-tab-indicator" aria-hidden="true"></span>
+          <button id="gpt-pool-tab" type="button" role="tab" aria-selected="true" aria-controls="gpt-pool-panel" tabindex="0">GPT账号池</button>
+          <button id="mail-pool-tab" type="button" role="tab" aria-selected="false" aria-controls="mail-pool-panel" tabindex="-1">邮箱池</button>
+          <button id="coding-pool-tab" type="button" role="tab" aria-selected="false" aria-controls="coding-pool-panel" tabindex="-1">国产模型 Coding Plan</button>
+          <button id="relay-pool-tab" type="button" role="tab" aria-selected="false" aria-controls="relay-pool-panel" tabindex="-1">中转站</button>
+        </div>
+        <div id="console-viewport" class="management-viewport">
+          <div class="management-panels">
+        <section id="gpt-pool-panel" class="section management-panel" role="tabpanel" aria-labelledby="gpt-pool-tab">
           <div class="section-head">
-            <h2>账号管理</h2>
+            <h2>GPT账号池</h2>
             <div class="actions">
-              <button class="btn btn-primary" type="button" data-codex-auth="admin-import">添加 Codex 账号</button>
-              <form action="/api/admin/gmail/auth/start" method="post" target="_blank" rel="noopener"><button class="btn btn-primary">添加 Gmail</button></form>
-              <form action="/api/admin/outlook/auth/start" method="post" target="_blank" rel="noopener"><button class="btn">添加 Outlook</button></form>
+              <button id="add-gpt-account" class="btn btn-primary" type="button">添加 GPT 账号</button>
+              <button class="btn" type="button" data-codex-auth="admin-import">添加 Codex 账号</button>
             </div>
           </div>
-          <p class="muted">同一邮箱自动合并为一个账号，密码和 2FA 共享。下架后仅管理员可查看和使用，可随时重新上架。可单独移除 Codex 或邮箱，也可删除整个账号。</p>
-          <div id="mail-message" class="message muted"></div>
-          <form id="gmail-callback-form" class="callback-submit">
-            <input
-              id="gmail-callback-url"
-              type="url"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="Google 授权返回链接"
-              aria-label="Google 授权返回链接"
-              required
-            />
-            <button id="gmail-callback-submit" class="btn" type="submit">提交返回链接</button>
-          </form>
+          <p class="muted">支持用户名或邮箱，密码、身份验证器与监听邮箱按需配置。上架状态和分组控制主页可见性。</p>
+          <div id="gpt-message" class="message muted"></div>
           <div id="codex-message" class="message muted"></div>
           <form id="codex-callback-form" class="callback-submit">
             <input
@@ -238,33 +246,35 @@
             </table>
           </div>
         </section>
-        <section class="section">
+        <section id="mail-pool-panel" class="section management-panel" role="tabpanel" aria-labelledby="mail-pool-tab" aria-hidden="true" inert>
           <div class="section-head">
-            <div><h2>国产模型Coding Plan</h2><p class="muted">选择套餐平台后，页面会自动显示额度，每 5 分钟更新一次。编辑同一平台的套餐时，API Key 留空可沿用原值。</p></div>
-            <button class="btn btn-primary" type="button" id="add-coding-plan">添加 Coding Plan</button>
+            <h2>邮箱池</h2>
+            <div class="actions">
+              <form action="/api/admin/gmail/auth/start" method="post" target="_blank" rel="noopener"><button class="btn btn-primary">添加 Gmail</button></form>
+              <form action="/api/admin/outlook/auth/start" method="post" target="_blank" rel="noopener"><button class="btn">添加 Outlook</button></form>
+            </div>
           </div>
-          <div id="coding-plan-message" class="message muted"></div>
+          <p class="muted">管理接码邮箱的授权、监听与收件规则。在 GPT 账号的“监听邮箱”中选择关联，一个邮箱仅可关联一个 GPT 账号。</p>
+          <div id="mail-pool-message" class="message muted"></div>
+          <form id="gmail-callback-form" class="callback-submit">
+            <input
+              id="gmail-callback-url"
+              type="url"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Google 授权返回链接"
+              aria-label="Google 授权返回链接"
+              required
+            />
+            <button id="gmail-callback-submit" class="btn" type="submit">提交返回链接</button>
+          </form>
           <div class="table-wrap">
-            <table class="resource-table coding-plan-table">
-              <thead><tr><th>Coding Plan</th><th>API key</th><th>剩余额度</th><th>备注</th><th>管理</th></tr></thead>
-              <tbody id="coding-plan-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            <table class="mail-pool-table">
+              <thead><tr><th>邮箱</th><th>服务商</th><th>监听状态</th><th>管理</th></tr></thead>
+              <tbody id="mailbox-rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
-        </section>
-        <section class="section">
-          <div class="section-head">
-            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、网址、账号、密码和备注。点击名称打开网站；修改时密码留空会保留原值。</p></div>
-            <button class="btn btn-primary" type="button" id="add-relay-account">添加中转站账号</button>
-          </div>
-          <div id="relay-account-message" class="message muted"></div>
-          <div class="table-wrap">
-            <table class="resource-table">
-              <thead><tr><th>中转站</th><th>账号</th><th>密码</th><th>备注</th><th>管理</th></tr></thead>
-              <tbody id="relay-account-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
-            </table>
-          </div>
-        </section>
-        <section class="section">
+          <div class="mail-settings">
           <div class="section-head">
             <div><h2>收件设置</h2><p class="muted">为已授权邮箱配置邮件验证码或登录链接的接收规则。OpenAI 固定规则始终保留，其他规则可独立修改或删除。</p></div>
             <button class="btn btn-primary" type="button" id="add-filter">新增收件箱</button>
@@ -277,10 +287,63 @@
               <tbody id="filter-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
+          </div>
         </section>
+        <section id="coding-pool-panel" class="section management-panel" role="tabpanel" aria-labelledby="coding-pool-tab" aria-hidden="true" inert>
+          <div class="section-head">
+            <div><h2>国产模型Coding Plan</h2><p class="muted">选择套餐平台后，页面会自动显示额度，每 5 分钟更新一次。编辑同一平台的套餐时，API Key 留空可沿用原值。</p></div>
+            <button class="btn btn-primary" type="button" id="add-coding-plan">添加 Coding Plan</button>
+          </div>
+          <div id="coding-plan-message" class="message muted"></div>
+          <div class="table-wrap">
+            <table class="resource-table coding-plan-table">
+              <thead><tr><th>Coding Plan</th><th>API key</th><th>剩余额度</th><th>备注</th><th>管理</th></tr></thead>
+              <tbody id="coding-plan-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+        <section id="relay-pool-panel" class="section management-panel" role="tabpanel" aria-labelledby="relay-pool-tab" aria-hidden="true" inert>
+          <div class="section-head">
+            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、网址、账号、密码和备注。点击名称打开网站；修改时密码留空会保留原值。</p></div>
+            <button class="btn btn-primary" type="button" id="add-relay-account">添加中转站账号</button>
+          </div>
+          <div id="relay-account-message" class="message muted"></div>
+          <div class="table-wrap">
+            <table class="resource-table">
+              <thead><tr><th>中转站</th><th>账号</th><th>密码</th><th>备注</th><th>管理</th></tr></thead>
+              <tbody id="relay-account-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+          </div>
+        </div>
       </main>
     </div>
 
+    <dialog id="gpt-account-dialog">
+      <form id="gpt-account-form" class="password-form">
+        <h2 id="gpt-account-title">添加 GPT 账号</h2>
+        <label>登录账号（邮箱或用户名）<input id="gpt-login" autocomplete="off" maxlength="120" required /></label>
+        <label>GPT 密码（选填）<input id="gpt-initial-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
+        <label>身份验证器密钥（选填）<input id="gpt-initial-secret" autocomplete="off" spellcheck="false" maxlength="4096" /></label>
+        <label class="checkbox-label"><input id="gpt-initial-listed" type="checkbox" checked />上架到账号主页</label>
+        <p class="muted">编辑时密码和验证器留空可保留原值。主页按分组授权展示账号。</p>
+        <p id="gpt-account-error" class="bad" role="alert"></p>
+        <div class="dialog-actions"><button class="btn" type="button" data-close-pool="gpt-account-dialog">取消</button><button id="gpt-account-save" class="btn btn-primary" type="submit">保存</button></div>
+      </form>
+    </dialog>
+    <dialog id="mailbox-dialog">
+      <form id="mailbox-form" class="password-form">
+        <h2>监听邮箱</h2>
+        <div id="mailbox-account" class="muted"></div>
+        <p class="muted">可选择多个邮箱。一个邮箱仅可关联一个 GPT 账号，清空选择可关闭该账号的邮箱接码。</p>
+        <label>查找邮箱<input id="mailbox-search" type="search" placeholder="搜索邮箱或服务商" autocomplete="off" /></label>
+        <div id="mailbox-options"></div>
+        <div class="actions"><span id="mailbox-count" class="muted"></span><button id="mailbox-clear" class="btn" type="button">清空选择</button></div>
+        <p id="mailbox-error" class="bad" role="alert"></p>
+        <div class="dialog-actions"><button class="btn" type="button" data-close-pool="mailbox-dialog">取消</button><button id="mailbox-save" class="btn btn-primary" type="submit">保存关联</button></div>
+      </form>
+    </dialog>
     <dialog id="codex-auth-dialog">
       <div class="password-form">
         <h2>登录 Codex</h2>
@@ -454,7 +517,12 @@
     <script>
       const accountRows = document.getElementById('account-rows');
       let accountsLoading = false;
-      const mailMessage = document.getElementById('mail-message');
+      let gptAccounts = [];
+      let mailboxAccounts = [];
+      let mailboxesLoading = false;
+      const mailboxRows = document.getElementById('mailbox-rows');
+      const mailPoolMessage = document.getElementById('mail-pool-message');
+      const gptMessage = document.getElementById('gpt-message');
       const codexMessage = document.getElementById('codex-message');
       const gmailCallbackForm = document.getElementById('gmail-callback-form');
       const gmailCallbackUrl = document.getElementById('gmail-callback-url');
@@ -905,17 +973,17 @@
         if (!callbackUrl) return;
         try {
           gmailCallbackSubmit.disabled = true;
-          setMessage(mailMessage, '正在提交 Google 授权返回链接...');
+          setMessage(mailPoolMessage, '正在提交 Google 授权返回链接...');
           const data = await api('/api/admin/gmail/auth/complete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ callback_url: callbackUrl }),
           });
           gmailCallbackUrl.value = '';
-          setMessage(mailMessage, data.detail || 'Google 授权完成。');
-          await loadAccounts();
+          setMessage(mailPoolMessage, data.detail || 'Google 授权完成。');
+          await loadMailboxes();
         } catch (error) {
-          setMessage(mailMessage, error.message, true);
+          setMessage(mailPoolMessage, error.message, true);
         } finally {
           gmailCallbackSubmit.disabled = false;
         }
@@ -962,7 +1030,7 @@
             body: JSON.stringify({ password: passwordInput.value }),
           });
           closePasswordDialog();
-          setMessage(mailMessage, 'GPT 密码已保存。');
+          setMessage(gptMessage, 'GPT 密码已保存。');
           await loadAccounts();
         } catch (error) {
           document.getElementById('password-error').textContent = error.message;
@@ -990,7 +1058,7 @@
             body: JSON.stringify({ secret: totpInput.value }),
           });
           closeTotpDialog();
-          setMessage(mailMessage, '身份验证器(2FA)密钥已保存。');
+          setMessage(gptMessage, '身份验证器(2FA)密钥已保存。');
           await loadAccounts();
         } catch (error) {
           document.getElementById('totp-error').textContent = error.message;
@@ -1018,10 +1086,10 @@
             try {
               totpButton.disabled = true;
               await api(`/api/admin/accounts/${encodeURIComponent(name)}/totp-secret`, { method: 'DELETE' });
-              setMessage(mailMessage, '身份验证器(2FA)密钥已删除。');
+              setMessage(gptMessage, '身份验证器(2FA)密钥已删除。');
               await loadAccounts();
             } catch (error) {
-              setMessage(mailMessage, error.message, true);
+              setMessage(gptMessage, error.message, true);
               totpButton.disabled = false;
             }
           }
@@ -1043,20 +1111,23 @@
             try {
               passwordButton.disabled = true;
               await api(`/api/admin/accounts/${encodeURIComponent(name)}/gpt-password`, { method: 'DELETE' });
-              setMessage(mailMessage, 'GPT 密码已删除。');
+              setMessage(gptMessage, 'GPT 密码已删除。');
               await loadAccounts();
             } catch (error) {
-              setMessage(mailMessage, error.message, true);
+              setMessage(gptMessage, error.message, true);
               passwordButton.disabled = false;
             }
           }
           return;
         }
+      });
+
+      mailboxRows.addEventListener('click', async (event) => {
         const button = event.target.closest('[data-mail-action]');
         if (!button) return;
         const action = button.dataset.mailAction;
         const name = button.dataset.name;
-        if (action === 'delete' && !confirm('移除邮箱后将停止监听，token 和历史文件会保留。如果还有关联的 Codex，密码和 2FA 会继续保留；移除最后一个关联时删除登录信息。继续吗？')) return;
+        if (action === 'delete' && !confirm('移除邮箱并停止监听？该邮箱与 GPT 账号的关联也会解除。')) return;
         try {
           button.disabled = true;
           if (action === 'delete') {
@@ -1064,12 +1135,14 @@
           } else {
             await api(`/api/admin/mail/accounts/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
           }
-          setMessage(mailMessage, '操作已完成。');
+          setMessage(mailPoolMessage, '操作已完成。');
+          await loadMailboxes();
           await loadAccounts();
         } catch (error) {
-          setMessage(mailMessage, error.message, true);
+          setMessage(mailPoolMessage, error.message, true);
           button.disabled = false;
         }
+        finally { button.disabled = false; }
       });
 
       function codexPlan(item) {
@@ -1102,7 +1175,6 @@
       }
 
       function credentialActions(item, type, label, field) {
-        if (!item.email || !item.email.includes('@')) return `<div class="muted">${label}：请先完成授权</div>`;
         const present = item[`has_${field}`];
         const name = escapeAttr(item[`${field}_account`]);
         const email = escapeAttr(item.email || item.label || '');
@@ -1121,15 +1193,13 @@
           <button class="btn" data-codex-action="refresh" data-id="${escapeAttr(account.id)}">刷新额度</button>
           <button class="btn" type="button" data-codex-auth="admin-reauth" data-id="${escapeAttr(account.id)}">重新授权</button>
           <button class="btn btn-danger" data-codex-action="delete" data-id="${escapeAttr(account.id)}">移除 Codex</button></div>`).join('');
-        const mailActions = item.mail.map(mail => `<div class="actions"><span class="muted">${escapeHtml(mail.provider || '邮箱')}</span>
-          ${['gmail', 'outlook'].includes(mail.provider) ? `<form action="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" method="post" target="_blank" rel="noopener"><button class="btn">重新授权</button></form>` : ''}
-          <button class="btn" data-mail-action="${mail.enabled === false ? 'enable' : 'disable'}" data-name="${escapeAttr(mail.name)}">${mail.enabled === false ? '启用监听' : '停用监听'}</button>
-          <button class="btn btn-danger" data-mail-action="delete" data-name="${escapeAttr(mail.name)}">移除邮箱</button></div>`).join('');
-        return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.email || '等待授权')}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? escapeHtml(subscriptionText(primary)) : '仅邮箱验证'}</div></td>
+        const mailboxActions = `<div class="actions"><span>监听邮箱：${item.mail.length ? item.mail.length + ' 个' : '未配置'}</span>
+          <button class="btn" type="button" data-listen-account="${escapeAttr(item.key)}">${item.mail.length ? '修改' : '添加'}</button></div>`;
+        return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.login || item.email)}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? escapeHtml(subscriptionText(primary)) : 'GPT 登录账号'}</div></td>
           <td>${item.codex.length ? item.codex.map(account => quotaCell(account.usage)).join('<hr>') : '<span class="muted">未提供</span>'}</td>
-          <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}</td>
+          <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}${mailboxActions}</td>
           <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan">邮箱</span></div>'}</td>
-          <td>${item.email && item.email.includes('@') ? `<div class="actions"><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>` : ''}${codexActions}${mailActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除整个账号</button></td></tr>`;
+          <td><div class="actions"><button class="btn" data-edit-gpt="${escapeAttr(item.key)}">编辑账号</button><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>${codexActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除 GPT 账号</button></td></tr>`;
       }
 
       async function loadAccounts(force = true) {
@@ -1137,9 +1207,10 @@
         accountsLoading = true;
         try {
           const data = await api('/api/accounts');
-          accountRows.innerHTML = data.items.length ? data.items.map(accountRow).join('') : '<tr><td colspan="5" class="muted">暂无账号。请添加 Codex 或接码邮箱，同邮箱会自动合并。</td></tr>';
+          gptAccounts = data.items;
+          accountRows.innerHTML = gptAccounts.length ? gptAccounts.map(accountRow).join('') : '<tr><td colspan="5" class="muted">暂无 GPT 账号，可点击“添加 GPT 账号”创建。</td></tr>';
         } catch (error) {
-          setMessage(mailMessage, error.message, true);
+          setMessage(gptMessage, error.message, true);
         } finally { accountsLoading = false; }
       }
 
@@ -1152,20 +1223,20 @@
           await api(`/api/admin/accounts/${encodeURIComponent(button.dataset.listingAccount)}/listing`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ listed }),
           });
-          setMessage(mailMessage, listed ? '账号已上架，普通用户可使用。' : '账号已下架，仅管理员可使用。');
+          setMessage(gptMessage, listed ? '账号已上架，普通用户可使用。' : '账号已下架，仅管理员可使用。');
           await loadAccounts();
-        } catch (error) { setMessage(mailMessage, error.message, true); button.disabled = false; }
+        } catch (error) { setMessage(gptMessage, error.message, true); button.disabled = false; }
       });
 
       accountRows.addEventListener('click', async (event) => {
         const button = event.target.closest('[data-delete-account]');
-        if (!button || !confirm(`确认删除 ${button.dataset.email} 的全部关联、Codex 授权文件及登录信息？邮箱 token 和验证码历史文件会保留。`)) return;
+        if (!button || !confirm(`确认删除 GPT 账号 ${button.dataset.email}、登录信息及其 Codex 授权？关联的邮箱仍可在邮箱池中管理。`)) return;
         try {
           button.disabled = true;
           await api(`/api/admin/accounts/${encodeURIComponent(button.dataset.deleteAccount)}`, { method: 'DELETE' });
-          setMessage(mailMessage, '整个账号已删除。');
+          setMessage(gptMessage, 'GPT 账号已删除。');
           await loadAccounts();
-        } catch (error) { setMessage(mailMessage, error.message, true); button.disabled = false; }
+        } catch (error) { setMessage(gptMessage, error.message, true); button.disabled = false; }
       });
 
       accountRows.addEventListener('click', async (event) => {
@@ -1173,7 +1244,7 @@
         if (!button) return;
         const action = button.dataset.codexAction;
         const id = button.dataset.id;
-        if (action === 'delete' && !confirm('确认移除这个 Codex 授权及本地 auth 文件吗？其他关联和共享登录信息会保留；移除最后一个关联时删除登录信息。')) return;
+        if (action === 'delete' && !confirm('确认移除这个 Codex 授权及本地 auth 文件吗？')) return;
         try {
           button.disabled = true;
           const options = { method: action === 'delete' ? 'DELETE' : 'POST' };
@@ -1186,11 +1257,165 @@
         }
       });
 
+      function mailboxRow(mail) {
+        const name = escapeAttr(mail.name);
+        return `<tr><td>${escapeHtml(mail.email)}</td><td>${escapeHtml(mail.provider)}</td>
+          <td>${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')}</td><td><div class="actions">
+          ${['gmail', 'outlook'].includes(mail.provider) ? `<form action="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" method="post" target="_blank" rel="noopener"><button class="btn">重新授权</button></form>` : ''}
+          <button class="btn" data-mail-action="${mail.enabled === false ? 'enable' : 'disable'}" data-name="${name}">${mail.enabled === false ? '启用监听' : '停用监听'}</button>
+          <button class="btn btn-danger" data-mail-action="delete" data-name="${name}">移除邮箱</button>
+          </div></td></tr>`;
+      }
+
+      async function loadMailboxes(force = true) {
+        if (mailboxesLoading || (!force && mailboxRows.querySelector('button:disabled'))) return;
+        mailboxesLoading = true;
+        try {
+          const data = await api('/api/admin/mail/accounts');
+          mailboxAccounts = data.items;
+          mailboxRows.innerHTML = mailboxAccounts.length ? mailboxAccounts.map(mailboxRow).join('')
+            : '<tr><td colspan="4" class="muted">暂无邮箱，可添加 Gmail 或 Outlook。</td></tr>';
+        } catch (error) {
+          setMessage(mailPoolMessage, error.message, true);
+        } finally { mailboxesLoading = false; }
+      }
+
+      const gptDialog = document.getElementById('gpt-account-dialog');
+      const gptForm = document.getElementById('gpt-account-form');
+      let editingGptKey = '';
+
+      function openGptAccount(item = null) {
+        editingGptKey = item?.key || '';
+        gptForm.reset();
+        document.getElementById('gpt-account-title').textContent = item ? '编辑 GPT 账号' : '添加 GPT 账号';
+        document.getElementById('gpt-login').value = item?.login || item?.email || '';
+        document.getElementById('gpt-initial-listed').checked = item?.listed !== false;
+        document.getElementById('gpt-account-error').textContent = '';
+        gptDialog.showModal();
+        document.getElementById('gpt-login').focus();
+      }
+
+      document.getElementById('add-gpt-account').addEventListener('click', () => openGptAccount());
+      accountRows.addEventListener('click', event => {
+        const button = event.target.closest('[data-edit-gpt]');
+        if (button) openGptAccount(gptAccounts.find(item => item.key === button.dataset.editGpt));
+      });
+      document.querySelectorAll('[data-close-pool]').forEach(button => {
+        button.addEventListener('click', () => document.getElementById(button.dataset.closePool).close());
+      });
+      gptDialog.addEventListener('close', () => {
+        document.getElementById('gpt-initial-password').value = '';
+        document.getElementById('gpt-initial-secret').value = '';
+      });
+      gptForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        const key = editingGptKey;
+        const payload = {
+          login: document.getElementById('gpt-login').value,
+          listed: document.getElementById('gpt-initial-listed').checked,
+        };
+        for (const [field, id] of [['password', 'gpt-initial-password'], ['secret', 'gpt-initial-secret']]) {
+          const value = document.getElementById(id).value;
+          if (value) payload[field] = value;
+        }
+        const save = document.getElementById('gpt-account-save');
+        save.disabled = true;
+        document.getElementById('gpt-account-error').textContent = '';
+        try {
+          await api(key ? `/api/admin/gpt/accounts/${encodeURIComponent(key)}` : '/api/admin/gpt/accounts', {
+            method: key ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          gptDialog.close();
+          setMessage(gptMessage, 'GPT 账号已保存。');
+          await loadAccounts();
+        } catch (error) { document.getElementById('gpt-account-error').textContent = error.message; }
+        finally { save.disabled = false; }
+      });
+
+      const mailboxDialog = document.getElementById('mailbox-dialog');
+      const mailboxOptions = document.getElementById('mailbox-options');
+      let mailboxChoices = [];
+      let selectedMailboxes = new Set();
+      let mailboxAccountKey = '';
+      let mailboxRequest = 0;
+
+      function renderMailboxOptions() {
+        const query = document.getElementById('mailbox-search').value.trim().toLowerCase();
+        const choices = mailboxChoices.filter(item => `${item.email} ${item.provider}`.toLowerCase().includes(query));
+        mailboxOptions.innerHTML = choices.length ? choices.map(item => `<label class="mailbox-option">
+          <input type="checkbox" value="${escapeAttr(item.name)}" ${selectedMailboxes.has(item.name) ? 'checked' : ''} ${item.assigned_to ? 'disabled' : ''} />
+          <span>${escapeHtml(item.email)}${item.recommended ? '<span class="plan">同名推荐</span>' : ''}
+          <small class="muted">${escapeHtml(item.provider)} · ${escapeHtml(item.assigned_to ? '已关联 ' + item.assigned_to : item.status || '未知')}</small></span>
+        </label>`).join('') : '<p class="muted">暂无匹配邮箱，请先在邮箱池添加邮箱。</p>';
+        document.getElementById('mailbox-count').textContent = `已选择 ${selectedMailboxes.size} 个邮箱`;
+      }
+
+      accountRows.addEventListener('click', async event => {
+        const button = event.target.closest('[data-listen-account]');
+        if (!button) return;
+        const account = gptAccounts.find(item => item.key === button.dataset.listenAccount);
+        if (!account) return;
+        const request = ++mailboxRequest;
+        mailboxAccountKey = account.key;
+        mailboxChoices = [];
+        selectedMailboxes = new Set();
+        document.getElementById('mailbox-account').textContent = account.login || account.email;
+        document.getElementById('mailbox-search').value = '';
+        document.getElementById('mailbox-error').textContent = '';
+        document.getElementById('mailbox-count').textContent = '';
+        document.getElementById('mailbox-save').disabled = true;
+        mailboxOptions.innerHTML = '<p class="muted">正在加载邮箱…</p>';
+        mailboxDialog.showModal();
+        try {
+          const data = await api(`/api/admin/gpt/accounts/${encodeURIComponent(account.key)}/mailboxes`);
+          if (request !== mailboxRequest || !mailboxDialog.open) return;
+          mailboxChoices = data.items;
+          selectedMailboxes = new Set(data.items.filter(item => item.selected).map(item => item.name));
+          renderMailboxOptions();
+          document.getElementById('mailbox-save').disabled = false;
+        } catch (error) {
+          if (request === mailboxRequest) document.getElementById('mailbox-error').textContent = error.message;
+        }
+      });
+      mailboxDialog.addEventListener('close', () => {
+        mailboxRequest += 1;
+        mailboxAccountKey = '';
+      });
+      document.getElementById('mailbox-search').addEventListener('input', renderMailboxOptions);
+      mailboxOptions.addEventListener('change', event => {
+        const input = event.target.closest('input[type="checkbox"]');
+        if (!input) return;
+        if (input.checked) selectedMailboxes.add(input.value);
+        else selectedMailboxes.delete(input.value);
+        document.getElementById('mailbox-count').textContent = `已选择 ${selectedMailboxes.size} 个邮箱`;
+      });
+      document.getElementById('mailbox-clear').addEventListener('click', () => {
+        selectedMailboxes.clear();
+        renderMailboxOptions();
+      });
+      document.getElementById('mailbox-form').addEventListener('submit', async event => {
+        event.preventDefault();
+        const key = mailboxAccountKey;
+        const save = document.getElementById('mailbox-save');
+        save.disabled = true;
+        try {
+          await api(`/api/admin/gpt/accounts/${encodeURIComponent(key)}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mailbox_ids: [...selectedMailboxes] }),
+          });
+          mailboxDialog.close();
+          setMessage(gptMessage, '监听邮箱已更新。');
+          await loadAccounts();
+        } catch (error) { document.getElementById('mailbox-error').textContent = error.message; }
+        finally { save.disabled = false; }
+      });
+
       loadAccounts();
+      loadMailboxes();
       loadCodingPlans();
       loadRelayAccounts();
       loadFilters();
-      setInterval(() => { loadAccounts(false); loadCodingPlans(); loadRelayAccounts(); }, 5000);
+      setInterval(() => { loadAccounts(false); loadMailboxes(false); loadCodingPlans(); loadRelayAccounts(); }, 5000);
     </script>
   </body>
 </html>

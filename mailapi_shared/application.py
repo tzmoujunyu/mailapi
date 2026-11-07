@@ -94,7 +94,7 @@ from .account_passwords import (
 from .coding_plan_quota import CodingPlanQuotaCache
 from .resource_accounts import ResourceStore, ResourceStoreError
 from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
-from .accounts import SESSION_COOKIE, create_account_router
+from .accounts import SESSION_COOKIE, create_account_router, read_payload
 from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
 
 
@@ -1927,7 +1927,8 @@ def save_codex_accounts() -> None:
 
 
 def login_credentials(email: str) -> Dict[str, Any]:
-    name = "email:" + AccountCredentialStore.email_key(email)
+    account = CREDENTIAL_STORE.account_for_login(email)
+    name = account["key"] if account else "email:" + AccountCredentialStore.email_key(email)
     return {
         "gpt_password_account": name,
         "totp_secret_account": name,
@@ -1937,21 +1938,18 @@ def login_credentials(email: str) -> Dict[str, Any]:
 
 
 def find_login_account(account_name: str) -> Optional[AccountConfig]:
-    if account_name.startswith("email:"):
-        email = AccountCredentialStore.email_key(account_name[6:])
-        with MAIL_ACCOUNTS_LOCK:
-            mail = next((item for item in ACCOUNTS if AccountCredentialStore.email_key(item["email"]) == email), None)
-        if mail:
-            return mail
-        with CODEX_ACCOUNTS_LOCK:
-            if any(AccountCredentialStore.email_key(item.get("email")) == email for item in CODEX_ACCOUNTS.values()):
-                return {"name": account_name, "email": email}
-        return None
-    return find_mail_account(account_name)
+    ensure_gpt_pool()
+    account = CREDENTIAL_STORE.account_by_key(account_name)
+    if account:
+        return {"name": account["key"], "email": account["login"]}
+    mail = find_mail_account(account_name)
+    if mail and CREDENTIAL_STORE.account_for_login(mail["email"]):
+        return mail
+    return None
 
 
 def sanitize_login_account(cfg: AccountConfig) -> Dict[str, Any]:
-    if not cfg["name"].startswith("email:"):
+    if cfg.get("provider"):
         return sanitize_mail_account(cfg)
     return {"name": cfg["name"], "email": cfg["email"], **login_credentials(cfg["email"])}
 
@@ -2012,6 +2010,8 @@ def import_codex_auth_json(
         with CODEX_ACCOUNTS_LOCK:
             existing = CODEX_ACCOUNTS.get(str(candidate.get("id") or ""))
         if existing and not overwrite_existing_tokens:
+            if CREDENTIAL_STORE.pool_ready:
+                CREDENTIAL_STORE.ensure_codex_account(str(existing.get("email") or ""))
             imported.append(sanitize_codex_account(existing))
             continue
         record = build_codex_account_record(payload, existing)
@@ -2032,6 +2032,8 @@ def import_codex_auth_json(
                 record["updated_at"] = now_iso()
         with CODEX_ACCOUNTS_LOCK:
             CODEX_ACCOUNTS[str(record["id"])] = record
+        if CREDENTIAL_STORE.pool_ready:
+            CREDENTIAL_STORE.ensure_codex_account(str(record.get("email") or ""))
         imported.append(sanitize_codex_account(record))
     save_codex_accounts()
     return imported
@@ -2396,10 +2398,18 @@ def can_access_resource(request: FastAPIRequest, key: str) -> bool:
 def can_access_account(request: FastAPIRequest, email: str) -> bool:
     if request_access_role(request) == "admin" and not is_user_preview(request):
         return True
-    email = AccountCredentialStore.email_key(email)
-    if not can_access_resource(request, "gpt:email:" + email):
+    account = CREDENTIAL_STORE.account_for_login(email)
+    if not account or not can_access_resource(request, "gpt:" + account["key"]):
         return False
-    return CREDENTIAL_STORE.get(email, "listed") is not False
+    return account["listed"]
+
+
+def can_access_mailbox(request: FastAPIRequest, mailbox_id: str) -> bool:
+    if request_access_role(request) == "admin" and not is_user_preview(request):
+        return True
+    return any(can_access_account(request, account["login"])
+               and any(mailbox["name"] == mailbox_id for mailbox in account["mail"])
+               for account in account_groups())
 
 
 def is_user_preview(request: FastAPIRequest) -> bool:
@@ -3263,6 +3273,7 @@ def start_watchers():
         GPT_PASSWORD_STORE, TOTP_SECRET_STORE, {} if IS_TEST else os.environ,
     )
     import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
+    ensure_gpt_pool()
     if EXTERNAL_WATCHERS:
         threading.Thread(target=codex_refresh_loop, daemon=True).start()
         for cfg in ACCOUNTS:
@@ -3322,12 +3333,18 @@ def admin_page():
 
 @app.get("/api/codes")
 def get_codes(request: FastAPIRequest):
+    visible_accounts = account_groups()
+    allowed_mailboxes = {
+        mailbox["name"] for account in visible_accounts if can_access_account(request, account["login"])
+        for mailbox in account["mail"]
+    }
+    administrator = request_access_role(request) == "admin" and not is_user_preview(request)
     with MAIL_ACCOUNTS_LOCK:
         accounts = {item["name"]: item for item in ACCOUNTS}
     with STATE_LOCK:
         data = []
         for name, cfg in accounts.items():
-            if not can_access_account(request, cfg["email"]):
+            if not administrator and name not in allowed_mailboxes:
                 continue
             item = dict(STATE.get(name, {}))
             item.update(name=name, email=cfg["email"], enabled=cfg.get("enabled", True))
@@ -3862,6 +3879,8 @@ def delete_mail_account(account_name: str):
     cfg = find_mail_account(account_name)
     if not cfg:
         return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
+    ensure_gpt_pool()
+    CREDENTIAL_STORE.detach_mailbox(account_name)
     stop_mail_watcher(account_name)
     with MAIL_ACCOUNTS_LOCK:
         ACCOUNTS[:] = [item for item in ACCOUNTS if item["name"] != account_name]
@@ -4139,32 +4158,46 @@ def codex_callback_page(ok: bool, message: str, status_code: int = 200) -> HTMLR
 
 
 def delete_unlinked_credentials(email: str) -> bool:
-    if find_login_account("email:" + AccountCredentialStore.email_key(email)):
+    if CREDENTIAL_STORE.account_for_login(email):
         return False
     CREDENTIAL_STORE.delete(email)
     return True
 
 
-def account_groups() -> List[Dict[str, Any]]:
-    # Integrations retain their own OAuth lifecycle; login information belongs to the email.
+def ensure_gpt_pool() -> None:
+    if CREDENTIAL_STORE.pool_ready:
+        return
     with MAIL_ACCOUNTS_LOCK:
         mail_accounts = list(ACCOUNTS)
     with CODEX_ACCOUNTS_LOCK:
         codex_accounts = [dict(item) for item in CODEX_ACCOUNTS.values()]
-    groups = {}
-    for kind, records in (("codex", codex_accounts), ("mail", mail_accounts)):
-        for record in records:
-            email = AccountCredentialStore.email_key(record.get("email"))
-            key = "email:" + email if "@" in email else f"{kind}:{record.get('id') or record.get('name')}"
-            group = groups.setdefault(key, {"key": key, "email": email, "listed": CREDENTIAL_STORE.get(email, "listed") is not False, "codex": [], "mail": [], **login_credentials(email)})
-            if kind == "codex":
-                item = sanitize_codex_account(record)
-            else:
+    CREDENTIAL_STORE.migrate_pool(mail_accounts, codex_accounts)
+
+
+def account_groups() -> List[Dict[str, Any]]:
+    ensure_gpt_pool()
+    with MAIL_ACCOUNTS_LOCK:
+        mail_accounts = list(ACCOUNTS)
+    with CODEX_ACCOUNTS_LOCK:
+        codex_accounts = [dict(item) for item in CODEX_ACCOUNTS.values()]
+    result = []
+    for account in CREDENTIAL_STORE.list_accounts():
+        identity = CREDENTIAL_STORE.get(account["login"], "codex_email")
+        mailboxes = CREDENTIAL_STORE.linked_mailbox_ids(account["login"], mail_accounts)
+        item = {
+            **account, "email": account["login"], "codex": [], "mail": [],
+            **login_credentials(account["login"]),
+        }
+        item["codex"] = [sanitize_codex_account(record) for record in codex_accounts
+                         if AccountCredentialStore.email_key(record.get("email")) == identity]
+        for cfg in mail_accounts:
+            if cfg["name"] in mailboxes:
                 with STATE_LOCK:
-                    item = dict(STATE.get(record["name"], {}))
-                item.update(sanitize_mail_account(record))
-            group[kind].append(item)
-    return list(groups.values())
+                    mailbox = dict(STATE.get(cfg["name"], {}))
+                mailbox.update(sanitize_mail_account(cfg))
+                item["mail"].append(mailbox)
+        result.append(item)
+    return result
 
 
 @app.get("/api/accounts")
@@ -4172,6 +4205,60 @@ def get_accounts(request: FastAPIRequest):
     items = account_groups()
     items = [item for item in items if can_access_account(request, item["email"])]
     return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
+
+
+async def save_gpt_account(request: FastAPIRequest, account_key: Optional[str] = None):
+    ensure_gpt_pool()
+    if account_key and CREDENTIAL_STORE.account_by_key(account_key) is None:
+        return JSONResponse({"detail": "未找到 GPT 账号"}, status_code=404)
+    payload = await read_payload(request, {"login", "password", "secret", "listed", "mailbox_ids"})
+    with MAIL_ACCOUNTS_LOCK:
+        valid_mailboxes = {cfg["name"]: cfg["email"] for cfg in ACCOUNTS}
+    try:
+        item = CREDENTIAL_STORE.save_account(account_key, payload, valid_mailboxes)
+    except AccountPasswordError as error:
+        return JSONResponse({"detail": str(error)}, status_code=400)
+    return JSONResponse({"item": item}, status_code=200 if account_key else 201)
+
+
+@app.post("/api/admin/gpt/accounts")
+async def create_gpt_account(request: FastAPIRequest):
+    return await save_gpt_account(request)
+
+
+@app.put("/api/admin/gpt/accounts/{account_key}")
+async def update_gpt_account(account_key: str, request: FastAPIRequest):
+    return await save_gpt_account(request, account_key)
+
+
+@app.get("/api/admin/gpt/accounts/{account_key}/mailboxes")
+def gpt_mailbox_choices(account_key: str):
+    ensure_gpt_pool()
+    account = CREDENTIAL_STORE.account_by_key(account_key)
+    if account is None:
+        return JSONResponse({"detail": "未找到 GPT 账号"}, status_code=404)
+    with MAIL_ACCOUNTS_LOCK:
+        mailboxes = list(ACCOUNTS)
+    owners = {}
+    for candidate in CREDENTIAL_STORE.list_accounts():
+        linked = CREDENTIAL_STORE.linked_mailbox_ids(candidate["login"], mailboxes)
+        for mailbox in mailboxes:
+            if mailbox["name"] in linked:
+                owners[AccountCredentialStore.email_key(mailbox["email"])] = candidate
+    selected = CREDENTIAL_STORE.linked_mailbox_ids(account["login"], mailboxes)
+    login = AccountCredentialStore.email_key(account["login"])
+    items = []
+    for mailbox in mailboxes:
+        email = AccountCredentialStore.email_key(mailbox["email"])
+        owner = owners.get(email)
+        items.append({
+            **sanitize_mail_account(mailbox),
+            "selected": mailbox["name"] in selected,
+            "recommended": login == email or ("@" not in login and login == email.split("@", 1)[0]),
+            "assigned_to": owner["login"] if owner and owner["key"] != account_key else None,
+        })
+    items.sort(key=lambda item: (not item["recommended"], bool(item["assigned_to"]), item["email"].lower()))
+    return JSONResponse({"items": items})
 
 
 async def resource_payload(request: FastAPIRequest, label: str) -> Dict[str, Any]:
@@ -4335,10 +4422,6 @@ def delete_chatgpt_account(account_name: str):
     group = next((item for item in groups if item["key"] == account_name), None)
     if group is None:
         return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
-    for item in group["mail"]:
-        response = delete_mail_account(item["name"])
-        if response.status_code != 200:
-            return response
     for item in group["codex"]:
         response = delete_codex_account(item["id"])
         if response.status_code != 200:
@@ -4439,6 +4522,7 @@ def refresh_codex_account(account_id: str):
 
 @app.delete("/api/codex/accounts/{account_id}")
 def delete_codex_account(account_id: str):
+    ensure_gpt_pool()
     with CODEX_ACCOUNTS_LOCK:
         existed = CODEX_ACCOUNTS.pop(account_id, None)
     if not existed:
@@ -4456,7 +4540,7 @@ def delete_codex_account(account_id: str):
 def get_history(account_name: str, request: FastAPIRequest):
     if request_access_role(request) != "admin" or is_user_preview(request):
         cfg = find_mail_account(account_name)
-        if not cfg or not can_access_account(request, cfg["email"]):
+        if not cfg or not can_access_mailbox(request, account_name):
             return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
     with HISTORY_LOCK:
         records = CODE_HISTORY.get(account_name, [])
@@ -4499,7 +4583,7 @@ def clear_history(account_name: str):
 
 def resource_catalog() -> List[Dict[str, Any]]:
     items = [{"key": "gpt:" + item["key"], "kind": "gpt", "name": item["email"], "listed": item["listed"]}
-             for item in account_groups() if "@" in item["email"]]
+             for item in account_groups()]
     for kind, store in (("coding-plan", CODING_PLAN_STORE), ("relay-account", RELAY_ACCOUNT_STORE)):
         items.extend({"key": kind + ":" + item["id"], "kind": kind, "name": item["name"]} for item in store.list_public())
     return items

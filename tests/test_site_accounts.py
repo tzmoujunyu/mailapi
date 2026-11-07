@@ -97,6 +97,59 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return [item["email"] for item in response.json()["items"]]
 
+    def test_gpt_pool_supports_username_only_accounts_and_stable_group_grants(self):
+        created = self.admin.post("/api/admin/gpt/accounts", json={"login": "plain-account"})
+        self.assertEqual(created.status_code, 201, created.text)
+        account = created.json()["item"]
+        self.assertFalse(account["has_gpt_password"])
+        self.assertFalse(account["has_totp_secret"])
+        self.assertEqual(account["mailbox_ids"], [])
+        self.admin.put("/api/admin/groups/" + self.group["id"], json={"resource_keys": ["gpt:" + account["key"]]})
+        self.assertEqual(self.emails(self.alice), ["plain-account"])
+        path = "/api/admin/gpt/accounts/" + account["key"]
+        self.assertEqual(self.admin.put(path, json={"login": "renamed-account"}).status_code, 200)
+        self.assertEqual(self.emails(self.alice), ["renamed-account"])
+        self.assertEqual(self.alice.put(path, json={"mailbox_ids": []}).status_code, 403)
+        secret = "/api/accounts/" + account["key"] + "/gpt-password"
+        self.assertEqual(self.alice.post(secret).status_code, 404)
+        response = self.admin.put("/api/admin/accounts/" + account["key"] + "/gpt-password", json={"password": "private-gpt-password"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.alice.post(secret).json()["password"], "private-gpt-password")
+        self.assertEqual(self.bob.post(secret).status_code, 404)
+
+    def test_mailbox_choices_and_exclusive_binding_follow_gpt_resource_permissions(self):
+        key = self.admin.post("/api/admin/gpt/accounts", json={"login": "other"}).json()["item"]["key"]
+        path = "/api/admin/gpt/accounts/" + key
+        choices = self.admin.get(path + "/mailboxes").json()["items"]
+        recommended = next(item for item in choices if item["name"] == "account-2")
+        self.assertTrue(recommended["recommended"])
+        self.assertTrue(recommended["assigned_to"])
+        self.assertEqual(self.admin.put(path, json={"mailbox_ids": ["account-2"]}).status_code, 400)
+        for old in ("owned@example.com", "other@example.com"):
+            self.assertEqual(self.admin.put("/api/admin/gpt/accounts/email:" + old, json={"mailbox_ids": []}).status_code, 200)
+        self.assertEqual(self.admin.put(path, json={"mailbox_ids": ["account-1", "account-2"]}).status_code, 200)
+        self.admin.put("/api/admin/groups/" + self.group["id"], json={"resource_keys": ["gpt:" + key]})
+        self.assertEqual(self.emails(self.alice), ["other"])
+        self.assertEqual(len(self.alice.get("/api/codes").json()["items"]), 2)
+        self.assertEqual(self.alice.get("/api/history/account-2").status_code, 200)
+        self.assertEqual(self.bob.get("/api/history/account-2").status_code, 404)
+        self.assertEqual(self.alice.post("/api/accounts/account-1/gpt-password").status_code, 404)
+        self.admin.put(path, json={"mailbox_ids": ["account-1"]})
+        self.assertEqual(self.alice.get("/api/history/account-2").status_code, 404)
+        self.assertEqual(len(self.alice.get("/api/codes").json()["items"]), 1)
+
+    def test_new_mailbox_does_not_create_gpt_account_and_deleting_gpt_keeps_mailbox(self):
+        self.admin.get("/api/accounts")
+        self.module.ACCOUNTS.append({"name": "account-3", "email": "new@example.com", "provider": "gmail", "enabled": False})
+        self.assertNotIn("new@example.com", self.emails(self.admin))
+        self.assertEqual(len(self.admin.get("/api/admin/mail/accounts").json()["items"]), 3)
+        self.assertEqual(self.admin.delete("/api/admin/accounts/email:owned@example.com").status_code, 200)
+        self.assertTrue(any(item["name"] == "account-1" for item in self.admin.get("/api/admin/mail/accounts").json()["items"]))
+        self.assertEqual(self.alice.get("/api/history/account-1").status_code, 404)
+        recreated = self.admin.post("/api/admin/gpt/accounts", json={"login": "owned@example.com"}).json()["item"]
+        self.assertNotEqual(recreated["key"], "email:owned@example.com")
+        self.assertFalse(self.store.resource_allowed(self.identities["alice"]["id"], "gpt:" + recreated["key"]))
+
     def test_group_member_update_preserves_omitted_resource_assignments(self):
         self.assertEqual(self.admin.delete("/api/admin/coding-plans/" + self.plan["id"]).status_code, 200)
         path = "/api/admin/groups/" + self.group["id"]
