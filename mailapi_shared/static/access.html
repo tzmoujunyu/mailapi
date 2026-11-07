@@ -15,12 +15,10 @@
     <p id="message" role="status" aria-live="polite"></p>
     <section class="group-overview" aria-labelledby="overview-title">
       <h2 id="overview-title">组别总览</h2>
-      <p class="muted">按「类别-编号」归类，例如 Agent-1。无编号的分组按原名归类。</p>
-      <button id="add-overview-group" type="button" class="primary" disabled>创建小组</button>
+      <p id="overview-help" class="muted">点击格子管理小组与成员，悬停后可删除。通过边缘的 ＋ 添加小组或类别。</p>
       <div class="table-wrap">
-        <table id="group-overview" aria-labelledby="overview-title">
-          <thead><tr><th scope="col">类别</th><th scope="col">小组</th><th scope="col">成员</th><th scope="col">操作</th></tr></thead>
-          <tbody><tr><td colspan="4" class="muted">正在加载分组…</td></tr></tbody>
+        <table id="group-overview" aria-labelledby="overview-title" aria-describedby="overview-help">
+          <tbody><tr><td class="muted">正在加载分组…</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -58,7 +56,15 @@
   <dialog id="group-dialog" class="wide-dialog">
     <form id="group-form">
       <h2 id="group-title">创建分组</h2>
-      <label>分组名称<input id="group-name" required maxlength="80" autocomplete="off"></label>
+      <label id="group-name-field">分组名称<input id="group-name" required maxlength="80" autocomplete="off"></label>
+      <fieldset id="group-position" hidden disabled>
+        <legend>小组位置</legend>
+        <div class="group-position-fields">
+          <label>类别<input id="group-category" list="group-category-options" required maxlength="80" autocomplete="off"></label>
+          <label>小组编号<input id="group-number" inputmode="numeric" pattern="[0-9]*" maxlength="80" autocomplete="off"><small>留空表示未编号。</small></label>
+        </div>
+        <datalist id="group-category-options"></datalist>
+      </fieldset>
       <fieldset><legend>分组成员</legend><div id="member-options" class="options"></div></fieldset>
       <fieldset id="group-resources"><legend>分配资源</legend><p class="muted">新资源请先到资源账号控制台添加，再返回分组进行分配。</p><div id="resource-options" class="options"></div></fieldset>
       <p class="error" id="group-error" role="alert"></p>

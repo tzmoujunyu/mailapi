@@ -27,30 +27,74 @@ function groupActions(group, editLabel) {
   </div>`;
 }
 
+function groupPosition(name) {
+  const numbered = /^(.+)-(\d+)$/.exec(name);
+  return { category: numbered ? numbered[1].trim() : name, number: numbered ? numbered[2] : '' };
+}
+
+function nextGroupNumber(numbers) {
+  let number = 1;
+  while (numbers.has(String(number))) number += 1;
+  return String(number);
+}
+
+function addGroupButton(category, number, label, showLabel = false) {
+  return `<button type="button" class="matrix-add" data-create-group
+    data-category="${escapeHtml(category)}" data-number="${escapeHtml(number)}"
+    title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"><span aria-hidden="true">＋</span>
+    ${showLabel ? `<span class="matrix-add-label">${escapeHtml(label)}</span>` : ''}</button>`;
+}
+
 function renderGroupOverview(memberTags) {
   const categories = new Map();
+  const numbers = new Set();
+  let unnumbered = false;
   const sorted = [...groups].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true, sensitivity: 'base' }));
   for (const group of sorted) {
-    const numbered = /^(.+)-(\d+)$/.exec(group.name);
-    const name = numbered ? numbered[1].trim() : group.name;
-    const key = name.toLowerCase();
-    if (!categories.has(key)) categories.set(key, { name, subgroups: [] });
-    categories.get(key).subgroups.push({ group, label: numbered ? `小组 ${numbered[2]}` : '未编号' });
+    const { category, number } = groupPosition(group.name);
+    const key = category.toLowerCase();
+    if (!categories.has(key)) categories.set(key, { name: category, cells: new Map() });
+    const cells = categories.get(key).cells;
+    if (!cells.has(number)) cells.set(number, []);
+    cells.get(number).push(group);
+    if (number) numbers.add(number);
+    else unnumbered = true;
   }
 
-  const bodies = [...categories.values()].map(({ name, subgroups }) => {
-    const rows = subgroups.map(({ group, label }, index) => {
-      const category = index === 0
-        ? `<th class="group-category" scope="rowgroup" rowspan="${subgroups.length}">${escapeHtml(name)}</th>` : '';
-      return `<tr>${category}<th scope="row">${escapeHtml(label)}</th>
-        <td>${memberTags(group)}</td><td>${groupActions(group, '编辑小组与成员')}</td></tr>`;
-    });
-    return `<tbody>${rows.join('')}</tbody>`;
+  const columns = [...numbers].sort((a, b) => a.localeCompare(b, 'en', { numeric: true }) || a.localeCompare(b));
+  if (unnumbered) columns.push('');
+  if (!columns.length) columns.push('1');
+  const headings = columns.map(number => `<th class="matrix-heading" scope="col">${number ? `组${escapeHtml(number)}` : '未编号'}</th>`).join('');
+  const rows = [...categories.values()].map(({ name, cells }) => {
+    const contents = columns.map(number => {
+      const matches = cells.get(number);
+      if (!matches) {
+        return `<td class="matrix-data matrix-vacant">${addGroupButton(name, number, `创建 ${name} ${number ? '组' + number : '未编号小组'}`)}</td>`;
+      }
+      const cellContents = matches.map(group => `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}">
+        <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
+          title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组与成员 · ${escapeHtml(group.name)}">
+          ${group.member_ids.length ? memberTags(group) : '<span class="muted">暂无成员</span>'}
+        </button>
+        <button type="button" class="matrix-delete" data-delete-group="${escapeHtml(group.id)}"
+          title="删除 ${escapeHtml(group.name)}" aria-label="删除分组 · ${escapeHtml(group.name)}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"></path>
+          </svg>
+        </button>
+      </div>`).join('');
+      const edit = matches.length === 1 ? `data-edit-group="${escapeHtml(matches[0].id)}"` : '';
+      return `<td class="matrix-data" ${edit}>${cellContents}</td>`;
+    }).join('');
+    return `<tr><th class="matrix-category" scope="row">${escapeHtml(name)}</th>${contents}
+      <td class="matrix-edge">${addGroupButton(name, nextGroupNumber(new Set(cells.keys())), `向 ${name} 添加小组`)}</td></tr>`;
   }).join('');
-
-  const overview = byId('group-overview');
-  for (const body of [...overview.tBodies]) body.remove();
-  overview.insertAdjacentHTML('beforeend', bodies || '<tbody><tr><td colspan="4" class="muted">暂无分组，可先创建小组。</td></tr></tbody>');
+  byId('group-overview').innerHTML = `<thead><tr><th class="matrix-corner" scope="col">类别 / 小组</th>${headings}
+    <th class="matrix-edge" scope="col">${addGroupButton('', nextGroupNumber(numbers), '新增小组列')}</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="${columns.length + 2}" class="matrix-empty muted">暂无分组，点击下方 ＋ 创建第一个类别和小组。</td></tr>`}</tbody>
+    <tfoot><tr><td class="matrix-new-category" colspan="${columns.length + 2}">
+      ${addGroupButton('', '1', '新增类别', true)}
+    </td></tr></tfoot>`;
 }
 
 function render() {
@@ -87,7 +131,6 @@ async function load() {
     byId('batch-users').disabled = currentUser.role !== 'admin';
     byId('batch-users').hidden = currentUser.role !== 'admin';
     byId('add-group').disabled = false;
-    byId('add-overview-group').disabled = false;
   } catch (error) {
     if (version !== loadVersion) return;
     byId('message').textContent = error.message;
@@ -109,12 +152,21 @@ function openUser(user = null) {
   byId('user-dialog').showModal();
 }
 
-function openGroup(group = null, { membersOnly = false } = {}) {
+function openGroup(group = null, { membersOnly = false, category = '', number = '1' } = {}) {
   editingGroup = group;
   byId('group-form').reset();
   const action = membersOnly ? '小组' : '分组';
   byId('group-title').textContent = group ? `编辑${action} · ${group.name}` : `创建${action}`;
   byId('group-name').value = group?.name || '';
+  byId('group-name-field').hidden = membersOnly;
+  byId('group-name').disabled = membersOnly;
+  byId('group-position').hidden = !membersOnly;
+  byId('group-position').disabled = !membersOnly;
+  const position = group ? groupPosition(group.name) : { category, number };
+  byId('group-category').value = position.category;
+  byId('group-number').value = position.number;
+  byId('group-category-options').innerHTML = [...new Set(groups.map(item => groupPosition(item.name).category))]
+    .map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
   byId('member-options').innerHTML = users.map(user => `<label class="option"><input type="checkbox" value="${escapeHtml(user.id)}" ${group?.member_ids.includes(user.id) ? 'checked' : ''}><span>${escapeHtml(user.username)} <small>${roleNames[user.role]}</small></span></label>`).join('');
   byId('group-resources').hidden = membersOnly;
   if (!membersOnly) {
@@ -122,6 +174,7 @@ function openGroup(group = null, { membersOnly = false } = {}) {
   }
   byId('group-error').textContent = '';
   byId('group-dialog').showModal();
+  if (membersOnly) byId(position.category ? 'group-number' : 'group-category').focus();
 }
 
 function openBatchUsers() {
@@ -157,7 +210,16 @@ byId('user-form').addEventListener('submit', event => submitForm(event, 'user-er
 
 byId('group-form').addEventListener('submit', event => submitForm(event, 'group-error', async () => {
   const checked = id => [...byId(id).querySelectorAll('input:checked')].map(input => input.value);
-  const payload = { name: byId('group-name').value, member_ids: checked('member-options') };
+  let name = byId('group-name').value;
+  if (!byId('group-position').disabled) {
+    const category = byId('group-category').value.trim();
+    const number = byId('group-number').value.trim();
+    if (!category) throw new Error('请输入类别名称');
+    const original = editingGroup && groupPosition(editingGroup.name);
+    name = original && original.category === category && original.number === number
+      ? editingGroup.name : category + (number ? `-${number}` : '');
+  }
+  const payload = { name, member_ids: checked('member-options') };
   if (!byId('group-resources').hidden) payload.resource_keys = checked('resource-options');
   await api(editingGroup ? `/api/admin/groups/${encodeURIComponent(editingGroup.id)}` : '/api/admin/groups', jsonRequest(editingGroup ? 'PUT' : 'POST', payload));
   byId('group-dialog').close();
@@ -199,15 +261,21 @@ byId('users').addEventListener('click', event => {
   }
 });
 function handleGroupAction(event) {
-  const edit = event.target.closest('[data-edit-group]');
-  if (edit) {
-    const group = groups.find(group => group.id === edit.dataset.editGroup);
-    if (group) openGroup(group, { membersOnly: event.currentTarget.id === 'group-overview' });
-  }
   const button = event.target.closest('[data-delete-group]');
   if (button) {
     const group = groups.find(group => group.id === button.dataset.deleteGroup);
     if (group) remove(button, `/api/admin/groups/${encodeURIComponent(group.id)}`, `删除分组“${group.name}”？成员通过此分组获得的资源权限将立即取消。`);
+    return;
+  }
+  const add = event.target.closest('[data-create-group]');
+  if (add) {
+    openGroup(null, { membersOnly: true, category: add.dataset.category, number: add.dataset.number });
+    return;
+  }
+  const edit = event.target.closest('[data-edit-group]');
+  if (edit) {
+    const group = groups.find(group => group.id === edit.dataset.editGroup);
+    if (group) openGroup(group, { membersOnly: event.currentTarget.id === 'group-overview' });
   }
 }
 byId('groups').addEventListener('click', handleGroupAction);
@@ -216,7 +284,6 @@ document.querySelectorAll('[data-close]').forEach(button => button.addEventListe
 byId('add-user').addEventListener('click', () => openUser());
 byId('batch-users').addEventListener('click', openBatchUsers);
 byId('add-group').addEventListener('click', () => openGroup());
-byId('add-overview-group').addEventListener('click', () => openGroup(null, { membersOnly: true }));
 byId('add-user').disabled = true;
 byId('add-group').disabled = true;
 window.addEventListener('focus', () => { if (!document.querySelector('dialog[open]')) load(); });
