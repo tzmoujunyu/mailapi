@@ -6,6 +6,8 @@ import os
 import secrets
 import tempfile
 import threading
+from calendar import monthrange
+from datetime import date
 from pathlib import Path
 
 from .account_passwords import AccountPasswordError, MAX_PASSWORD_LENGTH, normalize_totp_secret
@@ -46,7 +48,15 @@ class AccountCredentialStore:
             return self._data["items"].get(self.email_key(email), {}).get(field)
 
     @staticmethod
+    def subscription_end(start):
+        started = date.fromisoformat(start)
+        year = started.year + (started.month == 12)
+        month = started.month % 12 + 1
+        return date(year, month, min(started.day, monthrange(year, month)[1])).isoformat()
+
+    @staticmethod
     def _public(identity, record):
+        start = record.get("subscription_started_on", "")
         return {
             "key": record["key"],
             "login": record.get("login", identity),
@@ -54,6 +64,8 @@ class AccountCredentialStore:
             "listed": record.get("listed") is not False,
             "has_gpt_password": bool(record.get("password")),
             "has_totp_secret": bool(record.get("secret")),
+            "subscription_started_on": start,
+            "subscription_ends_on": AccountCredentialStore.subscription_end(start) if start else "",
         }
 
     @property
@@ -108,7 +120,7 @@ class AccountCredentialStore:
             self._save({**self._data, "items": items, "pool_migrated": True})
 
     def save_account(self, key, payload, valid_mailboxes):
-        if not isinstance(payload, dict) or set(payload) - {"login", "password", "secret", "listed", "mailbox_ids"}:
+        if not isinstance(payload, dict) or set(payload) - {"login", "password", "secret", "listed", "mailbox_ids", "subscription_started_on"}:
             raise AccountPasswordError("GPT 账号包含无效字段")
         with self._lock:
             current = self.account_by_key(key) if key else None
@@ -126,6 +138,16 @@ class AccountCredentialStore:
                 "key": "account:" + secrets.token_hex(16), "mailbox_ids": [], "listed": True,
             }
             record["login"] = login
+            if "subscription_started_on" in payload:
+                start = payload["subscription_started_on"]
+                try:
+                    if not isinstance(start, str) or (start and date.fromisoformat(start).isoformat() != start):
+                        raise ValueError
+                    if start:
+                        self.subscription_end(start)
+                except (ValueError, OverflowError):
+                    raise AccountPasswordError("订阅开始日期须为有效的 YYYY-MM-DD 日期") from None
+                record["subscription_started_on"] = start
             if "listed" in payload:
                 if not isinstance(payload["listed"], bool):
                     raise AccountPasswordError("上架状态必须为布尔值")

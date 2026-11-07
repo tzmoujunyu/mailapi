@@ -4211,7 +4211,7 @@ async def save_gpt_account(request: FastAPIRequest, account_key: Optional[str] =
     ensure_gpt_pool()
     if account_key and CREDENTIAL_STORE.account_by_key(account_key) is None:
         return JSONResponse({"detail": "未找到 GPT 账号"}, status_code=404)
-    payload = await read_payload(request, {"login", "password", "secret", "listed", "mailbox_ids"})
+    payload = await read_payload(request, {"login", "password", "secret", "listed", "mailbox_ids", "subscription_started_on"})
     with MAIL_ACCOUNTS_LOCK:
         valid_mailboxes = {cfg["name"]: cfg["email"] for cfg in ACCOUNTS}
     try:

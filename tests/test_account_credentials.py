@@ -10,6 +10,28 @@ from mailapi_shared.account_passwords import AccountPasswordError
 
 
 class AccountCredentialTests(unittest.TestCase):
+    def test_monthly_subscription_clamps_month_end_and_survives_edits_and_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AccountCredentialStore(Path(directory) / "credentials.json")
+            for index, (start, end) in enumerate((
+                ("2026-01-31", "2026-02-28"), ("2024-01-31", "2024-02-29"),
+                ("2026-03-31", "2026-04-30"), ("2026-12-15", "2027-01-15"),
+            )):
+                account = store.save_account(None, {"login": f"monthly-{index}", "subscription_started_on": start}, {})
+                self.assertEqual(account["subscription_ends_on"], end)
+                store.save_account(account["key"], {"password": "kept-password"}, {})
+                reopened = AccountCredentialStore(store.path).account_by_key(account["key"])
+                self.assertEqual(reopened["subscription_started_on"], start)
+                self.assertEqual(reopened["subscription_ends_on"], end)
+            original = store.path.read_bytes()
+            for value in (None, 12, [], "2026-02-30", "20260101", "2026-W01-1", "9999-12-01"):
+                with self.assertRaises(AccountPasswordError):
+                    store.save_account(account["key"], {"subscription_started_on": value}, {})
+                self.assertEqual(store.path.read_bytes(), original)
+            cleared = store.save_account(account["key"], {"subscription_started_on": ""}, {})
+            self.assertEqual(cleared["subscription_ends_on"], "")
+            self.assertEqual(store.get(cleared["login"], "password"), "kept-password")
+
     def test_pool_migration_preserves_keys_credentials_and_explicit_mailbox_bindings(self):
         with tempfile.TemporaryDirectory() as directory:
             store = AccountCredentialStore(Path(directory) / "credentials.json")

@@ -41,6 +41,9 @@ function page(file, preview = false, previewUserId = '') {
   const sourceFile = process.env.MAILAPI_UI_ROOT ? file.replace(/^static\//, `${process.env.MAILAPI_UI_ROOT}/`) : file;
   const quotaScript = sourceFile.replace(/[^/]+$/, 'coding-plan-quota.js');
   vm.runInContext(fs.readFileSync(quotaScript, 'utf8'), context);
+  for (const name of ['coding-plan-config.js', 'account-subscription.js']) {
+    vm.runInContext(fs.readFileSync(sourceFile.replace(/[^/]+$/, name), 'utf8'), context);
+  }
   vm.runInContext(fs.readFileSync(sourceFile, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1], context);
   async function click(id, selector, dataset) {
     const button = { dataset, textContent: '复制', disabled: false };
@@ -52,6 +55,35 @@ function page(file, preview = false, previewUserId = '') {
   }
   return { context, nodes, calls, timers, click };
 }
+
+test('subscription display warns at five days and expires without assuming renewal', async () => {
+  const app = page('static/index.html'); await flush();
+  const render = date => vm.runInContext(`renderAccountSubscription({subscription_started_on:'2026-01-31',subscription_ends_on:'2026-02-28'},escapeHtml,new Date(2026,1,${date},12))`, app.context);
+  assert.match(render(22), /26\.01\.31 \(6 Day left\)/);
+  assert.doesNotMatch(render(22), /subscription-due/);
+  assert.match(render(23), /subscription-due/);
+  assert.match(render(23), /5 Day left/);
+  assert.match(render(28), /已到期/);
+  assert.match(vm.runInContext('renderAccountSubscription({},escapeHtml)', app.context), /未设置/);
+});
+
+test('Coding Plan configuration follows the provider and keeps copy beside the masked key', async () => {
+  for (const file of ['static/index.html', 'static/admin.html']) {
+    const app = page(file); await flush();
+    for (const [provider, doc, urlCount] of [['xiaomi', '小米 MiMo', 2], ['zhipu', '智谱 GLM', 3], ['kimi', 'Kimi Code', 2]]) {
+      const html = vm.runInContext(`codingPlanRow(${JSON.stringify({id:'plan-1',name:'Demo',provider,api_key_masked:'tp-••••key'})})`, app.context);
+      const cells = [...html.matchAll(/<td>([\s\S]*?)<\/td>/g)].map(match => match[1]);
+      assert.match(cells[0], new RegExp(doc));
+      assert.match(cells[0], /target="_blank" rel="noopener noreferrer"/);
+      assert.match(cells[1], /tp-••••key<\/span><button/);
+      assert.equal((cells[2].match(/data-base-url=/g) || []).length, urlCount);
+    }
+    const before = app.calls.length;
+    await app.click('coding-plan-rows', '[data-base-url]', {baseUrl:'https://api.kimi.com/coding/v1'});
+    assert.equal(app.calls.length, before + 1);
+    assert.deepEqual(app.calls.at(-1), ['clipboard', 'https://api.kimi.com/coding/v1']);
+  }
+});
 
 test('homepage expands immediately, places history below email row, and collapses all details', async () => {
   const app = page('static/index.html'); await flush();

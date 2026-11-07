@@ -72,11 +72,6 @@
       .resource-table th:nth-child(1) { width: 32%; }
       .resource-table th:nth-child(2) { width: 42%; }
       .resource-table th:nth-child(3) { width: 26%; }
-      .coding-plan-table { min-width: 710px; }
-      .coding-plan-table th:nth-child(1) { width: 30%; }
-      .coding-plan-table th:nth-child(2) { width: 21%; }
-      .coding-plan-table th:nth-child(3) { width: 37%; }
-      .coding-plan-table th:nth-child(4) { width: 12%; }
       .resource-table.relay-table { min-width: 760px; }
       .resource-table.relay-table th:nth-child(1) { width: 25%; }
       .resource-table.relay-table th:nth-child(2) { width: 23%; }
@@ -92,6 +87,8 @@
     <link rel="stylesheet" href="/static/help-hints.css">
     <link rel="stylesheet" href="/static/home-directory.css">
     <link rel="stylesheet" href="/static/quota.css">
+    <link rel="stylesheet" href="/static/coding-plan-config.css">
+    <link rel="stylesheet" href="/static/account-subscription.css">
     <script src="/static/session.js" defer></script>
     <script src="/static/help-hints.js" defer></script>
     <script src="/static/home-directory.js" defer></script>
@@ -136,7 +133,8 @@
         <div id="coding-plan-error" class="status-bad" role="status"></div>
         <div class="table-wrap">
           <table class="resource-table coding-plan-table">
-            <thead><tr><th>Coding Plan</th><th>API key</th><th>剩余额度</th><th>复制</th></tr></thead>
+            <colgroup><col style="width:24%"><col style="width:18%"><col style="width:30%"><col style="width:28%"></colgroup>
+            <thead><tr><th rowspan="2">Coding Plan</th><th colspan="2">API key &amp; Base URL</th><th rowspan="2">剩余额度</th></tr><tr><th>API key</th><th>Base URL（按协议选择）</th></tr></thead>
             <tbody id="coding-plan-rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
           </table>
         </div>
@@ -154,6 +152,8 @@
     </div>
     <!-- PREVIEW_SCRIPT -->
     <script src="/static/coding-plan-quota.js"></script>
+    <script src="/static/coding-plan-config.js"></script>
+    <script src="/static/account-subscription.js"></script>
     <script>
       const previewMode = window.__USER_PREVIEW__ === true;
       function previewUrl(path) { return previewMode ? `${path}${path.includes('?') ? '&' : '?'}preview=1${window.__PREVIEW_USER_ID__ ? `&user_id=${encodeURIComponent(window.__PREVIEW_USER_ID__)}` : ''}` : path; }
@@ -225,7 +225,7 @@
         else if (row.codex && (subscription.has_subscription === false || plan === 'free' || plan === '-')) detail = '无订阅';
         else if (row.codex && subscription.has_subscription === true) { const expiresAt = subscription.expires_at || subscription.renews_at; detail = expiresAt ? `订阅到期：${formatTsSeconds(expiresAt)}` : '订阅有效'; }
         else if (row.codex) detail = '-';
-        const reset = item.reset_credits; const resetText = reset && Number.isFinite(reset.available) ? `${reset.available}张重置卡${reset.earliest_expires_at ? `（最早${formatTsSeconds(reset.earliest_expires_at)}到期）` : ''}` : ''; return `<div class="account-main"><span class="account-email">${escapeHtml(email)}</span>${planBadge(item, !row.codex)}</div><div class="muted">${escapeHtml(detail)}</div>${resetText ? `<div class="muted">${escapeHtml(resetText)}</div>` : ''}`;
+        const reset = item.reset_credits; const resetText = reset && Number.isFinite(reset.available) ? `${reset.available}张重置卡${reset.earliest_expires_at ? `（最早${formatTsSeconds(reset.earliest_expires_at)}到期）` : ''}` : ''; return `<div class="account-main"><span class="account-email">${escapeHtml(email)}</span>${planBadge(item, !row.codex)}</div><div class="muted">${escapeHtml(detail)}</div>${renderAccountSubscription(row.credentials, escapeHtml)}${resetText ? `<div class="muted">${escapeHtml(resetText)}</div>` : ''}`;
       }
       function quotaCell(usage) {
         if (usage?.used_percent == null) return '<span class="muted">未提供</span>';
@@ -338,7 +338,7 @@
       function codingPlanRow(item) {
         const masked = item.api_key_masked || item.api_key || '未设置';
         const provider = codingPlanProviders[item.provider];
-        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatDateTime)}</td><td><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></td></tr>`;
+        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${renderCodingPlanDocs(item, escapeHtml)}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td><div class="plan-copy-line"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></div></td><td>${renderCodingPlanBaseUrls(item, escapeHtml, 'small-btn')}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatDateTime)}</td></tr>`;
       }
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
@@ -423,7 +423,12 @@
         } finally { refreshing = false; }
       }
       rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
-      codingPlanRows.addEventListener('click', event => { const copy = event.target.closest('[data-resource-copy]'); if (copy) return copyResourceSecret(copy); });
+      codingPlanRows.addEventListener('click', event => {
+        const base = event.target.closest('[data-base-url]');
+        if (base) return copyCodingPlanValue(base, () => base.dataset.baseUrl);
+        const copy = event.target.closest('[data-resource-copy]');
+        if (copy) return copyResourceSecret(copy);
+      });
       relayAccountRows.addEventListener('click', event => { const copy = event.target.closest('[data-resource-copy]'); if (copy) copyResourceSecret(copy); });
       refreshAccounts();
       refreshResources();

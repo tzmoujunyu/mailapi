@@ -236,6 +236,20 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.alice.get("/admin/access").headers["location"], "/")
         self.assertEqual(self.alice.get("/static/admin.html").headers["location"], "/")
 
+    def test_subscription_dates_are_admin_managed_and_use_calendar_months(self):
+        key = "email:owned@example.com"
+        path = "/api/admin/gpt/accounts/" + key
+        self.assertEqual(self.alice.put(path, json={"subscription_started_on": "2026-01-31"}).status_code, 403)
+        response = self.admin.put(path, json={"subscription_started_on": "2026-01-31"})
+        self.assertEqual(response.status_code, 200, response.text)
+        visible = self.alice.get("/api/accounts").json()["items"][0]
+        self.assertEqual(visible["subscription_started_on"], "2026-01-31")
+        self.assertEqual(visible["subscription_ends_on"], "2026-02-28")
+        self.assertEqual(self.admin.put(path, json={"subscription_started_on": "bad"}).status_code, 400)
+        self.assertEqual(self.admin.put(path, json={"subscription_ends_on": "2027-01-01"}).status_code, 400)
+        self.assertEqual(self.admin.put(path, json={"subscription_started_on": ""}).status_code, 200)
+        self.assertEqual(self.alice.get("/api/accounts").json()["items"][0]["subscription_started_on"], "")
+
     def test_resource_lists_and_secret_aliases_are_group_scoped(self):
         self.assertEqual(self.emails(self.alice), ["owned@example.com"])
         self.assertEqual(self.emails(self.bob), [])

@@ -103,6 +103,25 @@ GPT 的“监听邮箱”支持搜索、同名推荐、多选和清空，但同�
 打开期间的浏览位置，首次切换到新面板从内容顶部开始；刷新或重新打开页面后回到首个面板和页面顶部，
 不在浏览器存储中保存位置。
 
+GPT 的“本次订阅开始日期”由管理员在创建／编辑账号时录入，使用 `YYYY-MM-DD`；清空可取消记录。
+`subscription_started_on` 保存在现有凭据文件，`subscription_ends_on` 按一个自然月派生，月底取目标月的
+最后一个有效日期（例如 1 月 31 日至 2 月 28／29 日）。页面按浏览器本地日历日期显示
+`YY.MM.DD (X Day left)`，剩余 5 天及以内标红，到期显示“已到期”，不自动假定已经续费。
+旧账号未录入时显示“未设置”，不会根据 Codex 授权时间推断开通日期。
+
+### Coding Plan 配置资料
+
+首页和控制台共用 `static/coding-plan-config.js`，按平台索引中文文档和国内套餐 Base URL。
+API Key 仍保持脱敏，仅在点击旁边的复制按钮时通过原有鉴权接口读取；复制 Base URL 不发起模型调用。
+表格将 API Key 和 Base URL 分成两列，Base URL 按协议列出，不能把所有工具配置成同一个地址。
+以下官方资料核对于 2026-11-07，模型名单以文档为准，避免在页面固定过期的型号：
+
+| 平台 | 官方资料 | 国内套餐 Base URL |
+| --- | --- | --- |
+| 小米 MiMo Token Plan | [模型与接入说明](https://mimo.mi.com/docs/zh-CN/tokenplan/Token%20Plan/subscription) | OpenAI：`https://token-plan-cn.xiaomimimo.com/v1`；Anthropic：`https://token-plan-cn.xiaomimimo.com/anthropic`。另有海外集群，以套餐控制台为准 |
+| 智谱 GLM Coding Plan | [模型与调用说明](https://docs.bigmodel.cn/cn/coding-plan/latest-model)、[协议入口](https://docs.bigmodel.cn/cn/coding-plan/quick-start) | Chat Completions：`https://open.bigmodel.cn/api/coding/paas/v4`；Responses：`https://open.bigmodel.cn/api/v1`；Anthropic：`https://open.bigmodel.cn/api/anthropic` |
+| Kimi Code | [模型与调用说明](https://www.kimi.com/code/docs/kimi-code/models.html) | OpenAI：`https://api.kimi.com/coding/v1`；Anthropic：`https://api.kimi.com/coding/` |
+
 在 `/admin` 的国产模型 Coding Plan 区域编辑记录，选择智谱 GLM Coding Plan、Kimi Code 或小米
 MiMo Token Plan 的国内站。已有记录首次设置平台时可沿用对应的套餐 API Key。小米需要个人版
 Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结束时间。

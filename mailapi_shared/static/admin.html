@@ -75,11 +75,6 @@
       .resource-table th:nth-child(2) { width: 24%; }
       .resource-table th:nth-child(3) { width: 28%; }
       .resource-table th:nth-child(4) { width: 24%; }
-      .coding-plan-table th:nth-child(1) { width: 22%; }
-      .coding-plan-table th:nth-child(2) { width: 14%; }
-      .coding-plan-table th:nth-child(3) { width: 32%; }
-      .coding-plan-table th:nth-child(4) { width: 15%; }
-      .coding-plan-table th:nth-child(5) { width: 17%; }
       .resource-link { color: #2563eb; text-decoration: none; }
       .resource-link:hover { text-decoration: underline; }
       .muted { color: #6b7280; font-size: 13px; }
@@ -197,6 +192,8 @@
     <link rel="stylesheet" href="/static/session.css">
     <link rel="stylesheet" href="/static/management-tabs.css">
     <link rel="stylesheet" href="/static/quota.css">
+    <link rel="stylesheet" href="/static/coding-plan-config.css">
+    <link rel="stylesheet" href="/static/account-subscription.css">
     <script src="/static/session.js" defer></script>
     <script src="/static/management-tabs.js" defer></script>
   </head>
@@ -297,8 +294,9 @@
           <div id="coding-plan-message" class="message muted"></div>
           <div class="table-wrap">
             <table class="resource-table coding-plan-table">
-              <thead><tr><th>Coding Plan</th><th>API key</th><th>剩余额度</th><th>备注</th><th>管理</th></tr></thead>
-              <tbody id="coding-plan-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+              <colgroup><col style="width:19%"><col style="width:15%"><col style="width:26%"><col style="width:22%"><col style="width:8%"><col style="width:10%"></colgroup>
+              <thead><tr><th rowspan="2">Coding Plan</th><th colspan="2">API key &amp; Base URL</th><th rowspan="2">剩余额度</th><th rowspan="2">备注</th><th rowspan="2">管理</th></tr><tr><th>API key</th><th>Base URL（按协议选择）</th></tr></thead>
+              <tbody id="coding-plan-rows"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -326,6 +324,7 @@
         <label>登录账号（邮箱或用户名）<input id="gpt-login" autocomplete="off" maxlength="120" required /></label>
         <label>GPT 密码（选填）<input id="gpt-initial-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
         <label>身份验证器密钥（选填）<input id="gpt-initial-secret" autocomplete="off" spellcheck="false" maxlength="4096" /></label>
+        <label>本次订阅开始日期（选填）<input id="gpt-subscription-start" type="date" /><small class="muted">按一个自然月计算到期日，月底取有效日期；提前 5 天标红，续费后更新本次开通日期。清空可取消记录。</small></label>
         <label class="checkbox-label"><input id="gpt-initial-listed" type="checkbox" checked />上架到账号主页</label>
         <p class="muted">编辑时密码和验证器留空可保留原值。主页按分组授权展示账号。</p>
         <p id="gpt-account-error" class="bad" role="alert"></p>
@@ -514,6 +513,8 @@
     </dialog>
 
     <script src="/static/coding-plan-quota.js"></script>
+    <script src="/static/coding-plan-config.js"></script>
+    <script src="/static/account-subscription.js"></script>
     <script>
       const accountRows = document.getElementById('account-rows');
       let accountsLoading = false;
@@ -646,7 +647,7 @@
       function codingPlanRow(item) {
         const masked = item.api_key_masked || item.api_key || '未设置';
         const provider = codingPlanProviders[item.provider];
-        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}</td><td>${escapeHtml(masked)}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatTime)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-coding-plan-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-coding-plan-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+        return `<tr><td><strong>${escapeHtml(item.name || '-')}</strong>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${renderCodingPlanDocs(item, escapeHtml)}</td><td><div class="plan-copy-line"><span>${escapeHtml(masked)}</span><button class="btn" data-copy-plan-key="${escapeAttr(item.id || '')}">复制</button></div></td><td>${renderCodingPlanBaseUrls(item, escapeHtml, 'btn')}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatTime)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-coding-plan-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-coding-plan-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
       }
 
       function relayAccountRow(item) {
@@ -659,7 +660,7 @@
         try {
           const data = await api('/api/coding-plans');
           codingPlans = data.items || [];
-          codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="5" class="muted">暂无 Coding Plan。</td></tr>';
+          codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="6" class="muted">暂无 Coding Plan。</td></tr>';
           refreshVisibleCodingPlanQuotas(codingPlans);
         } catch (error) { setMessage(codingPlanMessage, error.message, true); }
       }
@@ -671,6 +672,17 @@
           relayAccountRows.innerHTML = relayAccounts.length ? relayAccounts.map(relayAccountRow).join('') : '<tr><td colspan="5" class="muted">暂无中转站账号。</td></tr>';
         } catch (error) { setMessage(relayAccountMessage, error.message, true); }
       }
+
+      codingPlanRows.addEventListener('click', event => {
+        const base = event.target.closest('[data-base-url]');
+        if (base) return copyCodingPlanValue(base, () => base.dataset.baseUrl);
+        const key = event.target.closest('[data-copy-plan-key]');
+        if (key) return copyCodingPlanValue(key, async () => {
+          const data = await api(`/api/coding-plans/${encodeURIComponent(key.dataset.copyPlanKey)}/api-key`, { method: 'POST' });
+          if (!data.api_key) throw new Error('读取失败');
+          return data.api_key;
+        });
+      });
 
       function openCodingPlanDialog(item = null) {
         editingCodingPlanId = item?.id || '';
@@ -1195,7 +1207,7 @@
           <button class="btn btn-danger" data-codex-action="delete" data-id="${escapeAttr(account.id)}">移除 Codex</button></div>`).join('');
         const mailboxActions = `<div class="actions"><span>监听邮箱：${item.mail.length ? item.mail.length + ' 个' : '未配置'}</span>
           <button class="btn" type="button" data-listen-account="${escapeAttr(item.key)}">${item.mail.length ? '修改' : '添加'}</button></div>`;
-        return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.login || item.email)}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? escapeHtml(subscriptionText(primary)) : 'GPT 登录账号'}</div></td>
+        return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.login || item.email)}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? escapeHtml(subscriptionText(primary)) : 'GPT 登录账号'}</div>${renderAccountSubscription(item, escapeHtml)}</td>
           <td>${item.codex.length ? item.codex.map(account => quotaCell(account.usage)).join('<hr>') : '<span class="muted">未提供</span>'}</td>
           <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}${mailboxActions}</td>
           <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan">邮箱</span></div>'}</td>
@@ -1289,6 +1301,7 @@
         gptForm.reset();
         document.getElementById('gpt-account-title').textContent = item ? '编辑 GPT 账号' : '添加 GPT 账号';
         document.getElementById('gpt-login').value = item?.login || item?.email || '';
+        document.getElementById('gpt-subscription-start').value = item?.subscription_started_on || '';
         document.getElementById('gpt-initial-listed').checked = item?.listed !== false;
         document.getElementById('gpt-account-error').textContent = '';
         gptDialog.showModal();
@@ -1312,6 +1325,7 @@
         const key = editingGptKey;
         const payload = {
           login: document.getElementById('gpt-login').value,
+          subscription_started_on: document.getElementById('gpt-subscription-start').value,
           listed: document.getElementById('gpt-initial-listed').checked,
         };
         for (const [field, id] of [['password', 'gpt-initial-password'], ['secret', 'gpt-initial-secret']]) {

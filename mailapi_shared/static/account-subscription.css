@@ -1,0 +1,2 @@
+.subscription-time { margin-top: 6px; font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.subscription-time.subscription-due { display: inline-block; padding: 2px 6px; border-radius: 4px; background: #fef2f2; color: #b91c1c; font-weight: 700; }

@@ -1,0 +1,7 @@
+.resource-table.coding-plan-table { min-width: 960px; }
+.resource-table.coding-plan-table th { width: auto; }
+.plan-docs { margin-top: 6px; font-size: 12px; line-height: 1.6; }
+.plan-copy-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.plan-copy-line code { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.plan-copy-line button { flex: 0 0 auto; }
+.plan-endpoint { margin-bottom: 8px; }
