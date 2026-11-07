@@ -17,12 +17,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .group-overview .table-wrap { margin: 18px auto 0; border: 0; border-radius: 0; }
 .group-overview table { min-width: 480px; border-collapse: separate; border-spacing: 0; }
 .group-overview th, .group-overview td { padding: 0; text-align: center; vertical-align: middle; border: 0; }
-.group-overview .matrix-corner { min-width: 130px; padding: 12px; color: #6b7280; background: transparent; font-weight: 500; }
+.group-overview .matrix-corner { min-width: 130px; padding: 12px; color: #475569; background: #f7f8fb; border: 1px solid #dfe3e8; border-top-left-radius: 8px; font-weight: 600; }
 .group-overview .matrix-heading { min-width: 160px; padding: 13px 20px; border: 1px solid #dfe3e8; border-left: 0; background: #f7f8fb; font-size: 14px; }
-.group-overview .matrix-corner + .matrix-heading { border-left: 1px solid #dfe3e8; border-top-left-radius: 8px; }
-.group-overview .matrix-category { padding: 14px; text-align: left; background: transparent; font-size: 14px; font-weight: 600; }
+.group-overview .matrix-category { padding: 14px; text-align: left; background: #f7f8fb; border: 1px solid #dfe3e8; border-top: 0; font-size: 14px; font-weight: 600; }
 .group-overview .matrix-data { min-width: 160px; padding: 0; border-right: 1px solid #dfe3e8; border-bottom: 1px solid #dfe3e8; cursor: pointer; }
-.group-overview .matrix-category + .matrix-data { border-left: 1px solid #dfe3e8; }
 .matrix-cell { position: relative; min-height: 88px; }
 .matrix-cell + .matrix-cell { border-top: 1px solid #e5e7eb; }
 .group-overview .matrix-edit { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 5px; width: 100%; min-height: 88px; padding: 24px 26px; border: 0; border-radius: 0; background: white; }
