@@ -122,6 +122,7 @@
         color: #1f2937;
       }
       dialog::backdrop { background: rgba(17, 24, 39, 0.42); }
+      #gpt-account-dialog { max-height: 90vh; overflow-y: auto; }
       .password-form { display: grid; gap: 14px; }
       .mail-settings { margin-top: 26px; padding-top: 22px; border-top: 1px solid #e5e7eb; }
       #mailbox-dialog { width: min(620px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
@@ -325,7 +326,7 @@
         <label>GPT 密码（选填）<input id="gpt-initial-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
         <label>身份验证器密钥（选填）<input id="gpt-initial-secret" autocomplete="off" spellcheck="false" maxlength="4096" /></label>
         <div id="gpt-subscription-status"></div>
-        <label>手动补充：本次订阅开始日期（选填）<input id="gpt-subscription-start" type="date" /><small class="muted">优先使用 Codex 自动到期／续费日；读取不到时，按此日期加一个自然月计算，月底取有效日期。提前 5 天标红；清空仅移除手填记录。</small></label>
+        <label>手动补充：本次订阅开始日期（选填）<input id="gpt-subscription-start" type="date" /><small class="muted">优先使用授权文件 ID Token 中的订阅截止日期；缺失或核对时间超过 7 天时，按手填日期加一个自然月计算。提前 5 天标红，清空仅移除手填记录。</small></label>
         <label class="checkbox-label"><input id="gpt-initial-listed" type="checkbox" checked />上架到账号主页</label>
         <p class="muted">编辑时密码和验证器留空可保留原值。主页按分组授权展示账号。</p>
         <p id="gpt-account-error" class="bad" role="alert"></p>
@@ -1164,15 +1165,6 @@
         return String(item.chatgpt_plan_type || subscription.account_plan_type || subscription.plan_type || 'free').toUpperCase();
       }
 
-      function subscriptionText(item) {
-        const subscription = item.subscription || {};
-        if (item.reauth_required) return '重新授权后更新订阅';
-        if (item.subscription_error) return '订阅信息暂不可用';
-        if (subscription.has_subscription === false || codexPlan(item) === 'FREE') return '无订阅';
-        const end = subscription.expires_at || subscription.renews_at;
-        return end ? `订阅到期：${formatTime(end)}` : '订阅有效';
-      }
-
       function quotaCell(usage) {
         if (usage?.used_percent == null) return '<span class="muted">未提供</span>';
         const remain = Math.round(100 - Number(usage.used_percent));
@@ -1208,7 +1200,7 @@
           <button class="btn btn-danger" data-codex-action="delete" data-id="${escapeAttr(account.id)}">移除 Codex</button></div>`).join('');
         const mailboxActions = `<div class="actions"><span>监听邮箱：${item.mail.length ? item.mail.length + ' 个' : '未配置'}</span>
           <button class="btn" type="button" data-listen-account="${escapeAttr(item.key)}">${item.mail.length ? '修改' : '添加'}</button></div>`;
-        return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.login || item.email)}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? escapeHtml(subscriptionText(primary)) : 'GPT 登录账号'}</div>${renderAccountSubscription(item, escapeHtml)}</td>
+        return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.login || item.email)}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? 'Codex 已关联' : 'GPT 登录账号'}</div>${renderAccountSubscription(item, escapeHtml)}</td>
           <td>${item.codex.length ? item.codex.map(account => quotaCell(account.usage)).join('<hr>') : '<span class="muted">未提供</span>'}</td>
           <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}${mailboxActions}</td>
           <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan">邮箱</span></div>'}</td>

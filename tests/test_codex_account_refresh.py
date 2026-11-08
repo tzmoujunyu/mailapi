@@ -25,20 +25,64 @@ ADMIN_TOTP = pyotp.TOTP("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
 
 
 class CodexAccountRefreshTests(unittest.TestCase):
-    def test_subscription_dates_exclude_credit_refresh_and_token_expiry(self):
-        snapshot = self.module.build_subscription_snapshot({
-            "account": {"plan_type": "pro"},
-            "entitlement": {"next_credit_grant_update": "2026-12-01T00:00:00Z"},
-            "access_token_expires_at": 1900000000,
-        })
-        self.assertIsNone(snapshot["renews_at"])
-        self.assertIsNone(snapshot["expires_at"])
-        for field in ("renews_at", "next_renewal_at", "renewal_date"):
+    @staticmethod
+    def subscription_token(checked, account_id="account-id", workspace_id="workspace-id"):
+        def iso(value):
+            from datetime import datetime, timezone
+            return datetime.fromtimestamp(value, timezone.utc).isoformat()
+        claims = {"sub": "user-id", "email": "user@example.com", "exp": checked - 1,
+                  "workspace_id": workspace_id, "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id, "chatgpt_plan_type": "pro",
+            "chatgpt_subscription_active_start": iso(checked - 86400),
+            "chatgpt_subscription_active_until": iso(checked + 29 * 86400),
+            "chatgpt_subscription_last_checked": iso(checked),
+        }}
+        encoded = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+        return "header." + encoded + ".signature"
+
+    def test_subscription_dates_are_local_and_bound_to_the_exact_account_and_workspace(self):
+        checked = int(time.time()) - 3600
+        record = {"chatgpt_account_id": "account-id", "workspace_id": "workspace-id",
+                  "token": {"access_token": "access-secret", "id_token": self.subscription_token(checked)}}
+        with patch.object(self.module, "http_json", side_effect=AssertionError("Unexpected network")) as network:
+            result = self.module.sanitize_codex_account(record)
+            network.assert_not_called()
+        self.assertTrue(result["subscription"]["available"])
+        self.assertEqual(result["subscription"]["checked_at"], checked)
+        self.assertNotIn("access-secret", json.dumps(result))
+        snapshot = self.module.id_token_subscription(record)
+        snapshot["checked_at"] = int(time.time()) + 86400
+        self.assertEqual(self.module.sanitize_codex_account({**record, "subscription": snapshot})["subscription"]["checked_at"], checked)
+        for field in ("chatgpt_account_id", "workspace_id"):
             with self.subTest(field=field):
-                snapshot = self.module.build_subscription_snapshot({
-                    "entitlement": {field: "2026-12-01T00:00:00Z"},
-                })
-                self.assertEqual(snapshot["renews_at"], 1796083200)
+                result = self.module.sanitize_codex_account({**record, field: "another-id"})
+                self.assertEqual(result["subscription"]["unavailable_reason"], "account_mismatch")
+                self.assertIsNone(result["subscription"]["expires_at"])
+
+    def test_auth_file_dates_are_imported_without_replacing_running_tokens(self):
+        checked = int(time.time()) - 3600
+        payload = {"access_token": "runtime-access", "id_token": self.subscription_token(checked - 86400),
+                   "refresh_token": "runtime-refresh", "email": "user@example.com"}
+        record = self.module.build_codex_account_record(payload)
+        tokens = dict(record["token"])
+        file_payload = {"tokens": {"access_token": "file-access", "refresh_token": "file-refresh",
+                                   "id_token": self.subscription_token(checked)},
+                        "chatgpt_account_id": "account-id", "workspace_id": "workspace-id", "email": "user@example.com"}
+        with self.account_client(), tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "auth.json"
+            path.write_text(json.dumps(file_payload))
+            original = path.read_bytes()
+            with patch.object(self.module, "CODEX_AUTH_DIR", directory), patch.object(self.module, "CODEX_ACCOUNTS", {record["id"]: record}), \
+                    patch.object(self.module, "http_json", side_effect=AssertionError("Unexpected network")) as network:
+                self.module.import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
+                updated = self.module.CODEX_ACCOUNTS[record["id"]]
+                self.assertEqual(updated["token"], tokens)
+                self.assertEqual(updated["subscription"]["checked_at"], checked)
+                self.assertEqual(self.module.sanitize_codex_account(updated)["subscription"]["checked_at"], checked)
+                missing_cached_id = {**updated, "token": {**tokens, "id_token": ""}}
+                self.assertEqual(self.module.sanitize_codex_account(missing_cached_id)["subscription"]["checked_at"], checked)
+                self.assertEqual(path.read_bytes(), original)
+                network.assert_not_called()
 
     @classmethod
     def setUpClass(cls):
@@ -418,7 +462,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 self.assertIn('text/html', response.headers['content-type'])
                 self.assertIn('connection failed', response.text)
 
-    def test_manual_endpoint_forces_token_and_subscription_refresh(self):
+    def test_manual_endpoint_forces_token_refresh_without_a_subscription_request(self):
         record = {
             "id": "account-id",
             "email": "user@example.com",
@@ -427,8 +471,8 @@ class CodexAccountRefreshTests(unittest.TestCase):
         }
         calls = []
 
-        def fake_refresh(value, force_subscription=False, force_token_refresh=False):
-            calls.append((force_subscription, force_token_refresh))
+        def fake_refresh(value, force_token_refresh=False):
+            calls.append(force_token_refresh)
             return value
 
         with patch.object(self.module, "CODEX_ACCOUNTS", {"account-id": record}), patch.object(
@@ -439,7 +483,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             response = self.module.refresh_codex_account("account-id")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(calls, [(True, True)])
+        self.assertEqual(calls, [True])
 
     def test_token_refresh_reloads_plan_from_new_access_token(self):
         claims = {
@@ -475,16 +519,19 @@ class CodexAccountRefreshTests(unittest.TestCase):
         self.assertEqual(record["chatgpt_plan_type"], "pro")
         self.assertEqual(record["token"]["refresh_token"], "new-refresh-token")
 
-    def test_forced_token_refresh_updates_plan_when_subscription_is_blocked(self):
+    def test_token_and_usage_refresh_preserve_local_subscription_verification_time(self):
+        checked = int(time.time()) - 3600
         record = {
             "id": "account-id",
             "email": "user@example.com",
             "chatgpt_account_id": "chatgpt-account-id",
             "workspace_id": "workspace-id",
             "chatgpt_plan_type": "free",
+            "subscription_error": "old status 403 Forbidden",
             "token": {
                 "access_token": "old-access-token",
                 "refresh_token": "refresh-token",
+                "id_token": self.subscription_token(checked, account_id="chatgpt-account-id"),
             },
         }
 
@@ -506,22 +553,20 @@ class CodexAccountRefreshTests(unittest.TestCase):
             side_effect=fake_token_refresh,
         ) as token_refresh, patch.object(
             self.module,
-            "fetch_codex_subscription",
-            side_effect=RuntimeError(" status 403 Forbidden"),
-        ), patch.object(
-            self.module,
             "fetch_codex_usage",
             return_value=usage,
-        ):
+        ), patch.object(self.module, "fetch_codex_reset_credits", return_value={"available": 0}), \
+                patch.object(self.module, "http_json", side_effect=AssertionError("Unexpected network")) as network:
             updated = self.module.refresh_codex_account_record(
                 record,
-                force_subscription=True,
                 force_token_refresh=True,
             )
 
         token_refresh.assert_called_once()
         self.assertEqual(updated["chatgpt_plan_type"], "pro")
-        self.assertIn("403", updated["subscription_error"])
+        self.assertIsNone(updated["subscription_error"])
+        self.assertEqual(updated["subscription"]["checked_at"], checked)
+        network.assert_not_called()
 
 
 if __name__ == "__main__":

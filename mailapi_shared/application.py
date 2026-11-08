@@ -85,6 +85,7 @@ from .auth_storage import (
     secure_auth_file,
 )
 from .account_credentials import AccountCredentialStore
+from .subscription_dates import public_subscription, read_subscription_claims
 from .account_passwords import (
     AccountPasswordError,
     AccountPasswordStore,
@@ -295,9 +296,6 @@ CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oaut
 CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
 CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
 CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "60"))
-CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS = int(
-    os.getenv("CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS", "300")
-)
 CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS", "7200"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 CODEX_EXHAUSTED_USED_PERCENT = 99.9
@@ -1313,11 +1311,10 @@ def build_codex_account_record(
         },
         "access_token_expires_at": extract_token_exp(access_token),
         "subscription": previous.get("subscription"),
-        "subscription_last_refresh_at": previous.get("subscription_last_refresh_at"),
         "usage": previous.get("usage"),
         "status": "已导入",
         "error": previous.get("error"),
-        "subscription_error": previous.get("subscription_error"),
+        "subscription_error": None,
         "usage_error": None,
         "refresh_error": None,
         "reauth_required": False,
@@ -1325,6 +1322,7 @@ def build_codex_account_record(
         "updated_at": now,
         "last_refresh_at": previous.get("last_refresh_at"),
     }
+    record["subscription"] = id_token_subscription(record)
     return record
 
 
@@ -1350,10 +1348,6 @@ def codex_usage_endpoint() -> str:
 def codex_reset_credits_endpoint() -> str:
     base = normalize_codex_base_url(CODEX_USAGE_BASE_URL)
     return f"{base}/wham/rate-limit-reset-credits" if "/backend-api" in base else f"{base}/api/codex/rate-limit-reset-credits"
-
-
-def codex_accounts_check_endpoint() -> str:
-    return f"{normalize_codex_base_url(CODEX_USAGE_BASE_URL)}/accounts/check/v4-2023-04-27"
 
 
 def summarize_response_body(body: str) -> str:
@@ -1431,99 +1425,27 @@ def parse_subscription_timestamp(value: Any) -> Optional[int]:
         return None
 
 
-def normalize_account_plan_value(value: Any) -> Optional[str]:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip().lower()
-    if not normalized:
-        return None
-    aliases = {"education": "edu"}
-    return aliases.get(normalized, normalized)
-
-
-def build_subscription_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
-    account = entry.get("account") if isinstance(entry.get("account"), dict) else {}
-    entitlement = entry.get("entitlement") if isinstance(entry.get("entitlement"), dict) else {}
-
-    account_plan_type = normalize_account_plan_value(account.get("plan_type")) or normalize_account_plan_value(
-        entitlement.get("subscription_plan")
+def id_token_subscription(record: Dict[str, Any], id_token: Optional[str] = None) -> Dict[str, Any]:
+    tokens = record.get("token")
+    tokens = tokens if isinstance(tokens, dict) else {}
+    token = str(tokens.get("id_token") or "") if id_token is None else id_token
+    account_id = normalize_chatgpt_account_id(str(record.get("chatgpt_account_id") or ""))
+    workspace_id = normalize_workspace_id(str(record.get("workspace_id") or ""))
+    identity_matches = bool(
+        account_id and extract_chatgpt_account_id_from_token(token) == account_id
+        and (not workspace_id or extract_workspace_id_from_token(token) == workspace_id)
     )
-    plan_type = normalize_account_plan_value(entitlement.get("subscription_plan")) or account_plan_type
-    expires_at = parse_subscription_timestamp(entitlement.get("expires_at"))
-    renews_at = (
-        parse_subscription_timestamp(entitlement.get("renews_at"))
-        or parse_subscription_timestamp(entitlement.get("next_renewal_at"))
-        or parse_subscription_timestamp(entitlement.get("renewal_date"))
-    )
-    if not renews_at and entitlement.get("will_renew") and expires_at:
-        renews_at = expires_at
-
-    has_subscription = entitlement.get("has_active_subscription")
-    if has_subscription is None:
-        has_subscription = (
-            account.get("has_subscription")
-            if account.get("has_subscription") is not None
-            else account.get("has_active_subscription")
-        )
-    if has_subscription is None:
-        has_subscription = account.get("is_paid_subscription_active")
-    if has_subscription is None:
-        has_subscription = bool(
-            (account_plan_type and account_plan_type != "free")
-            or (plan_type and plan_type != "free")
-            or expires_at
-            or renews_at
-        )
-
-    return {
-        "has_subscription": bool(has_subscription),
-        "account_plan_type": account_plan_type,
-        "plan_type": plan_type,
-        "expires_at": expires_at,
-        "renews_at": renews_at,
-    }
-
-
-def fetch_codex_subscription(access_token: str, account_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not account_id:
-        return None
-    value = http_json(
-        codex_accounts_check_endpoint(),
-        {
-            "Authorization": f"Bearer {access_token}",
-            "Origin": "https://chatgpt.com",
-            "Referer": "https://chatgpt.com/",
-            "Accept": "application/json",
-        },
-    )
-    accounts = value.get("accounts") if isinstance(value.get("accounts"), dict) else {}
-    if not accounts:
-        return {
-            "has_subscription": False,
-            "account_plan_type": None,
-            "plan_type": None,
-            "expires_at": None,
-            "renews_at": None,
-        }
-
-    matched = accounts.get(account_id)
-    if isinstance(matched, dict):
-        return build_subscription_snapshot(matched)
-
-    snapshots = []
-    default_snapshot = None
-    paid_snapshot = None
-    for entry in accounts.values():
-        if not isinstance(entry, dict):
-            continue
-        snapshot = build_subscription_snapshot(entry)
-        snapshots.append(snapshot)
-        account = entry.get("account") if isinstance(entry.get("account"), dict) else {}
-        if default_snapshot is None and account.get("is_default"):
-            default_snapshot = snapshot
-        if paid_snapshot is None and snapshot.get("account_plan_type") not in (None, "free"):
-            paid_snapshot = snapshot
-    return default_snapshot or paid_snapshot or (snapshots[0] if snapshots else None)
+    snapshot = read_subscription_claims(decode_jwt_claims(token), account_id, workspace_id, identity_matches)
+    previous = record.get("subscription") or {}
+    # A file imported at startup can have newer dates than the cached token.
+    if (previous.get("source") == "id_token"
+            and not previous.get("invalid_reason")
+            and previous.get("account_id") == account_id and previous.get("workspace_id") == workspace_id
+            and type(previous.get("checked_at")) is int and type(previous.get("expires_at")) is int
+            and previous["checked_at"] <= now_ts()
+            and (snapshot["invalid_reason"] or previous["checked_at"] > snapshot["checked_at"])):
+        return dict(previous)
+    return snapshot
 
 
 def parse_iso_timestamp(value: Any) -> Optional[int]:
@@ -1536,13 +1458,6 @@ def parse_iso_timestamp(value: Any) -> Optional[int]:
         return int(datetime.fromisoformat(text).timestamp())
     except ValueError:
         return None
-
-
-def should_refresh_codex_subscription(record: Dict[str, Any]) -> bool:
-    refreshed_at = parse_iso_timestamp(record.get("subscription_last_refresh_at"))
-    if refreshed_at is None:
-        return True
-    return now_ts() - refreshed_at >= max(60, CODEX_SUBSCRIPTION_REFRESH_INTERVAL_SECONDS)
 
 
 def get_nested_number(value: Dict[str, Any], path: List[str]) -> Optional[float]:
@@ -1763,7 +1678,6 @@ def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
 
 def refresh_codex_account_record(
     record: Dict[str, Any],
-    force_subscription: bool = False,
     force_token_refresh: bool = False,
 ) -> Dict[str, Any]:
     updated = dict(record)
@@ -1772,9 +1686,7 @@ def refresh_codex_account_record(
         raise ValueError("账号缺少 access_token")
 
     errors: List[str] = []
-    subscription_errors: List[str] = []
     usage_errors: List[str] = []
-    subscription_refresh_attempted = False
     refreshed_once = False
     refresh_attempted = False
     refresh_error: Optional[str] = None
@@ -1791,30 +1703,10 @@ def refresh_codex_account_record(
 
     for attempt in range(2):
         errors = []
-        subscription_errors = []
         usage_errors = []
         access_token = str(updated["token"].get("access_token") or "").strip()
         chatgpt_account_id = str(updated.get("chatgpt_account_id") or "").strip() or None
         workspace_id = str(updated.get("workspace_id") or "").strip() or chatgpt_account_id
-
-        refresh_subscription = force_subscription or should_refresh_codex_subscription(updated)
-        if refresh_subscription:
-            subscription_refresh_attempted = True
-            try:
-                subscription = fetch_codex_subscription(access_token, chatgpt_account_id)
-                if subscription is not None:
-                    updated["subscription"] = subscription
-                    plan_type = subscription.get("account_plan_type") or subscription.get("plan_type")
-                    if plan_type:
-                        updated["chatgpt_plan_type"] = plan_type
-            except Exception as e:  # noqa: BLE001
-                log_exception(
-                    f"刷新 Codex 订阅信息 account={updated.get('email') or updated.get('id')}",
-                    e,
-                )
-                message = f"订阅信息: {e}"
-                subscription_errors.append(message)
-                errors.append(message)
 
         try:
             usage = fetch_codex_usage(access_token, workspace_id)
@@ -1862,12 +1754,9 @@ def refresh_codex_account_record(
     updated["last_refresh_at"] = now_iso()
     updated["updated_at"] = now_iso()
     updated["access_token_expires_at"] = extract_token_exp(str(updated["token"].get("access_token") or ""))
-    if subscription_refresh_attempted:
-        updated["subscription_last_refresh_at"] = now_iso()
-        updated["subscription_error"] = "; ".join(subscription_errors) if subscription_errors else None
-    else:
-        updated["subscription_last_refresh_at"] = record.get("subscription_last_refresh_at")
-        updated["subscription_error"] = record.get("subscription_error")
+    updated["subscription"] = id_token_subscription(updated)
+    updated["subscription_error"] = None
+    updated.pop("subscription_last_refresh_at", None)
     updated["usage_error"] = "; ".join(usage_errors) if usage_errors else None
     updated["error"] = updated["usage_error"]
     updated["refresh_error"] = refresh_error
@@ -1913,7 +1802,12 @@ def load_codex_accounts() -> None:
             CODEX_ACCOUNTS.clear()
             for item in items:
                 if isinstance(item, dict) and item.get("id"):
-                    CODEX_ACCOUNTS[str(item["id"])] = item
+                    record = dict(item)
+                    record.pop("subscription", None)
+                    record["subscription"] = id_token_subscription(record)
+                    record["subscription_error"] = None
+                    record.pop("subscription_last_refresh_at", None)
+                    CODEX_ACCOUNTS[str(item["id"])] = record
     except Exception as e:  # noqa: BLE001
         log_exception(f"加载 Codex 账号信息 {CODEX_ACCOUNTS_FILE}", e)
         print(f"Codex 账号信息加载失败：{e}")
@@ -1959,14 +1853,14 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     usage = normalize_weekly_usage_snapshot(raw_usage) if raw_usage else None
     usage_status = classify_usage_status(usage)
     error = record.get("error")
-    subscription_error = record.get("subscription_error")
     usage_error = record.get("usage_error")
     if error and str(error).startswith("订阅信息") and not usage_error:
-        subscription_error = subscription_error or error
         error = None
     status_reason = codex_usage_status_reason(usage, str(error) if error else None)
     if not error and status_reason in {"subscription_http_401", "subscription_http_403", "subscription_refresh_failed"}:
         status_reason = codex_usage_status_reason(usage)
+    subscription = public_subscription(id_token_subscription(record))
+    checked_at = subscription["checked_at"]
     return {
         **login_credentials(str(record.get("email") or "")),
         "id": record.get("id"),
@@ -1978,8 +1872,8 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "chatgpt_plan_type": record.get("chatgpt_plan_type"),
         "access_token_expires_at": record.get("access_token_expires_at"),
         "has_refresh_token": bool(str(token.get("refresh_token") or "").strip()),
-        "subscription": record.get("subscription"),
-        "subscription_last_refresh_at": record.get("subscription_last_refresh_at"),
+        "subscription": subscription,
+        "subscription_last_refresh_at": datetime.fromtimestamp(checked_at, timezone.utc).isoformat() if checked_at else None,
         "usage": usage,
         "reset_credits": record.get("reset_credits"),
         "reset_credits_error": record.get("reset_credits_error"),
@@ -1987,7 +1881,7 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
         "status_reason": status_reason,
         "status": record.get("status"),
         "error": error,
-        "subscription_error": subscription_error,
+        "subscription_error": None,
         "usage_error": usage_error,
         "refresh_error": record.get("refresh_error"),
         "reauth_required": bool(record.get("reauth_required")),
@@ -2009,14 +1903,20 @@ def import_codex_auth_json(
         with CODEX_ACCOUNTS_LOCK:
             existing = CODEX_ACCOUNTS.get(str(candidate.get("id") or ""))
         if existing and not overwrite_existing_tokens:
+            record = dict(existing)
+            record["subscription"] = id_token_subscription(record, payload.get("id_token") or "")
+            record["subscription_error"] = None
+            record.pop("subscription_last_refresh_at", None)
+            with CODEX_ACCOUNTS_LOCK:
+                CODEX_ACCOUNTS[str(record["id"])] = record
             if CREDENTIAL_STORE.pool_ready:
-                CREDENTIAL_STORE.ensure_codex_account(str(existing.get("email") or ""))
-            imported.append(sanitize_codex_account(existing))
+                CREDENTIAL_STORE.ensure_codex_account(str(record.get("email") or ""))
+            imported.append(sanitize_codex_account(record))
             continue
         record = build_codex_account_record(payload, existing)
         if refresh_snapshot and EXTERNAL_WATCHERS:
             try:
-                record = refresh_codex_account_record(record, force_subscription=True)
+                record = refresh_codex_account_record(record)
             except Exception as e:  # noqa: BLE001
                 log_exception(
                     f"导入后刷新 Codex 账号 account={record.get('email') or record.get('id')}",
@@ -4495,7 +4395,6 @@ def refresh_codex_account(account_id: str):
     try:
         updated = refresh_codex_account_record(
             record,
-            force_subscription=True,
             force_token_refresh=True,
         )
     except Exception as e:  # noqa: BLE001
