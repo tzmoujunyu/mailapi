@@ -173,7 +173,8 @@ class AccountCredentialStore:
                 if value:
                     record[field] = normalize_totp_secret(value) if field == "secret" else value
             items = dict(self._data["items"])
-            items.pop(old_identity, None)
+            if current and identity != old_identity:
+                items = {identity if name == old_identity else name: value for name, value in items.items()}
             items[identity] = record
             self._save({**self._data, "items": items})
             return self._public(identity, record)

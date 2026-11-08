@@ -10,6 +10,25 @@ from mailapi_shared.account_passwords import AccountPasswordError
 
 
 class AccountCredentialTests(unittest.TestCase):
+    def test_edits_and_renames_preserve_account_order_across_restarts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "credentials.json"
+            store = AccountCredentialStore(path)
+            accounts = [store.save_account(None, {"login": login}, {}) for login in ("first", "middle", "last")]
+            keys = [account["key"] for account in accounts]
+            for key, payload in (
+                (keys[1], {"subscription_started_on": "2026-01-31"}),
+                (keys[0], {"login": "renamed", "password": "kept-password"}),
+                (keys[1], {"listed": False}),
+            ):
+                store.save_account(key, payload, {})
+                self.assertEqual([account["key"] for account in store.list_accounts()], keys)
+                store = AccountCredentialStore(path)
+                self.assertEqual([account["key"] for account in store.list_accounts()], keys)
+            added = store.save_account(None, {"login": "new"}, {})
+            self.assertEqual([account["key"] for account in AccountCredentialStore(path).list_accounts()], keys + [added["key"]])
+            self.assertEqual(store.get("renamed", "password"), "kept-password")
+
     def test_monthly_subscription_clamps_month_end_and_survives_edits_and_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             store = AccountCredentialStore(Path(directory) / "credentials.json")
