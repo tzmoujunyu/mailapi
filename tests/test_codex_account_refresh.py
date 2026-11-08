@@ -25,6 +25,21 @@ ADMIN_TOTP = pyotp.TOTP("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
 
 
 class CodexAccountRefreshTests(unittest.TestCase):
+    def test_subscription_dates_exclude_credit_refresh_and_token_expiry(self):
+        snapshot = self.module.build_subscription_snapshot({
+            "account": {"plan_type": "pro"},
+            "entitlement": {"next_credit_grant_update": "2026-12-01T00:00:00Z"},
+            "access_token_expires_at": 1900000000,
+        })
+        self.assertIsNone(snapshot["renews_at"])
+        self.assertIsNone(snapshot["expires_at"])
+        for field in ("renews_at", "next_renewal_at", "renewal_date"):
+            with self.subTest(field=field):
+                snapshot = self.module.build_subscription_snapshot({
+                    "entitlement": {field: "2026-12-01T00:00:00Z"},
+                })
+                self.assertEqual(snapshot["renews_at"], 1796083200)
+
     @classmethod
     def setUpClass(cls):
         cls.temporary_directory = tempfile.TemporaryDirectory()

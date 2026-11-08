@@ -67,6 +67,35 @@ test('subscription display warns at five days and expires without assuming renew
   assert.match(vm.runInContext('renderAccountSubscription({},escapeHtml)', app.context), /未设置/);
 });
 
+test('subscription dates prefer automatic expiry and renewal and retain the manual fallback', async () => {
+  for (const file of ['static/index.html', 'static/admin.html']) {
+    const app = page(file); await flush();
+    const expiry = new Date(2026, 1, 28, 12).getTime() / 1000;
+    const manual = {subscription_started_on:'2025-01-31', subscription_ends_on:'2025-02-28'};
+    const render = (codex, day = 23, hour = 12) => vm.runInContext(`renderAccountSubscription(${JSON.stringify({...manual, codex})},escapeHtml,new Date(2026,1,${day},${hour}))`, app.context);
+    const automatic = [{subscription:{expires_at:expiry,renews_at:expiry+864000},access_token_expires_at:expiry+999999}];
+    let html = render(automatic);
+    assert.match(html, /26\.02\.28 \(5 Day left\)/);
+    assert.match(html, /自动到期日/);
+    assert.match(html, /subscription-due/);
+    assert.doesNotMatch(html, /25\.01\.31|已到期/);
+    assert.doesNotMatch(render(automatic, 22), /subscription-due/);
+    assert.match(render(automatic, 28, 8), /1 Day left/);
+    assert.match(render(automatic, 28, 12), /已到期/);
+    html = render([{subscription:{}},{subscription:{renews_at:expiry}}]);
+    assert.match(html, /自动续费日/);
+    assert.match(html, /26\.02\.28/);
+    for (const failure of [{subscription_error:'temporary error'}, {reauth_required:true}]) {
+      html = render([{subscription:{expires_at:expiry},...failure}]);
+      assert.match(html, /手填开通日/);
+      assert.doesNotMatch(html, /自动到期日/);
+    }
+    html = render([{access_token_expires_at:expiry,usage:{resets_at:expiry},subscription:{expires_at:0,renews_at:'invalid'}}]);
+    assert.match(html, /25\.01\.31 \(已到期\)/);
+    assert.match(html, /手填开通日/);
+  }
+});
+
 test('Coding Plan configuration follows the provider and keeps copy beside the masked key', async () => {
   for (const file of ['static/index.html', 'static/admin.html']) {
     const app = page(file); await flush();

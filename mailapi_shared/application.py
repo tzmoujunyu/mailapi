@@ -1453,7 +1453,6 @@ def build_subscription_snapshot(entry: Dict[str, Any]) -> Dict[str, Any]:
     renews_at = (
         parse_subscription_timestamp(entitlement.get("renews_at"))
         or parse_subscription_timestamp(entitlement.get("next_renewal_at"))
-        or parse_subscription_timestamp(entitlement.get("next_credit_grant_update"))
         or parse_subscription_timestamp(entitlement.get("renewal_date"))
     )
     if not renews_at and entitlement.get("will_renew") and expires_at:
