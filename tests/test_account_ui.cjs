@@ -16,6 +16,10 @@ const fixture = () => [{
   codex: [{ id: 'codex-2', email: 'only@example.com', usage_status: 'unavailable', status_reason: 'usage_missing_weekly' }], mail: [],
 }];
 const flush = () => new Promise(resolve => setImmediate(resolve));
+const mailboxFixture = () => [{ name: 'account-1', email: 'user@example.com', provider: 'gmail', listed: true,
+  enabled: true, result_type: 'code', result_value: '321321', rule_name: 'SiliconFlow', subject: 'All-rule code' },
+{ name: 'account-2', email: 'mail-only@example.com', provider: 'outlook', listed: false,
+  enabled: false, result_type: 'link', result_value: 'https://claude.ai/login#mail-only', rule_name: 'Claude', subject: 'Claude login' }];
 function page(file, preview = false, previewUserId = '') {
   const nodes = new Map();
   const calls = [];
@@ -36,7 +40,7 @@ function page(file, preview = false, previewUserId = '') {
     setTimeout(callback) { return ++counter; },
     navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true, __USER_PREVIEW__: preview, __PREVIEW_USER_ID__: previewUserId },
     confirm: () => true,
-    fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : fixture(), password: 'password-value', code: '081804' }) }; },
+    fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : url.includes('/api/mailboxes') || url.includes('/api/admin/mail/accounts') ? mailboxFixture() : fixture(), password: 'password-value', code: '081804' }) }; },
   });
   const sourceFile = process.env.MAILAPI_UI_ROOT ? file.replace(/^static\//, `${process.env.MAILAPI_UI_ROOT}/`) : file;
   const quotaScript = sourceFile.replace(/[^/]+$/, 'coding-plan-quota.js');
@@ -45,6 +49,7 @@ function page(file, preview = false, previewUserId = '') {
     vm.runInContext(fs.readFileSync(sourceFile.replace(/[^/]+$/, name), 'utf8'), context);
   }
   vm.runInContext(fs.readFileSync(sourceFile, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1], context);
+  if (file === 'static/index.html') vm.runInContext(fs.readFileSync(sourceFile.replace(/[^/]+$/, 'mailbox-resources.js'), 'utf8'), context);
   async function click(id, selector, dataset) {
     const button = { dataset, textContent: '复制', disabled: false };
     const event = { target: { closest: query => query === selector ? button : null }, preventDefault() {} };
@@ -65,6 +70,29 @@ test('subscription display warns at five days and expires without assuming renew
   assert.match(render(23), /5 Day left/);
   assert.match(render(28), /已到期/);
   assert.match(vm.runInContext('renderAccountSubscription({},escapeHtml)', app.context), /未设置/);
+});
+
+test('standalone mailbox resources use full-history scope independently of GPT details', async () => {
+  const app = page('static/index.html', true, 'reader'); await flush();
+  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /321321|SiliconFlow/);
+  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /claude\.ai\/login#mail-only/);
+  await app.click('mailbox-resource-rows', '[data-mailbox-history]', { mailboxHistory: 'account-1' });
+  assert.ok(app.calls.some(([url]) => url === '/api/history/account-1?scope=mailbox&preview=1&user_id=reader'));
+  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /654321/);
+  assert.doesNotMatch(app.nodes.get('rows').innerHTML, /654321/);
+  app.context.fetch = async url => ({ ok: true, json: async () => ({items: []}) });
+  await [...app.timers.values()].at(-1)(); await flush();
+  assert.doesNotMatch(app.nodes.get('mailbox-resource-rows').innerHTML, /654321|claude\.ai/);
+  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /暂无可用邮箱/);
+});
+
+test('console changes mailbox listing without toggling its listener', async () => {
+  const app = page('static/admin.html'); await flush();
+  await app.click('mailbox-rows', '[data-mail-listing]', { name: 'account-1', listed: 'false' });
+  const call = app.calls.find(([url]) => url === '/api/admin/mail/accounts/account-1/listing');
+  assert.equal(call[1].method, 'PUT');
+  assert.equal(JSON.parse(call[1].body).listed, false);
+  assert.ok(!app.calls.some(([url, options]) => /account-1\/(enable|disable)$/.test(url) && options?.method === 'POST'));
 });
 
 test('subscription dates label expiry and use old or undated authorization before the manual fallback', async () => {
@@ -143,7 +171,7 @@ test('homepage expands immediately, places history below email row, and collapse
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /654321/);
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /GPT密码/);
-  assert.equal(app.timers.size, 2);
+  assert.equal(app.timers.size, 3);
 });
 
 test('website account console exposes the admin-only batch user form', () => {

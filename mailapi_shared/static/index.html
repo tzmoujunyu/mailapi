@@ -99,8 +99,9 @@
         <span class="home-directory-label">目录</span>
         <div class="home-directory-links">
           <a href="#chatgpt-accounts" aria-current="location"><span class="directory-index">01</span>GPT 账号</a>
-          <a href="#coding-plans"><span class="directory-index">02</span>Coding Plan</a>
-          <a href="#relay-accounts"><span class="directory-index">03</span>中转站账号</a>
+          <a href="#mailbox-codes"><span class="directory-index">02</span>邮箱接码</a>
+          <a href="#coding-plans"><span class="directory-index">03</span>Coding Plan</a>
+          <a href="#relay-accounts"><span class="directory-index">04</span>中转站账号</a>
         </div>
       </div>
     </nav>
@@ -127,6 +128,15 @@
             <tbody id="rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
           </table>
         </div>
+      </section>
+      <section id="mailbox-codes" class="resource-section" aria-labelledby="mailbox-title">
+        <div class="resource-head"><h2 id="mailbox-title">邮箱接码</h2></div>
+        <p class="muted">展示分组分配且已上架的邮箱，包含所有已设置收件规则捕获的验证码、登录链接及历史。管理员可查看全部邮箱。</p>
+        <div id="mailbox-error" class="status-bad" role="status"></div>
+        <div class="table-wrap"><table class="mailbox-table">
+          <thead><tr><th>邮箱</th><th>最新接收</th><th>主题 / 规则</th><th>监听状态</th><th>历史记录</th></tr></thead>
+          <tbody id="mailbox-resource-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+        </table></div>
       </section>
       <section id="coding-plans" class="resource-section" aria-labelledby="coding-plan-title">
         <div class="resource-head"><h2 id="coding-plan-title">国产模型Coding Plan</h2></div>
@@ -282,7 +292,10 @@
         if (historyName !== mail.name || historyLoading) return historyLoading && historyName === mail.name ? '<div class="history-inline muted">历史记录加载中...</div>' : '';
         if (historyError) return `<div class="history-inline status-bad">${escapeHtml(historyError)}</div>`;
         if (!historyItems.length) return '<div class="history-inline muted">暂无历史收件记录。</div>';
-        return `<div class="history-inline"><strong>历史收件记录</strong>${historyItems.map(item => `<div class="history-item"><div>${mailResultHtml(item.type, item.value || item.code)}</div><div class="history-time">${escapeHtml(formatDateTime(item.created_at))}</div><div>主题：${mailSourceTag(item.rule_name, item.subject)}${escapeHtml(item.subject || '-')}</div></div>`).join('')}</div>`;
+        return renderMailHistory(historyItems);
+      }
+      function renderMailHistory(items) {
+        return `<div class="history-inline"><strong>历史收件记录</strong>${items.map(item => `<div class="history-item"><div>${mailResultHtml(item.type, item.value || item.code)}</div><div class="history-time">${escapeHtml(formatDateTime(item.created_at))}</div><div>主题：${mailSourceTag(item.rule_name, item.subject)}${escapeHtml(item.subject || '-')}</div></div>`).join('')}</div>`;
       }
       function detailRow(row) {
         const credentials = row.credentials;
@@ -439,5 +452,6 @@
         refreshResources();
       });
     </script>
+    <script src="/static/mailbox-resources.js"></script>
   </body>
 </html>

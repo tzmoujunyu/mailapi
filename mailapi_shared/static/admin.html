@@ -259,7 +259,7 @@
               <form action="/api/admin/outlook/auth/start" method="post" target="_blank" rel="noopener"><button class="btn">添加 Outlook</button></form>
             </div>
           </div>
-          <p class="muted">管理接码邮箱的授权、监听与收件规则。在 GPT 账号的“监听邮箱”中选择关联，一个邮箱仅可关联一个 GPT 账号。</p>
+          <p class="muted">管理接码邮箱的授权、监听与收件规则。上架并分配到分组后，用户可在主页“邮箱接码”查看所有收件规则的结果；监听启停与上架分开设置。一个邮箱仅可关联一个 GPT 账号，GPT 区只显示 OpenAI 验证码。</p>
           <div id="mail-pool-message" class="message muted"></div>
           <form id="gmail-callback-form" class="callback-submit">
             <input
@@ -275,8 +275,8 @@
           </form>
           <div class="table-wrap">
             <table class="mail-pool-table">
-              <thead><tr><th>邮箱</th><th>服务商</th><th>监听状态</th><th>管理</th></tr></thead>
-              <tbody id="mailbox-rows" data-search-scope="邮箱池" data-search-tab="mail-pool-tab"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
+              <thead><tr><th>邮箱</th><th>服务商</th><th>监听状态</th><th>上架状态</th><th>管理</th></tr></thead>
+              <tbody id="mailbox-rows" data-search-scope="邮箱池" data-search-tab="mail-pool-tab"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
           <div class="mail-settings">
@@ -1144,14 +1144,18 @@
       });
 
       mailboxRows.addEventListener('click', async (event) => {
-        const button = event.target.closest('[data-mail-action]');
+        const listing = event.target.closest('[data-mail-listing]');
+        const button = listing || event.target.closest('[data-mail-action]');
         if (!button) return;
         const action = button.dataset.mailAction;
         const name = button.dataset.name;
         if (action === 'delete' && !confirm('移除邮箱并停止监听？该邮箱与 GPT 账号的关联也会解除。')) return;
         try {
           button.disabled = true;
-          if (action === 'delete') {
+          if (listing) {
+            await api(`/api/admin/mail/accounts/${encodeURIComponent(name)}/listing`, { method: 'PUT',
+              headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ listed: listing.dataset.listed === 'true' }) });
+          } else if (action === 'delete') {
             await api(`/api/admin/mail/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' });
           } else {
             await api(`/api/admin/mail/accounts/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
@@ -1272,7 +1276,8 @@
       function mailboxRow(mail) {
         const name = escapeAttr(mail.name);
         return `<tr><td>${escapeHtml(mail.email)}</td><td>${escapeHtml(mail.provider)}</td>
-          <td>${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')}</td><td><div class="actions">
+          <td>${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')}</td><td><span class="${mail.listed ? 'good' : 'muted'}">${mail.listed ? '已上架' : '未上架'}</span></td><td><div class="actions">
+          <button class="btn" data-mail-listing data-name="${name}" data-listed="${!mail.listed}">${mail.listed ? '下架接码' : '上架接码'}</button>
           ${['gmail', 'outlook'].includes(mail.provider) ? `<form action="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" method="post" target="_blank" rel="noopener"><button class="btn">重新授权</button></form>` : ''}
           <button class="btn" data-mail-action="${mail.enabled === false ? 'enable' : 'disable'}" data-name="${name}">${mail.enabled === false ? '启用监听' : '停用监听'}</button>
           <button class="btn btn-danger" data-mail-action="delete" data-name="${name}">移除邮箱</button>
@@ -1286,7 +1291,7 @@
           const data = await api('/api/admin/mail/accounts');
           mailboxAccounts = data.items;
           mailboxRows.innerHTML = mailboxAccounts.length ? mailboxAccounts.map(mailboxRow).join('')
-            : '<tr><td colspan="4" class="muted">暂无邮箱，可添加 Gmail 或 Outlook。</td></tr>';
+            : '<tr><td colspan="5" class="muted">暂无邮箱，可添加 Gmail 或 Outlook。</td></tr>';
         } catch (error) {
           setMessage(mailPoolMessage, error.message, true);
         } finally { mailboxesLoading = false; }

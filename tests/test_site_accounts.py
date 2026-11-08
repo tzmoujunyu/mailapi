@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -60,18 +60,22 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.relay = self.relays.create({"name": "Team relay", "url": "https://relay.example.com", "account": "relay-login", "password": "owned-relay-password"})
         self.other_relay = self.relays.create({"name": "Private relay", "url": "https://private.example.com", "account": "other-login", "password": "other-relay-password"})
         patches = {
+            "GMAIL_ACCOUNTS_FILE": str(root / "mailboxes.json"),
             "CREDENTIAL_STORE": self.credentials, "CODING_PLAN_STORE": self.plans,
             "RELAY_ACCOUNT_STORE": self.relays,
             "ACCOUNTS": [
-                {"name": "account-1", "email": "Owned@Example.com", "provider": "gmail", "enabled": False},
-                {"name": "account-2", "email": "other@example.com", "provider": "outlook", "enabled": False},
+                {"name": "account-1", "email": "Owned@Example.com", "provider": "gmail", "enabled": False, "resource_id": "a" * 32, "listed": False},
+                {"name": "account-2", "email": "other@example.com", "provider": "outlook", "enabled": False, "resource_id": "b" * 32, "listed": False},
             ],
             "CODEX_ACCOUNTS": {
                 "codex-1": {"id": "codex-1", "email": "owned@example.com"},
                 "codex-2": {"id": "codex-2", "email": "other@example.com"},
             },
             "STATE": {"account-1": {"last_code": "111111"}, "account-2": {"last_code": "222222"}},
-            "CODE_HISTORY": {"account-1": [{"code": "111111"}], "account-2": [{"code": "222222"}]},
+            "CODE_HISTORY": {
+                "account-1": [{"code": "111111", "rule_id": "openai", "email": "owned@example.com"}],
+                "account-2": [{"code": "222222", "rule_id": "openai", "email": "other@example.com"}],
+            },
         }
         for name, value in patches.items():
             self.enterContext(patch.object(self.module, name, value))
@@ -308,7 +312,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
         response = self.alice.get("/api/codes")
         self.assertEqual([item["name"] for item in response.json()["items"]], ["account-1"])
         self.assertNotIn("222222", response.text)
-        self.assertEqual(self.alice.get("/api/history/account-1").json()["items"], [{"code": "111111"}])
+        self.assertEqual(self.alice.get("/api/history/account-1").json()["items"], self.module.CODE_HISTORY["account-1"])
         self.assertEqual(self.alice.get("/api/history/account-2").status_code, 404)
         self.assertEqual(self.emails(self.bob, "?preview=1&user_id=" + self.identities["alice"]["id"]), [])
         self.assertEqual(self.bob.post("/api/accounts/account-1/gpt-password?user_id=" + self.identities["alice"]["id"]).status_code, 404)
@@ -425,12 +429,94 @@ class SiteAccountHTTPTests(unittest.TestCase):
 
     def test_resource_catalog_and_identity_responses_do_not_expose_credentials(self):
         catalog = self.manager.get("/api/admin/resources")
-        self.assertEqual(len(catalog.json()["items"]), 6)
+        self.assertEqual(len(catalog.json()["items"]), 8)
         for secret in ("password", "secret", "JBSWY", "api_key"):
             self.assertNotIn(secret, catalog.text)
         self.assertEqual(self.alice.get("/api/auth/me").json()["groups"], [{"id": self.group["id"], "name": "Team A"}])
         response = self.alice.get("/api/accounts")
         self.assertEqual(response.headers["cache-control"], "no-store, private")
+
+    def test_mailbox_listing_persists_without_enabling_watchers_and_requires_a_group(self):
+        self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])
+        catalog = self.admin.get("/api/admin/resources").json()["items"]
+        mailbox = next(item for item in catalog if item["kind"] == "mailbox" and item["name"] == "Owned@Example.com")
+        self.assertFalse(mailbox["listed"])
+        path = "/api/admin/mail/accounts/account-1/listing"
+        self.assertEqual(self.bob.put(path, json={"listed": True}).status_code, 403)
+        self.assertEqual(self.admin.put(path, json={"listed": "true"}).status_code, 400)
+        with patch.object(self.module, "start_mail_watcher") as watcher:
+            self.assertEqual(self.manager.put(path, json={"listed": True}).status_code, 200)
+            watcher.assert_not_called()
+        self.assertFalse(self.module.ACCOUNTS[0]["enabled"])
+        reloaded = self.module.load_accounts()[0]
+        self.assertTrue(reloaded["listed"])
+        self.assertEqual(self.module.mailbox_resource_key(reloaded), mailbox["key"])
+        self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])
+        self.create_group("Mailbox readers", [self.identities["bob"]["id"]], [mailbox["key"]])
+        items = self.bob.get("/api/mailboxes").json()["items"]
+        self.assertEqual([item["name"] for item in items], ["account-1"])
+        self.assertNotIn("has_gpt_password", items[0])
+        self.assertNotIn("token_file", items[0])
+        self.assertEqual(self.bob.post("/api/accounts/account-1/gpt-password").status_code, 404)
+
+    def test_pending_gmail_reauthorization_does_not_restore_an_older_listing_state(self):
+        cfg = self.module.ACCOUNTS[0]
+        raw = {**cfg, "listed": True, "token_file": str(Path(self.directory.name) / "token.json")}
+        service = Mock()
+        service.users.return_value.getProfile.return_value.execute.return_value = {"emailAddress": cfg["email"]}
+        credentials = Mock()
+        credentials.to_json.return_value = "{}"
+        with patch.object(self.module, "build", return_value=service), patch.object(self.module, "start_mail_watcher"), patch.object(self.module, "stop_mail_watcher"):
+            updated = self.module.complete_managed_gmail_auth({"cfg": raw, "managed_action": "reauth"}, credentials)
+        self.assertFalse(updated["listed"])
+        self.assertEqual(updated["resource_id"], cfg["resource_id"])
+
+    def test_gpt_results_are_separated_from_full_mailbox_history_and_union_grants(self):
+        cfg = self.module.ACCOUNTS[0]
+        address = cfg["email"]
+        self.module.CODE_HISTORY["account-1"] = [
+            {"type": "link", "value": "https://claude.ai/login#private", "rule_id": "claude", "rule_name": "Claude", "email": address, "subject": "Claude login"},
+            {"type": "code", "value": "111111", "code": "111111", "rule_id": "openai", "email": address, "subject": "OpenAI code"},
+            {"code": "333333", "email": address, "subject": "Legacy unknown"},
+            {"code": "999999", "rule_id": "openai", "email": "previous-owner@example.com"},
+        ]
+        self.module.STATE["account-1"].update(email=address, result_type="link", result_value="https://claude.ai/login#private", rule_id="claude", subject="Claude login")
+        gpt = self.alice.get("/api/accounts")
+        self.assertEqual(gpt.json()["items"][0]["mail"][0]["last_code"], "111111")
+        self.assertNotIn("claude.ai", gpt.text)
+        self.assertNotIn("Legacy unknown", gpt.text)
+        self.assertEqual(len(self.alice.get("/api/history/account-1").json()["items"]), 1)
+        self.assertEqual(self.alice.get("/api/history/account-1?scope=mailbox").status_code, 404)
+        self.assertNotIn("claude.ai", self.alice.get("/api/codes").text)
+        self.assertFalse(self.module.is_gpt_mail_result({"rule_id": "custom", "rule_name": "OpenAI 验证码"}))
+        self.admin.put("/api/admin/mail/accounts/account-1/listing", json={"listed": True})
+        self.create_group("Mailbox readers", [self.identities["bob"]["id"]], [self.module.mailbox_resource_key(cfg)])
+        self.assertIn("claude.ai", self.bob.get("/api/mailboxes").text)
+        full = self.bob.get("/api/history/account-1?scope=mailbox")
+        self.assertEqual(len(full.json()["items"]), 3)
+        self.assertNotIn("999999", full.text)
+        self.assertEqual(self.bob.get("/api/history/account-1?scope=invalid").status_code, 400)
+        self.assertEqual(self.bob.get("/api/mailboxes?preview=1&user_id=" + self.identities["alice"]["id"]).json()["items"][0]["name"], "account-1")
+        self.assertEqual(self.admin.get("/api/mailboxes?preview=1&user_id=" + self.identities["alice"]["id"]).json()["items"], [])
+        self.admin.put("/api/admin/mail/accounts/account-1/listing", json={"listed": False})
+        self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])
+        self.assertEqual(self.bob.get("/api/history/account-1?scope=mailbox").status_code, 404)
+        self.assertEqual(self.bob.get("/api/history/account-1").status_code, 404)
+        self.assertEqual(self.alice.get("/api/history/account-1").status_code, 200)
+
+    def test_reused_mailbox_names_do_not_inherit_old_grants_or_history(self):
+        old = self.module.mailbox_resource_key(self.module.ACCOUNTS[0])
+        self.create_group("Mailbox readers", [self.identities["bob"]["id"]], [old])
+        self.assertEqual(self.admin.delete("/api/admin/mail/accounts/account-1").status_code, 200)
+        replacement = {"name": "account-1", "email": "replacement@example.com", "provider": "gmail", "enabled": False}
+        self.module.ACCOUNTS.append(replacement)
+        self.module.save_mail_accounts()
+        self.module.CODE_HISTORY["account-1"] = [{"code": "111111", "rule_id": "openai", "email": "owned@example.com"}]
+        self.assertNotEqual(old, self.module.mailbox_resource_key(replacement))
+        self.admin.put("/api/admin/mail/accounts/account-1/listing", json={"listed": True})
+        self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])
+        self.assertEqual(self.bob.get("/api/history/account-1?scope=mailbox").status_code, 404)
+        self.assertEqual(self.admin.get("/api/history/account-1?scope=mailbox").json()["items"], [])
 
     def test_relay_url_is_required_and_shared_through_group_scoped_lists(self):
         payload = {"name": "新中转站", "account": "user", "password": "relay-password"}

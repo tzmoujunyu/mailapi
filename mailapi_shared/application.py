@@ -345,6 +345,8 @@ class AccountConfig(TypedDict, total=False):
     config_file: str
     delivery_mode: str
     enabled: bool
+    resource_id: str
+    listed: bool
 
 
 app = FastAPI(title="MailAPI 测试版" if IS_TEST else "MailAPI")
@@ -2060,6 +2062,11 @@ def migrate_gmail_token_layout(account_name: str, configured_path: str) -> str:
     return target
 
 
+def mailbox_resource_key(cfg: AccountConfig) -> str:
+    cfg.setdefault("listed", False)
+    return "mailbox:" + cfg.setdefault("resource_id", secrets.token_hex(16))
+
+
 def load_accounts() -> List[AccountConfig]:
     cfgs: Any = None
     if os.path.exists(GMAIL_ACCOUNTS_FILE):
@@ -2080,6 +2087,7 @@ def load_accounts() -> List[AccountConfig]:
 
     normalized: List[AccountConfig] = []
     used_names = set()
+    used_resources = set()
     for index, item in enumerate(cfgs, start=1):
         if not isinstance(item, dict):
             continue
@@ -2094,7 +2102,12 @@ def load_accounts() -> List[AccountConfig]:
             "email": str(item.get("email") or "未配置"),
             "provider": provider,
             "enabled": item.get("enabled") is not False,
+            "resource_id": str(item.get("resource_id") or ""),
+            "listed": item.get("listed") is True,
         }
+        if not re.fullmatch(r"[0-9a-f]{32}", cfg["resource_id"]) or cfg["resource_id"] in used_resources:
+            cfg["resource_id"] = secrets.token_hex(16)
+        used_resources.add(cfg["resource_id"])
         if provider == "proton":
             delivery_mode = str(
                 item.get("delivery_mode") or PROTON_DELIVERY_MODE
@@ -2128,6 +2141,8 @@ def load_accounts() -> List[AccountConfig]:
 
 def save_mail_accounts() -> None:
     with MAIL_ACCOUNTS_LOCK:
+        for item in ACCOUNTS:
+            mailbox_resource_key(item)
         items = [dict(item) for item in ACCOUNTS]
     write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
 
@@ -2214,6 +2229,7 @@ def ensure_mail_state(cfg: AccountConfig) -> None:
             "result_type": existing.get("result_type", "code"),
             "result_value": existing.get("result_value"),
             "rule_name": existing.get("rule_name"),
+            "rule_id": existing.get("rule_id"),
             "message_id": existing.get("message_id"),
             "subject": existing.get("subject"),
             "updated_at": existing.get("updated_at"),
@@ -2307,9 +2323,56 @@ def can_access_account(request: FastAPIRequest, email: str) -> bool:
 def can_access_mailbox(request: FastAPIRequest, mailbox_id: str) -> bool:
     if request_access_role(request) == "admin" and not is_user_preview(request):
         return True
+    cfg = find_mail_account(mailbox_id)
+    if cfg and can_access_mailbox_resource(request, cfg):
+        return True
     return any(can_access_account(request, account["login"])
                and any(mailbox["name"] == mailbox_id for mailbox in account["mail"])
                for account in account_groups())
+
+
+def can_access_mailbox_resource(request: FastAPIRequest, cfg: AccountConfig) -> bool:
+    if request_access_role(request) == "admin" and not is_user_preview(request):
+        return True
+    return cfg.get("listed") is True and can_access_resource(request, mailbox_resource_key(cfg))
+
+
+def is_gpt_mail_result(record: Dict[str, Any]) -> bool:
+    rule = record.get("rule_id")
+    return (rule == "openai" or (not rule and record.get("rule_name") == "OpenAI 验证码")) and (
+        record.get("type") or record.get("result_type") or "code"
+    ) == "code"
+
+
+def mailbox_history(cfg: AccountConfig, *, gpt_only: bool = False) -> List[Dict[str, Any]]:
+    with HISTORY_LOCK:
+        records = CODE_HISTORY.get(cfg["name"])
+        if records is None:
+            records = load_code_history(cfg["name"])
+            CODE_HISTORY[cfg["name"]] = records
+        return [dict(item) for item in records
+                if str(item.get("email") or "").casefold() == cfg["email"].casefold()
+                and (not gpt_only or is_gpt_mail_result(item))]
+
+
+def public_mailbox(cfg: AccountConfig, *, gpt_only: bool = False) -> Dict[str, Any]:
+    with STATE_LOCK:
+        state = dict(STATE.get(cfg["name"], {}))
+    latest = state if state.get("email", "").casefold() == cfg["email"].casefold() and (
+        state.get("result_value") or state.get("last_code")
+    ) else {}
+    if not latest or (gpt_only and not is_gpt_mail_result(latest)):
+        latest = next(iter(mailbox_history(cfg, gpt_only=gpt_only)), {})
+    return {
+        "name": cfg["name"], "email": cfg["email"], "provider": cfg.get("provider", "gmail"),
+        "resource_key": mailbox_resource_key(cfg), "listed": cfg.get("listed") is True,
+        "enabled": cfg.get("enabled", True), "status": state.get("status") or "未知",
+        "last_code": latest.get("code") or latest.get("last_code"),
+        "result_type": latest.get("type") or latest.get("result_type") or "code",
+        "result_value": latest.get("value") or latest.get("result_value") or latest.get("code") or latest.get("last_code"),
+        "rule_id": latest.get("rule_id"), "rule_name": latest.get("rule_name"),
+        "subject": latest.get("subject"), "updated_at": latest.get("created_at") or latest.get("updated_at"),
+    }
 
 
 def is_user_preview(request: FastAPIRequest) -> bool:
@@ -2638,6 +2701,7 @@ def store_code_result(
             "result_type": result["type"],
             "result_value": result["value"],
             "rule_name": result.get("rule_name", ""),
+            "rule_id": result.get("rule_id", ""),
             "message_id": result["message_id"],
             "subject": result["subject"],
             "updated_at": now_iso(),
@@ -3043,6 +3107,10 @@ def complete_managed_gmail_auth(
         if index is None:
             ACCOUNTS.append(cfg)
         else:
+            current = ACCOUNTS[index]
+            if current["email"].casefold() == email.casefold():
+                mailbox_resource_key(current)
+                cfg.update(resource_id=current["resource_id"], listed=current["listed"])
             ACCOUNTS[index] = cfg
     save_mail_accounts()
     ensure_mail_state(cfg)
@@ -3105,6 +3173,10 @@ def complete_managed_outlook_auth(
         if index is None:
             ACCOUNTS.append(cfg)
         else:
+            current = ACCOUNTS[index]
+            if current["email"].casefold() == email.casefold():
+                mailbox_resource_key(current)
+                cfg.update(resource_id=current["resource_id"], listed=current["listed"])
             ACCOUNTS[index] = cfg
     save_mail_accounts()
     ensure_mail_state(cfg)
@@ -3127,6 +3199,8 @@ def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
     auth_file = account_auth_file(cfg)
     return {
         "name": cfg["name"],
+        "resource_key": mailbox_resource_key(cfg),
+        "listed": cfg.get("listed") is True,
         "email": cfg["email"],
         "provider": cfg.get("provider", "gmail"),
         "delivery_mode": delivery_mode,
@@ -3241,18 +3315,26 @@ def get_codes(request: FastAPIRequest):
     administrator = request_access_role(request) == "admin" and not is_user_preview(request)
     with MAIL_ACCOUNTS_LOCK:
         accounts = {item["name"]: item for item in ACCOUNTS}
-    with STATE_LOCK:
-        data = []
-        for name, cfg in accounts.items():
-            if not administrator and name not in allowed_mailboxes:
-                continue
-            item = dict(STATE.get(name, {}))
-            item.update(name=name, email=cfg["email"], enabled=cfg.get("enabled", True))
-            item["has_gpt_password"] = gpt_password_for_account(cfg) is not None
-            item["has_totp_secret"] = totp_secret_for_account(cfg) is not None
-            data.append(item)
+    data = [public_mailbox(cfg, gpt_only=True) for name, cfg in accounts.items()
+            if administrator or name in allowed_mailboxes or can_access_mailbox_resource(request, cfg)]
+    for item in data:
+        cfg = accounts[item["name"]]
+        via_gpt = administrator or item["name"] in allowed_mailboxes
+        item["has_gpt_password"] = via_gpt and gpt_password_for_account(cfg) is not None
+        item["has_totp_secret"] = via_gpt and totp_secret_for_account(cfg) is not None
     return JSONResponse(
         content={"items": data, "updated_at": now_iso()},
+        headers={"Cache-Control": "no-store, private"},
+    )
+
+
+@app.get("/api/mailboxes")
+def get_mailbox_resources(request: FastAPIRequest):
+    with MAIL_ACCOUNTS_LOCK:
+        accounts = list(ACCOUNTS)
+    return JSONResponse(
+        content={"items": [public_mailbox(cfg) for cfg in accounts if can_access_mailbox_resource(request, cfg)],
+                 "updated_at": now_iso()},
         headers={"Cache-Control": "no-store, private"},
     )
 
@@ -3302,6 +3384,7 @@ async def receive_mail_relay(request: FastAPIRequest):
             "code": message.code,
             "message_id": message.message_id,
             "subject": message.subject,
+            "rule_id": "openai", "rule_name": "OpenAI 验证码",
         },
         status="已通过本地中继接收",
     )
@@ -3741,6 +3824,21 @@ async def complete_outlook_admin_auth(request: FastAPIRequest):
     )
 
 
+@app.put("/api/admin/mail/accounts/{account_name}/listing")
+async def set_mailbox_listing(account_name: str, request: FastAPIRequest):
+    payload = await read_payload(request, {"listed"})
+    if not isinstance(payload.get("listed"), bool):
+        return JSONResponse({"detail": "上架状态必须为布尔值"}, status_code=400)
+    with MAIL_ACCOUNTS_LOCK:
+        cfg = next((item for item in ACCOUNTS if item["name"] == account_name), None)
+        if cfg is None:
+            return JSONResponse({"detail": "未找到邮箱"}, status_code=404)
+        mailbox_resource_key(cfg)
+        cfg["listed"] = payload["listed"]
+    save_mail_accounts()
+    return JSONResponse({"item": sanitize_mail_account(cfg)})
+
+
 @app.post("/api/admin/mail/accounts/{account_name}/enable")
 @app.post("/api/admin/gmail/accounts/{account_name}/enable")
 def enable_mail_account(account_name: str):
@@ -4092,9 +4190,7 @@ def account_groups() -> List[Dict[str, Any]]:
                          if AccountCredentialStore.email_key(record.get("email")) == identity]
         for cfg in mail_accounts:
             if cfg["name"] in mailboxes:
-                with STATE_LOCK:
-                    mailbox = dict(STATE.get(cfg["name"], {}))
-                mailbox.update(sanitize_mail_account(cfg))
+                mailbox = {**sanitize_mail_account(cfg), **public_mailbox(cfg, gpt_only=True)}
                 item["mail"].append(mailbox)
         result.append(item)
     return result
@@ -4436,16 +4532,13 @@ def delete_codex_account(account_id: str):
 
 
 @app.get("/api/history/{account_name}")
-def get_history(account_name: str, request: FastAPIRequest):
-    if request_access_role(request) != "admin" or is_user_preview(request):
-        cfg = find_mail_account(account_name)
-        if not cfg or not can_access_mailbox(request, account_name):
-            return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
-    with HISTORY_LOCK:
-        records = CODE_HISTORY.get(account_name, [])
-        if not records:
-            records = load_code_history(account_name)
-            CODE_HISTORY[account_name] = records
+def get_history(account_name: str, request: FastAPIRequest, scope: str = "gpt"):
+    if scope not in {"gpt", "mailbox"}:
+        return JSONResponse({"detail": "无效的收件范围"}, status_code=400)
+    cfg = find_mail_account(account_name)
+    if not cfg or not (can_access_mailbox_resource(request, cfg) if scope == "mailbox" else can_access_mailbox(request, account_name)):
+        return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
+    records = mailbox_history(cfg, gpt_only=scope == "gpt")
     return JSONResponse(
         content={
             "account": account_name,
@@ -4471,6 +4564,7 @@ def clear_history(account_name: str):
             "result_type": "code",
             "result_value": None,
             "rule_name": None,
+            "rule_id": None,
             "message_id": None,
             "subject": "（历史已清空）",
             "updated_at": now_iso(),
@@ -4483,6 +4577,9 @@ def clear_history(account_name: str):
 def resource_catalog() -> List[Dict[str, Any]]:
     items = [{"key": "gpt:" + item["key"], "kind": "gpt", "name": item["email"], "listed": item["listed"]}
              for item in account_groups()]
+    with MAIL_ACCOUNTS_LOCK:
+        items.extend({"key": mailbox_resource_key(cfg), "kind": "mailbox", "name": cfg["email"],
+                      "listed": cfg.get("listed") is True} for cfg in ACCOUNTS)
     for kind, store in (("coding-plan", CODING_PLAN_STORE), ("relay-account", RELAY_ACCOUNT_STORE)):
         items.extend({"key": kind + ":" + item["id"], "kind": kind, "name": item["name"]} for item in store.list_public())
     return items

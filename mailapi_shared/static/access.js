@@ -1,5 +1,5 @@
 const roleNames = { user: '用户', manager: '普通管理员', admin: 'admin' };
-const kindNames = { gpt: 'GPT', 'coding-plan': 'Coding Plan', 'relay-account': '中转站' };
+const kindNames = { gpt: 'GPT', mailbox: '邮箱接码', 'coding-plan': 'Coding Plan', 'relay-account': '中转站' };
 let currentUser = null;
 let users = [];
 let groups = [];

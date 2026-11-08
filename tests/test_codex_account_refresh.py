@@ -299,8 +299,10 @@ class CodexAccountRefreshTests(unittest.TestCase):
             module = self.module
             store.set('user@example.com', 'password', 'private-password')
             store.set('user@example.com', 'secret', 'JBSWY3DPEHPK3PXP')
-            module.STATE['account-1'] = {'last_code': '123456'}
-            module.CODE_HISTORY['account-1'] = [{'code': '654321'}]
+            module.STATE['account-1'] = {'last_code': '123456', 'rule_id': 'openai', 'email': 'user@example.com'}
+            module.CODE_HISTORY['account-1'] = [{'code': '654321', 'rule_id': 'openai', 'email': 'user@example.com'}]
+            for cfg in module.ACCOUNTS:
+                module.mailbox_resource_key(cfg)
             accounts_before = json.loads(json.dumps(module.ACCOUNTS))
             codex_before = json.loads(json.dumps(module.CODEX_ACCOUNTS))
             original_files = set(store.path.parent.iterdir())
@@ -335,7 +337,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 self.use_session(client, self.user_token)
                 self.assertEqual(len(client.get('/api/accounts').json()['items']), 2)
                 self.assertEqual(client.get('/api/codes').json()['items'][0]['last_code'], '123456')
-                self.assertEqual(client.get('/api/history/account-1').json()['items'], [{'code': '654321'}])
+                self.assertEqual(client.get('/api/history/account-1').json()['items'], module.CODE_HISTORY['account-1'])
                 self.assertEqual(client.post('/api/accounts/email:user@example.com/gpt-password').json()['password'], 'private-password')
             self.assertEqual(module.ACCOUNTS, accounts_before)
             self.assertEqual(module.CODEX_ACCOUNTS, codex_before)
