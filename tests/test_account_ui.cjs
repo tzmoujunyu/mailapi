@@ -67,16 +67,16 @@ test('subscription display warns at five days and expires without assuming renew
   assert.match(vm.runInContext('renderAccountSubscription({},escapeHtml)', app.context), /未设置/);
 });
 
-test('subscription dates use recent ID-token metadata and visibly fall back when stale or missing', async () => {
+test('subscription dates label expiry and use old or undated authorization before the manual fallback', async () => {
   for (const file of ['static/index.html', 'static/admin.html']) {
     const app = page(file); await flush();
     const expiry = new Date(2026, 1, 28, 12).getTime() / 1000;
     const manual = {subscription_started_on:'2025-01-31', subscription_ends_on:'2025-02-28'};
     const render = (codex, day = 23, hour = 12) => vm.runInContext(`renderAccountSubscription(${JSON.stringify({...manual, codex})},escapeHtml,new Date(2026,1,${day},${hour}))`, app.context);
-    const checked = new Date(2026, 1, 22, 12).getTime() / 1000;
-    const automatic = [{subscription:{source:'id_token',available:true,expires_at:expiry,checked_at:checked,valid_until:checked+7*86400},access_token_expires_at:expiry+999999}];
+    const checked = new Date(2025, 1, 22, 12).getTime() / 1000;
+    const automatic = [{subscription:{source:'id_token',available:true,expires_at:expiry,checked_at:checked},access_token_expires_at:expiry+999999}];
     let html = render(automatic);
-    assert.match(html, /26\.02\.28 \(5 Day left\)/);
+    assert.match(html, /订阅到期：26\.02\.28 \(5 Day left\)/);
     assert.match(html, /授权文件 ID Token（到期日）/);
     assert.match(html, /授权上次核对：/);
     assert.match(html, /subscription-due/);
@@ -87,23 +87,21 @@ test('subscription dates use recent ID-token metadata and visibly fall back when
     html = render([{subscription:{}},...automatic]);
     assert.match(html, /授权文件 ID Token/);
     assert.match(html, /26\.02\.28/);
-    for (const reason of ['stale','missing_check_time','invalid_dates','account_mismatch']) {
+    for (const reason of ['missing_dates','invalid_dates','account_mismatch']) {
       html = render([{subscription:{source:'id_token',available:false,checked_at:checked,expires_at:null,unavailable_reason:reason}}]);
-      assert.match(html, /手填开通日/);
+      assert.match(html, /订阅开通：25\.01\.31/);
       assert.match(html, /已回退手填/);
       assert.doesNotMatch(html, /授权文件 ID Token/);
     }
     html = render([{...automatic[0],subscription_error:'retired 403',reauth_required:true}]);
     assert.match(html, /授权文件 ID Token/);
-    const boundary = new Date(2026, 1, 23, 12).getTime() / 1000;
-    html = render([{subscription:{...automatic[0].subscription,valid_until:boundary}}]);
+    html = render([{subscription:{...automatic[0].subscription,checked_at:null}}]);
     assert.match(html, /授权文件 ID Token/);
-    html = render([{subscription:{...automatic[0].subscription,valid_until:boundary-1}}]);
-    assert.match(html, /已超过 7 天/);
-    assert.match(html, /手填开通日/);
-    html = vm.runInContext(`renderAccountSubscription(${JSON.stringify({codex:[{subscription:{source:'id_token',available:false,checked_at:checked,unavailable_reason:'stale'}}]})},escapeHtml,new Date(2026,1,23,12))`, app.context);
+    assert.match(html, /授权上次核对：无记录/);
+    assert.doesNotMatch(html, /手填开通日/);
+    html = vm.runInContext(`renderAccountSubscription(${JSON.stringify({codex:[{subscription:{source:'id_token',available:false,checked_at:checked,unavailable_reason:'missing_dates'}}]})},escapeHtml,new Date(2026,1,23,12))`, app.context);
     assert.match(html, /未设置/);
-    assert.match(html, /已超过 7 天/);
+    assert.match(html, /授权日期缺失/);
     assert.match(html, /请管理员补充/);
     html = render([{access_token_expires_at:expiry,usage:{resets_at:expiry},subscription:{expires_at:0,renews_at:'invalid'}}]);
     assert.match(html, /25\.01\.31 \(已到期\)/);

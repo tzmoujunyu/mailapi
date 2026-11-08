@@ -53,6 +53,10 @@ class CodexAccountRefreshTests(unittest.TestCase):
         snapshot = self.module.id_token_subscription(record)
         snapshot["checked_at"] = int(time.time()) + 86400
         self.assertEqual(self.module.sanitize_codex_account({**record, "subscription": snapshot})["subscription"]["checked_at"], checked)
+        snapshot["checked_at"] = None
+        file_only_dates = {**record, "subscription": snapshot, "token": {"id_token": ""}}
+        self.assertTrue(self.module.sanitize_codex_account(file_only_dates)["subscription"]["available"])
+        self.assertIsNone(self.module.sanitize_codex_account(file_only_dates)["subscription"]["checked_at"])
         for field in ("chatgpt_account_id", "workspace_id"):
             with self.subTest(field=field):
                 result = self.module.sanitize_codex_account({**record, field: "another-id"})

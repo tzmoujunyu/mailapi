@@ -1441,9 +1441,10 @@ def id_token_subscription(record: Dict[str, Any], id_token: Optional[str] = None
     if (previous.get("source") == "id_token"
             and not previous.get("invalid_reason")
             and previous.get("account_id") == account_id and previous.get("workspace_id") == workspace_id
-            and type(previous.get("checked_at")) is int and type(previous.get("expires_at")) is int
-            and previous["checked_at"] <= now_ts()
-            and (snapshot["invalid_reason"] or previous["checked_at"] > snapshot["checked_at"])):
+            and type(previous.get("expires_at")) is int
+            and (snapshot["invalid_reason"] or (
+                type(previous.get("checked_at")) is int and previous["checked_at"] <= now_ts()
+                and previous["checked_at"] > (snapshot["checked_at"] or 0)))):
         return dict(previous)
     return snapshot
 

@@ -326,7 +326,7 @@
         <label>GPT 密码（选填）<input id="gpt-initial-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
         <label>身份验证器密钥（选填）<input id="gpt-initial-secret" autocomplete="off" spellcheck="false" maxlength="4096" /></label>
         <div id="gpt-subscription-status"></div>
-        <label>手动补充：本次订阅开始日期（选填）<input id="gpt-subscription-start" type="date" /><small class="muted">优先使用授权文件 ID Token 中的订阅截止日期；缺失或核对时间超过 7 天时，按手填日期加一个自然月计算。提前 5 天标红，清空仅移除手填记录。</small></label>
+        <label>手动兜底：本次订阅开始日期（选填）<input id="gpt-subscription-start" type="date" /><small class="muted">优先读取授权文件 ID Token 中的订阅到期日，不限制授权或核对时间。仅日期缺失或无效时，按手填开通日加一个自然月计算。旧授权可能未反映后续续费；提前 5 天标红，清空仅移除手填记录。</small></label>
         <label class="checkbox-label"><input id="gpt-initial-listed" type="checkbox" checked />上架到账号主页</label>
         <p class="muted">编辑时密码和验证器留空可保留原值。主页按分组授权展示账号。</p>
         <p id="gpt-account-error" class="bad" role="alert"></p>

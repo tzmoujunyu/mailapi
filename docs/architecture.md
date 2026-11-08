@@ -27,7 +27,7 @@ flowchart TD
 | `mailapi_shared/accounts.py` | 用户名密码登录、会话 cookie、网站账号和分组 API | 是 |
 | `mailapi_shared/site_accounts.py` | 密码哈希、会话、角色、分组授权存储 | 是 |
 | `mailapi_shared/account_*`、`mailapi_shared/auth_storage.py` | 共享凭据、密码和授权文件操作 | 是 |
-| `mailapi_shared/subscription_dates.py` | ID Token 订阅日期解析、账号绑定与 7 天新鲜度 | 是 |
+| `mailapi_shared/subscription_dates.py` | ID Token 订阅到期日期解析与账号绑定 | 是 |
 | `mailapi_shared/mail_*`、`mail_providers/` | 邮件解析、Gmail/Outlook/Proton 和中继 | 是 |
 | `mailapi_shared/resource_accounts.py` | Coding Plan 和中转站资源 | 是 |
 | `mailapi_shared/*_oauth_callback.py` | Google/Codex OAuth 返回链接解析与校验 | 是 |
