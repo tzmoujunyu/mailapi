@@ -192,11 +192,13 @@
     </style>
     <link rel="stylesheet" href="/static/session.css">
     <link rel="stylesheet" href="/static/management-tabs.css">
+    <link rel="stylesheet" href="/static/management-search.css">
     <link rel="stylesheet" href="/static/quota.css">
     <link rel="stylesheet" href="/static/coding-plan-config.css">
     <link rel="stylesheet" href="/static/account-subscription.css">
     <script src="/static/session.js" defer></script>
     <script src="/static/management-tabs.js" defer></script>
+    <script src="/static/management-search.js" defer></script>
   </head>
   <body>
     <div class="shell">
@@ -205,6 +207,11 @@
         <div class="actions"><a class="btn btn-primary" href="/preview">用户账号主页预览</a><a class="btn" href="/">返回账号主页</a></div>
       </header>
       <main class="content">
+        <div class="management-search" role="search" aria-label="控制台搜索">
+          <div class="management-search-line"><label class="management-search-field"><span>搜索本页</span><input id="management-search" type="search" aria-label="搜索本页全部内容" placeholder="搜索账号、邮箱、套餐、备注或收件设置…" autocomplete="off" /></label><button id="management-search-clear" type="button" hidden>清除</button></div>
+          <p id="management-search-status" class="management-search-status" role="status" aria-live="polite"></p>
+          <div id="management-search-results" class="management-search-results" aria-label="搜索匹配模块" hidden></div>
+        </div>
         <div class="management-tabs" role="tablist" aria-label="资源管理" data-viewport="console-viewport">
           <span class="management-tab-indicator" aria-hidden="true"></span>
           <button id="gpt-pool-tab" type="button" role="tab" aria-selected="true" aria-controls="gpt-pool-panel" tabindex="0">GPT账号池</button>
@@ -240,7 +247,7 @@
           <div class="table-wrap">
             <table class="account-table">
               <thead><tr><th>账号</th><th>周额度</th><th>登录信息</th><th>状态</th><th>管理</th></tr></thead>
-              <tbody id="account-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+              <tbody id="account-rows" data-search-scope="GPT账号池" data-search-tab="gpt-pool-tab"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -269,7 +276,7 @@
           <div class="table-wrap">
             <table class="mail-pool-table">
               <thead><tr><th>邮箱</th><th>服务商</th><th>监听状态</th><th>管理</th></tr></thead>
-              <tbody id="mailbox-rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
+              <tbody id="mailbox-rows" data-search-scope="邮箱池" data-search-tab="mail-pool-tab"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
           <div class="mail-settings">
@@ -282,7 +289,7 @@
           <div class="table-wrap">
             <table class="account-table filter-table">
               <thead><tr><th>名称</th><th>发件人</th><th>主题 / 正文</th><th>匹配方式</th><th>管理</th></tr></thead>
-              <tbody id="filter-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+              <tbody id="filter-rows" data-search-scope="收件设置" data-search-tab="mail-pool-tab"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
           </div>
@@ -297,7 +304,7 @@
             <table class="resource-table coding-plan-table">
               <colgroup><col style="width:19%"><col style="width:15%"><col style="width:26%"><col style="width:22%"><col style="width:8%"><col style="width:10%"></colgroup>
               <thead><tr><th rowspan="2">Coding Plan</th><th colspan="2">API key &amp; Base URL</th><th rowspan="2">剩余额度</th><th rowspan="2">备注</th><th rowspan="2">管理</th></tr><tr><th>API key</th><th>Base URL（按协议选择）</th></tr></thead>
-              <tbody id="coding-plan-rows"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody>
+              <tbody id="coding-plan-rows" data-search-scope="Coding Plan" data-search-tab="coding-pool-tab"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -310,7 +317,7 @@
           <div class="table-wrap">
             <table class="resource-table">
               <thead><tr><th>中转站</th><th>账号</th><th>密码</th><th>备注</th><th>管理</th></tr></thead>
-              <tbody id="relay-account-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+              <tbody id="relay-account-rows" data-search-scope="中转站" data-search-tab="relay-pool-tab"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>

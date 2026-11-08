@@ -45,7 +45,8 @@ function addGroupButton(category, number, label, showLabel = false) {
     ${showLabel ? `<span class="matrix-add-label">${escapeHtml(label)}</span>` : ''}</button>`;
 }
 
-function renderGroupOverview(memberTags) {
+function renderGroupOverview(memberTags, resourceNames) {
+  const resourceByKey = new Map(resources.map(item => [item.key, item]));
   const categories = new Map();
   const numbers = new Set();
   let unnumbered = false;
@@ -71,10 +72,15 @@ function renderGroupOverview(memberTags) {
       if (!matches) {
         return `<td class="matrix-data matrix-vacant">${addGroupButton(name, number, `创建 ${name} ${number ? '组' + number : '未编号小组'}`)}</td>`;
       }
-      const cellContents = matches.map(group => `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}">
+      const cellContents = matches.map(group => {
+        const accounts = group.resource_keys.map(key => resourceByKey.get(key)).filter(item => item?.kind === 'gpt');
+        const summary = accounts.length ? `${escapeHtml(accounts[0].name)}${accounts.length > 1 ? ' <span class="muted">等多个账号</span>' : ''}` : '<span class="muted">暂无 GPT 账号</span>';
+        const searchText = [group.name, number ? `组${number}` : '未编号', ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
+        return `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}" data-search-text="${escapeHtml(searchText)}">
         <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
           title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组与成员 · ${escapeHtml(group.name)}">
-          ${group.member_ids.length ? memberTags(group) : '<span class="muted">暂无成员</span>'}
+          <span class="matrix-members">${group.member_ids.length ? memberTags(group) : '<span class="muted">暂无成员</span>'}</span>
+          <span class="matrix-account">${summary}</span>
         </button>
         <button type="button" class="matrix-delete" data-delete-group="${escapeHtml(group.id)}"
           title="删除 ${escapeHtml(group.name)}" aria-label="删除分组 · ${escapeHtml(group.name)}">
@@ -82,7 +88,8 @@ function renderGroupOverview(memberTags) {
             <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"></path>
           </svg>
         </button>
-      </div>`).join('');
+      </div>`;
+      }).join('');
       const edit = matches.length === 1 ? `data-edit-group="${escapeHtml(matches[0].id)}"` : '';
       return `<td class="matrix-data" ${edit}>${cellContents}</td>`;
     }).join('');
@@ -112,7 +119,7 @@ function render() {
     <td>${tags(group.resource_keys.map(key => resourceNames.get(key) || '已移除资源'))}</td>
     <td>${groupActions(group, '编辑成员与资源')}</td>
   </tr>`).join('') : '<tr><td colspan="4" class="muted">暂无分组，创建后即可分配成员和资源。</td></tr>';
-  renderGroupOverview(memberTags);
+  renderGroupOverview(memberTags, resourceNames);
 }
 
 async function load() {
@@ -169,8 +176,17 @@ function openGroup(group = null, { membersOnly = false, category = '', number = 
     .map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
   byId('member-options').innerHTML = users.map(user => `<label class="option"><input type="checkbox" value="${escapeHtml(user.id)}" ${group?.member_ids.includes(user.id) ? 'checked' : ''}><span>${escapeHtml(user.username)} <small>${roleNames[user.role]}</small></span></label>`).join('');
   byId('group-resources').hidden = membersOnly;
+  byId('group-config').classList.toggle('members-only', membersOnly);
+  byId('group-dialog').classList.toggle('members-only', membersOnly);
   if (!membersOnly) {
-    byId('resource-options').innerHTML = resources.length ? resources.map(item => `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="tag">${kindNames[item.kind]}</span>${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span></label>`).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
+    byId('resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
+      const candidates = resources.filter(item => item.kind === kind);
+      if (!candidates.length) return '';
+      return `<div class="resource-kind" data-resource-kind="${kind}"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => {
+        const shared = kind === 'gpt' ? groups.filter(candidate => candidate.resource_keys.includes(item.key)).length : 0;
+        return `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="resource-option-name">${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span>${kind === 'gpt' ? `<small class="resource-sharing" title="已分配至 ${shared} 个分组">${shared} Group shared</small>` : ''}</span></label>`;
+      }).join('')}</div>`;
+    }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
   }
   byId('group-error').textContent = '';
   byId('group-dialog').showModal();

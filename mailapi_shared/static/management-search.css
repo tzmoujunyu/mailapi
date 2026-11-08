@@ -1,0 +1,15 @@
+.management-search { margin: 18px 0; padding: 14px 16px; border: 1px solid #dfe3e8; border-radius: 8px; background: white; }
+.management-search-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.management-search-field { position: relative; display: flex; flex: 1 1 320px; align-items: center; gap: 10px; }
+.management-search-field > span { flex-shrink: 0; color: #475569; font-size: 14px; font-weight: 600; }
+.management-search .management-search-field input { width: 100%; min-width: 0; min-height: 38px; padding: 8px 12px; border: 1px solid #c7ced6; border-radius: 6px; color: #1f2937; background: #fafbfd; font: inherit; font-size: 14px; }
+.management-search input:focus { border-color: #2563eb; outline: 2px solid #bfdbfe; background: white; }
+.management-search button { min-height: 30px; padding: 4px 10px; border: 1px solid #dfe3e8; border-radius: 6px; background: #fff; color: #475569; font: inherit; font-size: 13px; cursor: pointer; }
+.management-search button:hover { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; }
+.management-search button:disabled { color: #94a3b8; cursor: default; opacity: .65; }
+.management-search-status { margin: 9px 0 0; color: #6b7280; font-size: 12px; }
+.management-search-results { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.management-search [hidden] { display: none; }
+[data-search-empty] td { padding: 24px 12px; color: #6b7280; text-align: center; font-size: 13px; }
+.matrix-data[inert] { background: #fafbfd; }
+@media (max-width: 680px) { .management-search { padding: 12px; } .management-search-field { flex-basis: 200px; } .management-search-field > span { display: none; } }

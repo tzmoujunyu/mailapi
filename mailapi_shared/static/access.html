@@ -8,14 +8,21 @@
   <link rel="stylesheet" href="/static/help-hints.css">
   <link rel="stylesheet" href="/static/management-tabs.css">
   <link rel="stylesheet" href="/static/access.css">
+  <link rel="stylesheet" href="/static/management-search.css">
   <script src="/static/session.js" defer></script>
   <script src="/static/help-hints.js" defer></script>
   <script src="/static/management-tabs.js" defer></script>
   <script src="/static/access.js" defer></script>
+  <script src="/static/management-search.js" defer></script>
 </head>
 <body>
   <header><h1>网站账号与分组</h1><a href="/admin">资源账号控制台</a><a href="/">账号主页</a></header>
   <main>
+    <div class="management-search" role="search" aria-label="账号与分组搜索">
+      <div class="management-search-line"><label class="management-search-field"><span>搜索本页</span><input id="management-search" type="search" aria-label="搜索本页全部内容" placeholder="搜索网站账号、分组、成员或资源账号…" autocomplete="off"></label><button id="management-search-clear" type="button" hidden>清除</button></div>
+      <p id="management-search-status" class="management-search-status" role="status" aria-live="polite"></p>
+      <div id="management-search-results" class="management-search-results" aria-label="搜索匹配模块" hidden></div>
+    </div>
     <p id="message" role="status" aria-live="polite"></p>
     <section class="group-overview" aria-labelledby="overview-title">
       <div class="overview-heading">
@@ -26,10 +33,11 @@
         </span>
       </div>
       <div class="table-wrap">
-        <table id="group-overview" aria-labelledby="overview-title" aria-describedby="overview-help">
+        <table id="group-overview" data-search-scope="组别总览" data-search-overview aria-labelledby="overview-title" aria-describedby="overview-help">
           <tbody><tr><td class="muted">正在加载分组…</td></tr></tbody>
         </table>
       </div>
+      <p id="overview-search-empty" class="muted" hidden>没有匹配的小组</p>
     </section>
     <div class="management-tabs" role="tablist" aria-label="管理功能" data-viewport="management-viewport">
       <span class="management-tab-indicator" aria-hidden="true"></span>
@@ -41,12 +49,12 @@
         <section id="users-panel" class="management-panel" role="tabpanel" aria-labelledby="users-tab">
           <div class="section-head"><h2>网站账号</h2><div class="actions"><button id="add-user" type="button" class="primary">创建账号</button><button id="batch-users" type="button">批量</button></div></div>
           <p class="muted">用户按所属分组使用资源。两类管理员均可创建账号和管理分组；仅 admin 可删除账号、调整角色或重置普通管理员密码。</p>
-          <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users" data-search-scope="网站账号" data-search-tab="users-tab"></tbody></table></div>
         </section>
         <section id="groups-panel" class="management-panel" role="tabpanel" aria-labelledby="groups-tab" aria-hidden="true" inert>
           <div class="section-head"><h2>Group 分组</h2><button id="add-group" type="button" class="primary">创建分组</button></div>
           <p class="muted">一个账号或资源可以加入多个分组。用户可使用各分组分配的资源；未分配的资源仅管理员可见。GPT 账号下架后对用户隐藏。</p>
-          <div class="table-wrap"><table><thead><tr><th>分组名称</th><th>成员</th><th>资源</th><th>操作</th></tr></thead><tbody id="groups"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>分组名称</th><th>成员</th><th>资源</th><th>操作</th></tr></thead><tbody id="groups" data-search-scope="Group 分组" data-search-tab="groups-tab"></tbody></table></div>
         </section>
       </div>
     </div>
@@ -83,8 +91,10 @@
         </div>
         <datalist id="group-category-options"></datalist>
       </fieldset>
+      <div id="group-config" class="group-config">
       <fieldset><legend>分组成员</legend><div id="member-options" class="options"></div></fieldset>
       <fieldset id="group-resources"><legend>分配资源</legend><p class="muted">新资源请先到资源账号控制台添加，再返回分组进行分配。</p><div id="resource-options" class="options"></div></fieldset>
+      </div>
       <p class="error" id="group-error" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close="group-dialog">取消</button><button class="primary" type="submit">保存分组</button></div>
     </form>

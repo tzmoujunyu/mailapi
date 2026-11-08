@@ -24,7 +24,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .group-overview .matrix-data { min-width: 160px; padding: 0; border-right: 1px solid #dfe3e8; border-bottom: 1px solid #dfe3e8; cursor: pointer; }
 .matrix-cell { position: relative; min-height: 88px; }
 .matrix-cell + .matrix-cell { border-top: 1px solid #e5e7eb; }
-.group-overview .matrix-edit { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 5px; width: 100%; min-height: 88px; padding: 24px 26px; border: 0; border-radius: 0; background: white; }
+.group-overview .matrix-edit { display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 9px; width: 100%; min-height: 108px; padding: 18px 24px; border: 0; border-radius: 0; background: white; }
+.matrix-members { display: flex; justify-content: center; flex-wrap: wrap; gap: 5px; }
+.matrix-account { display: block; color: #475569; font-size: 12px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
 .group-overview .matrix-data:hover .matrix-edit, .group-overview .matrix-edit:focus-visible { background: #f0f6ff; }
 .group-overview .matrix-edit:focus-visible, .group-overview .matrix-add:focus-visible { outline: 2px solid #2563eb; outline-offset: -3px; }
 .group-overview .tag { max-width: 100%; margin: 0; }
@@ -35,7 +37,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .group-overview thead .matrix-edge { border-top: 1px dashed #c7d1df; border-top-right-radius: 8px; }
 .group-overview .matrix-add { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 56px; padding: 12px; color: #61738c; border: 0; border-radius: 0; background: transparent; font-size: 24px; }
 .group-overview .matrix-add:hover { color: #2563eb; background: #eff6ff; }
-.group-overview .matrix-vacant .matrix-add { min-height: 88px; color: #94a3b8; opacity: .3; }
+.group-overview .matrix-vacant .matrix-add { min-height: 108px; color: #94a3b8; opacity: .3; }
 .group-overview .matrix-vacant:hover .matrix-add, .group-overview .matrix-vacant .matrix-add:focus-visible { opacity: 1; }
 .group-overview .matrix-new-category { border: 1px dashed #c7d1df; border-top: 0; border-radius: 0 0 8px 8px; background: #fafbfd; }
 .matrix-add-label { font-size: 13px; }
@@ -53,7 +55,20 @@ button:disabled { opacity: .55; cursor: wait; }
 #message { min-height: 20px; font-size: 14px; }
 dialog { width: min(430px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; border: 1px solid #c7ced6; border-radius: 8px; padding: 22px; }
 dialog::backdrop { background: #11182770; }
-.wide-dialog { width: min(720px, calc(100vw - 24px)); }
+.wide-dialog { width: min(1000px, calc(100vw - 32px)); }
+.wide-dialog.members-only { width: min(720px, calc(100vw - 24px)); }
+.group-config { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 18px; margin: 18px 0; }
+.group-config.members-only { grid-template-columns: minmax(0, 1fr); }
+.group-config fieldset { min-width: 0; margin: 0; padding: 14px; }
+.group-config .options { min-height: 180px; max-height: min(44vh, 360px); align-content: start; }
+.group-config fieldset > p { margin: 0 0 12px; }
+.resource-kind + .resource-kind { margin-top: 5px; padding-top: 12px; border-top: 1px solid #dfe3e8; }
+.resource-kind h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 7px; color: #475569; font-size: 13px; }
+.resource-kind h3 > span { padding: 1px 6px; border-radius: 4px; background: #eff6ff; color: #1d4ed8; font-size: 11px; font-weight: 400; }
+.resource-kind .option { padding: 7px 8px; border-radius: 5px; }
+.resource-kind .option:hover { background: #f7f8fb; }
+.resource-option-name { display: block; }
+.resource-sharing { display: block; color: #61738c; font-size: 12px; }
 form > label { display: grid; gap: 7px; margin: 16px 0; font-size: 14px; }
 label[hidden], fieldset[hidden] { display: none; }
 .group-position-fields { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
@@ -67,3 +82,4 @@ legend { font-size: 14px; font-weight: 600; }
 .option { display: flex; align-items: baseline; gap: 7px; font-size: 14px; overflow-wrap: anywhere; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 680px) { header { flex-wrap: wrap; gap: 12px; } h1 { flex-basis: 100%; } main { padding: 0 10px 16px; } section { padding: 14px; } }
+@media (max-width: 680px) { .group-config { grid-template-columns: minmax(0, 1fr); gap: 12px; } .group-config .options { min-height: 100px; max-height: 240px; } .wide-dialog { padding: 16px; } }

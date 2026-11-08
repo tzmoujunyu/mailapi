@@ -103,6 +103,13 @@ GPT 的“监听邮箱”支持搜索、同名推荐、多选和清空，但同�
 打开期间的浏览位置，首次切换到新面板从内容顶部开始；刷新或重新打开页面后回到首个面板和页面顶部，
 不在浏览器存储中保存位置。
 
+两处管理页通过共享的 `management-search.js/css` 搜索本页全部功能面板，按文字和链接地址匹配，
+不区分大小写，多个关键词用空格分隔并同时匹配。各模块显示命中数并支持点击跳转，清除后恢复
+原列表和顺序；后台刷新列表后仍保留筛选。搜索只改变界面展示，不改变账号、分组或勾选项。
+组别总览第二行显示首个完整 GPT 账号名，多账号时标注“等多个账号”，搜索仍包含其他账号名。
+分组配置在桌面上按成员、资源左右排列，手机上纵向排列。资源按 GPT、Coding Plan、中转站分段；
+GPT 候选项的 `x Group shared` 按已保存的分配计算，包含当前分组，不受搜索筛选影响。
+
 GPT 订阅日期从现有授权文件导入的 `id_token` 中解析，由 `mailapi_shared/subscription_dates.py`
 集中处理日期格式。读取 `https://api.openai.com/auth` 下的
 `chatgpt_subscription_active_start`、`chatgpt_subscription_active_until`、
@@ -224,4 +231,5 @@ kill -TERM <pid>
 python -m unittest discover -s tests -q
 node --test tests/test_account_ui.cjs
 MAILAPI_UI_ROOT=mailapi_shared/static node --test tests/test_account_ui.cjs
+MAILAPI_UI_ROOT=mailapi_shared/static node --test tests/test_access_ui.cjs
 ```
