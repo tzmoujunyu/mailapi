@@ -61,6 +61,8 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.other_relay = self.relays.create({"name": "Private relay", "url": "https://private.example.com", "account": "other-login", "password": "other-relay-password"})
         patches = {
             "GMAIL_ACCOUNTS_FILE": str(root / "mailboxes.json"),
+            "MAIL_FILTERS_FILE": str(root / "mail_filters.json"),
+            "MAIL_FILTERS": [*self.module.default_mail_filters(), {"id": "siliconflow", "name": "硅基流动验证码"}],
             "CREDENTIAL_STORE": self.credentials, "CODING_PLAN_STORE": self.plans,
             "RELAY_ACCOUNT_STORE": self.relays,
             "ACCOUNTS": [
@@ -604,24 +606,31 @@ class SiteAccountHTTPTests(unittest.TestCase):
         cfg = self.module.ACCOUNTS[1]
         key = self.module.mailbox_resource_key(cfg)
         relay_id = self.relay["id"]
-        self.module.CODE_HISTORY[cfg["name"]].insert(0, {
-            "email": cfg["email"], "type": "code", "code": "321321", "rule_id": "custom",
+        self.module.CODE_HISTORY[cfg["name"]][0:0] = [
+            {"email": cfg["email"], "code": "999999", "rule_name": "硅基流动验证码"},
+            {"email": cfg["email"], "code": "321321", "rule_id": "siliconflow"},
+        ]
+        self.module.STATE[cfg["name"]].update(email=cfg["email"], last_code="222222", rule_id="openai")
+        response = self.manager.put(f"/api/admin/relay-accounts/{relay_id}", json={
+            "mailbox_key": key, "mail_rule_id": "siliconflow",
         })
-        response = self.manager.put(f"/api/admin/relay-accounts/{relay_id}", json={"mailbox_key": key})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.manager.get("/api/relay-accounts").json()["items"][0]["mailbox_key"], key)
         listed = self.alice.get("/api/relay-accounts").json()["items"][0]
         self.assertTrue(listed["has_mailbox"])
         self.assertNotIn("mailbox_key", listed)
         self.assertNotIn("mailbox_email", listed)
+        self.assertNotIn("mail_rule_id", listed)
 
         path = f"/api/relay-accounts/{relay_id}/mailbox"
-        response = self.alice.get(path, params={"mailbox_key": self.module.mailbox_resource_key(self.module.ACCOUNTS[0])})
+        response = self.alice.get(path, params={
+            "mailbox_key": self.module.mailbox_resource_key(self.module.ACCOUNTS[0]), "rule_id": "openai",
+        })
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["item"]["email"], cfg["email"])
         self.assertFalse(response.json()["item"]["listed"])
         self.assertEqual(response.json()["item"]["last_code"], "321321")
-        self.assertEqual([item["code"] for item in response.json()["history"]], ["321321", "222222"])
+        self.assertEqual([item["code"] for item in response.json()["history"]], ["321321"])
         self.assertIn("no-store", response.headers["cache-control"])
         self.assertEqual(self.alice.get("/api/mailboxes").json()["items"], [])
         self.assertEqual(self.alice.get(f"/api/history/{cfg['name']}?scope=mailbox").status_code, 404)
@@ -629,6 +638,11 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.bob.get(path).status_code, 404)
         preview = {"preview": "1", "user_id": self.identities["bob"]["id"]}
         self.assertEqual(self.admin.get(path, params=preview).status_code, 404)
+        self.manager.put(f"/api/admin/mail/accounts/{cfg['name']}/listing", json={"listed": True})
+        self.create_group("Standalone mailbox", [self.identities["bob"]["id"]], [key])
+        self.assertEqual(self.bob.get("/api/mailboxes").json()["items"][0]["last_code"], "222222")
+        full = self.bob.get(f"/api/history/{cfg['name']}?scope=mailbox").json()["items"]
+        self.assertEqual([item["code"] for item in full], ["999999", "321321", "222222"])
         self.manager.put(f"/api/admin/groups/{self.group['id']}", json={"resource_keys": []})
         self.assertEqual(self.alice.get(path).status_code, 404)
 
@@ -640,11 +654,24 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.manager.put(path, json={"mailbox_key": {}}).status_code, 400)
         self.assertEqual(self.alice.put(path, json={"mailbox_key": key}).status_code, 403)
         self.assertEqual(self.manager.put(path, json={"mailbox_key": key}).status_code, 200)
+        read_path = f"/api/relay-accounts/{self.relay['id']}/mailbox"
+        self.assertEqual(self.alice.get(read_path).status_code, 404)
+        self.assertFalse(self.alice.get("/api/relay-accounts").json()["items"][0]["has_mailbox"])
+        self.assertEqual(self.manager.put(path, json={"mail_rule_id": "unknown"}).status_code, 400)
+        self.assertEqual(self.manager.put(path, json={"mail_rule_id": "siliconflow"}).status_code, 200)
+        empty = self.alice.get(read_path).json()
+        self.assertIsNone(empty["item"]["last_code"])
+        self.assertEqual(empty["history"], [])
         self.assertEqual(self.manager.put(path, json={"note": "验证码登录"}).status_code, 200)
         reopened = ResourceStore(self.relays.path, "password", "密码")
         self.assertEqual(reopened.get_public(self.relay["id"])["mailbox_key"], key)
+        self.assertEqual(reopened.get_public(self.relay["id"])["mail_rule_id"], "siliconflow")
+        self.assertEqual(self.manager.delete("/api/admin/mail-filters/siliconflow").status_code, 200)
+        self.assertEqual(self.alice.get(read_path).status_code, 404)
+        self.assertEqual(self.manager.put(path, json={"mail_rule_id": "openai"}).status_code, 200)
+        self.assertEqual(self.alice.get(read_path).status_code, 200)
         self.module.ACCOUNTS[1] = {**cfg, "resource_id": "c" * 32, "email": "replacement@example.com"}
-        self.assertEqual(self.alice.get(f"/api/relay-accounts/{self.relay['id']}/mailbox").status_code, 404)
+        self.assertEqual(self.alice.get(read_path).status_code, 404)
         self.assertFalse(self.alice.get("/api/relay-accounts").json()["items"][0]["has_mailbox"])
         response = self.manager.put(path, json={"mailbox_key": ""})
         self.assertEqual(response.status_code, 200)

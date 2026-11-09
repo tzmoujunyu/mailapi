@@ -436,7 +436,7 @@ test('console loads the relay website for edits and submits it for new accounts'
 
 test('relay passwords are optional and passwordless rows omit the copy button', async () => {
   const app = page('static/admin.html'); await flush();
-  vm.runInContext('openRelayAccountDialog()', app.context);
+  vm.runInContext('filters = [{id: "siliconflow", name: "硅基流动验证码"}]; openRelayAccountDialog()', app.context);
   assert.equal(app.nodes.get('relay-account-password').required, false);
   app.nodes.get('relay-account-name').value = '硅基流动';
   app.nodes.get('relay-account-url').value = 'https://relay.example.com';
@@ -444,10 +444,14 @@ test('relay passwords are optional and passwordless rows omit the copy button', 
   const mailbox = app.nodes.get('relay-account-mailbox');
   assert.match(mailbox.innerHTML, /value="mailbox:two">mail-only@example.com/);
   mailbox.value = 'mailbox:two';
+  const rule = app.nodes.get('relay-account-mail-rule');
+  assert.match(rule.innerHTML, /value="siliconflow">硅基流动验证码/);
+  rule.value = 'siliconflow';
   await app.nodes.get('relay-account-form').listeners.submit[0]({ preventDefault() {} });
   const request = app.calls.find(([url, options]) => url === '/api/admin/relay-accounts' && options.method === 'POST');
   assert.equal(Object.hasOwn(JSON.parse(request[1].body), 'password'), false);
   assert.equal(JSON.parse(request[1].body).mailbox_key, 'mailbox:two');
+  assert.equal(JSON.parse(request[1].body).mail_rule_id, 'siliconflow');
   const home = page('static/index.html'); await flush();
   const item = { id: 'relay-1', name: '硅基流动', account: 'user@example.com', has_password: false, password_masked: '未设置' };
   const html = vm.runInContext(`relayAccountRow(${JSON.stringify(item)})`, home.context);

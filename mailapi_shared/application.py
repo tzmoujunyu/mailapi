@@ -2346,7 +2346,9 @@ def is_gpt_mail_result(record: Dict[str, Any]) -> bool:
     ) == "code"
 
 
-def mailbox_history(cfg: AccountConfig, *, gpt_only: bool = False) -> List[Dict[str, Any]]:
+def mailbox_history(
+    cfg: AccountConfig, *, gpt_only: bool = False, rule_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     with HISTORY_LOCK:
         records = CODE_HISTORY.get(cfg["name"])
         if records is None:
@@ -2354,21 +2356,25 @@ def mailbox_history(cfg: AccountConfig, *, gpt_only: bool = False) -> List[Dict[
             CODE_HISTORY[cfg["name"]] = records
         return [dict(item) for item in records
                 if str(item.get("email") or "").casefold() == cfg["email"].casefold()
+                and (rule_id is None or item.get("rule_id") == rule_id)
                 and (not gpt_only or is_gpt_mail_result(item))]
 
 
-def public_mailbox(cfg: AccountConfig, *, gpt_only: bool = False) -> Dict[str, Any]:
+def public_mailbox(
+    cfg: AccountConfig, *, gpt_only: bool = False, rule_id: Optional[str] = None,
+) -> Dict[str, Any]:
     with STATE_LOCK:
         state = dict(STATE.get(cfg["name"], {}))
     latest = state if state.get("email", "").casefold() == cfg["email"].casefold() and (
         state.get("result_value") or state.get("last_code")
     ) else {}
-    if not latest or (gpt_only and not is_gpt_mail_result(latest)):
-        latest = next(iter(mailbox_history(cfg, gpt_only=gpt_only)), {})
+    if (not latest or (rule_id is not None and latest.get("rule_id") != rule_id)
+            or (gpt_only and not is_gpt_mail_result(latest))):
+        latest = next(iter(mailbox_history(cfg, gpt_only=gpt_only, rule_id=rule_id)), {})
     return {
         "name": cfg["name"], "email": cfg["email"], "provider": cfg.get("provider", "gmail"),
         "resource_key": mailbox_resource_key(cfg), "listed": cfg.get("listed") is True,
-        **({"note": cfg.get("note", "")} if not gpt_only else {}),
+        **({"note": cfg.get("note", "")} if not gpt_only and rule_id is None else {}),
         "enabled": cfg.get("enabled", True), "status": state.get("status") or "未知",
         "last_code": latest.get("code") or latest.get("last_code"),
         "result_type": latest.get("type") or latest.get("result_type") or "code",
@@ -4301,12 +4307,15 @@ def resource_list_response(store: ResourceStore, request: FastAPIRequest, kind: 
     elif kind == "relay-account":
         with MAIL_ACCOUNTS_LOCK:
             mailboxes = {mailbox_resource_key(cfg): cfg["email"] for cfg in ACCOUNTS}
+        rule_names = {rule["id"]: rule["name"] for rule in MAIL_FILTERS}
         administrator = request_access_role(request) == "admin" and not is_user_preview(request)
         for item in items:
             key = item.pop("mailbox_key")
-            item["has_mailbox"] = key in mailboxes
+            rule_id = item.pop("mail_rule_id")
+            item["has_mailbox"] = key in mailboxes and rule_id in rule_names
             if administrator:
-                item.update(mailbox_key=key, mailbox_email=mailboxes.get(key, ""))
+                item.update(mailbox_key=key, mailbox_email=mailboxes.get(key, ""),
+                            mail_rule_id=rule_id, mail_rule_name=rule_names.get(rule_id, ""))
     return JSONResponse(
         content={"items": items, "updated_at": now_iso()},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
@@ -4334,8 +4343,11 @@ def get_relay_mailbox(account_id: str, request: FastAPIRequest):
     cfg = find_mailbox_by_resource_key(relay["mailbox_key"]) if relay and relay["mailbox_key"] else None
     if cfg is None:
         return JSONResponse({"detail": "接码邮箱不可用或分组权限已变更"}, status_code=404)
+    rule_id = relay["mail_rule_id"]
+    if not rule_id or not any(rule["id"] == rule_id for rule in MAIL_FILTERS):
+        return JSONResponse({"detail": "请在控制台为此中转站配置有效的收件规则"}, status_code=404)
     return JSONResponse(
-        {"item": public_mailbox(cfg), "history": mailbox_history(cfg)},
+        {"item": public_mailbox(cfg, rule_id=rule_id), "history": mailbox_history(cfg, rule_id=rule_id)},
         headers={"Cache-Control": "no-store, private"},
     )
 
@@ -4415,6 +4427,10 @@ async def relay_account_payload(request: FastAPIRequest) -> Dict[str, Any]:
         key = payload["mailbox_key"]
         if not isinstance(key, str) or (key and find_mailbox_by_resource_key(key) is None):
             raise ResourceStoreError("请选择邮箱池中的接码邮箱")
+    if "mail_rule_id" in payload:
+        rule_id = payload["mail_rule_id"]
+        if not isinstance(rule_id, str) or (rule_id and not any(rule["id"] == rule_id for rule in MAIL_FILTERS)):
+            raise ResourceStoreError("请选择现有收件规则")
     return payload
 
 

@@ -118,9 +118,10 @@ GPT 的“监听邮箱”支持搜索、同名推荐、多选和清空，但同�
 不改变收件规则、上架状态或监听。Gmail、Outlook 重新授权保留最新说明。
 
 中转站账号的密码和接码邮箱均选填，名称、网址和账号必填。编辑时密码留空保留原值。
-管理员从邮箱池选择接码邮箱后，主页“登录方式”显示“验证码”按钮，弹窗展示该邮箱的最新收件结果及历史。
-弹窗按中转站分组授权，包括邮箱的所有收件规则，无需邮箱独立上架或分配。邮箱单独展示仍按原权限判断。
-绑定使用邮箱的稳定资源标识 `mailbox_key`，移除后需重新选择邮箱。Coding Plan 的 API Key 仍必填。
+管理员选择接码邮箱和对应平台的收件规则后，主页“登录方式”显示“验证码”按钮。后端用规则 ID 筛选
+最新结果和历史，只显示该规则捕获的记录。已有邮箱绑定需补选规则，规则删除后需重新选择。
+弹窗按中转站分组授权，无需邮箱独立上架或分配。主页“邮箱接码”仍按其原有权限显示全部规则的结果。
+邮箱和收件规则分别用 `mailbox_key` 和 `mail_rule_id` 保存。Coding Plan 的 API Key 仍必填。
 
 两处管理页的滑块滚动到页面顶部后吸顶，组别总览仍在上方时保持原位。各功能面板分别记忆本次页面
 打开期间的浏览位置，首次切换到新面板从内容顶部开始；刷新或重新打开页面后回到首个面板和页面顶部，
@@ -206,7 +207,7 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 | `PUT/DELETE /api/admin/groups/{id}` | 编辑、删除分组 |
 | `GET /api/admin/resources` | 可分配资源目录（不包含凭据） |
 | `PUT /api/admin/mail/accounts/{name}/note` | 管理员设置用户可见的邮箱接码说明，JSON `note`，最多 500 字，空字符串清除 |
-| `GET /api/relay-accounts/{id}/mailbox` | 按中转站授权读取所绑定邮箱的最新结果和收件历史 |
+| `GET /api/relay-accounts/{id}/mailbox` | 按中转站授权读取所绑定邮箱及收件规则的最新结果和历史 |
 | `PUT /api/admin/resource-groups` | 批量设置一个资源的分组：`resource_key`、`group_ids`；空列表取消该资源的全部分配 |
 | `POST /api/admin/gpt/accounts` | 创建独立 GPT 账号，`login` 必填，`password`、`secret`、`listed`、`mailbox_ids` 可选 |
 | `PUT /api/admin/gpt/accounts/{key}` | 编辑 GPT 账号；密码和 2FA 留空保留原值，清除使用原有删除接口 |

@@ -80,12 +80,11 @@
         cache: 'no-store', signal: AbortSignal.timeout(10000),
       });
       if (!response.ok) throw new Error(response.status === 404
-        ? '接码邮箱不可用或分组权限已变更。' : '邮箱验证码加载失败，请稍后重试。');
+        ? '接码配置不可用或分组权限已变更。' : '邮箱验证码加载失败，请稍后重试。');
       const { item, history } = await response.json();
       if (!dialog.open || opened !== view) return;
       const markup = `<strong>${escapeHtml(item.email)}</strong>
         <div class="muted">${escapeHtml(item.provider)} · ${escapeHtml(item.enabled === false ? '已停用' : item.status)}</div>
-        ${item.note ? `<div class="muted mailbox-note">${escapeHtml(item.note)}</div>` : ''}
         <div class="relay-mail-latest">
           <strong>最新接收</strong>
           <div>${mailResultHtml(item.result_type, item.result_value || item.last_code)}</div>

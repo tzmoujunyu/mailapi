@@ -65,6 +65,8 @@ class ResourceStore:
                 item["account"] = str(raw.get("account") or "")[:MAX_NAME_LENGTH]
                 mailbox_key = raw.get("mailbox_key")
                 item["mailbox_key"] = mailbox_key if isinstance(mailbox_key, str) else ""
+                mail_rule_id = raw.get("mail_rule_id")
+                item["mail_rule_id"] = mail_rule_id if isinstance(mail_rule_id, str) else ""
                 try:
                     item["url"] = self._url(raw.get("url"))
                 except ResourceStoreError:
@@ -159,6 +161,10 @@ class ResourceStore:
             if not isinstance(mailbox_key, str):
                 raise ResourceStoreError("接码邮箱标识须为文本")
             item["mailbox_key"] = mailbox_key
+            mail_rule_id = payload.get("mail_rule_id", current.get("mail_rule_id", ""))
+            if not isinstance(mail_rule_id, str):
+                raise ResourceStoreError("收件规则标识须为文本")
+            item["mail_rule_id"] = mail_rule_id
         elif self.secret_field == "api_key":
             provider = payload.get("provider", current.get("provider", ""))
             if not isinstance(provider, str) or (provider and provider not in CODING_PLAN_ENDPOINTS):
@@ -188,6 +194,7 @@ class ResourceStore:
         else:
             result.update({
                 "account": item["account"], "url": item["url"], "mailbox_key": item["mailbox_key"],
+                "mail_rule_id": item["mail_rule_id"],
             })
             masked = self._mask(item["password"])
             result.update({"password": masked, "password_masked": masked, "has_password": bool(item["password"])})
