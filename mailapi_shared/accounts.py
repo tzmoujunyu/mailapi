@@ -149,6 +149,14 @@ def create_account_router(static_dir, resource_catalog):
     def list_resources():
         return {"items": resource_catalog()}
 
+    @router.put("/api/admin/resource-groups")
+    async def assign_resource_groups(request: Request):
+        payload = await read_payload(request, {"resource_key", "group_ids"})
+        return {"items": store(request).assign_resource_groups(
+            user_id(request), payload.get("resource_key"), payload.get("group_ids"),
+            {item["key"] for item in resource_catalog()},
+        )}
+
     @router.post("/api/admin/groups", status_code=201)
     async def create_group(request: Request):
         payload = await read_payload(request, {"name", "member_ids", "resource_keys"})

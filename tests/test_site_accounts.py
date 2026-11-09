@@ -166,6 +166,69 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.emails(self.bob), ["owned@example.com"])
         self.assertEqual(self.manager.put(path, json={"resource_keys": self.keys}).status_code, 400)
 
+    def test_bulk_resource_assignment_preserves_members_other_resources_and_order(self):
+        second = self.create_group("Team B", [self.identities["bob"]["id"]], ["gpt:email:other@example.com"])
+        self.assertEqual(self.admin.delete("/api/admin/coding-plans/" + self.plan["id"]).status_code, 200)
+        before = self.store.list_groups(self.identities["admin"]["id"])
+        response = self.manager.put("/api/admin/resource-groups", json={"resource_key": self.keys[0], "group_ids": [second["id"], second["id"]]})
+        self.assertEqual(response.status_code, 200, response.text)
+        after = response.json()["items"]
+        self.assertEqual([item["id"] for item in after], [item["id"] for item in before])
+        for original, updated in zip(before, after):
+            self.assertEqual(updated["name"], original["name"])
+            self.assertEqual(updated["member_ids"], original["member_ids"])
+            self.assertEqual([key for key in updated["resource_keys"] if key != self.keys[0]], [key for key in original["resource_keys"] if key != self.keys[0]])
+        self.assertNotIn(self.keys[0], after[0]["resource_keys"])
+        self.assertEqual(after[1]["resource_keys"].count(self.keys[0]), 1)
+        self.assertEqual(self.emails(self.alice), [])
+        self.assertEqual(self.emails(self.bob), ["owned@example.com", "other@example.com"])
+        reopened = SiteAccountStore(self.store.path)
+        self.assertEqual(reopened.list_groups(self.identities["admin"]["id"]), after)
+
+    def test_bulk_resource_assignment_select_all_and_clear_only_selected_resource(self):
+        self.create_group("Team B", [self.identities["bob"]["id"]], [])
+        path = "/api/admin/resource-groups"
+        before = self.store.list_groups(self.identities["admin"]["id"])
+        for key in self.keys:
+            response = self.admin.put(path, json={"resource_key": key, "group_ids": [item["id"] for item in before]})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(all(key in item["resource_keys"] for item in response.json()["items"]))
+            response = self.manager.put(path, json={"resource_key": key, "group_ids": []})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(all(key not in item["resource_keys"] for item in response.json()["items"]))
+
+    def test_bulk_resource_assignment_keeps_mailbox_listing_requirement(self):
+        cfg = self.module.ACCOUNTS[0]
+        key = self.module.mailbox_resource_key(cfg)
+        response = self.manager.put("/api/admin/resource-groups", json={"resource_key": key, "group_ids": [self.group["id"]]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.alice.get("/api/mailboxes").json()["items"], [])
+        self.assertFalse(cfg["listed"])
+        self.admin.put("/api/admin/mail/accounts/account-1/listing", json={"listed": True})
+        self.assertEqual(len(self.alice.get("/api/mailboxes").json()["items"]), 1)
+        self.manager.put("/api/admin/resource-groups", json={"resource_key": key, "group_ids": []})
+        self.assertEqual(self.alice.get("/api/mailboxes").json()["items"], [])
+
+    def test_bulk_resource_assignment_rejects_invalid_requests_without_partial_writes(self):
+        before = self.store.path.read_bytes()
+        for payload in (
+            {}, {"resource_key": self.keys[0]}, {"group_ids": []},
+            {"resource_key": "gpt:missing", "group_ids": []},
+            {"resource_key": {}, "group_ids": []},
+            {"resource_key": self.keys[0], "group_ids": "all"},
+            {"resource_key": self.keys[0], "group_ids": [self.group["id"], "missing"]},
+            {"resource_key": self.keys[0], "group_ids": [{}]},
+            {"resource_key": self.keys[0], "group_ids": [], "member_ids": []},
+        ):
+            response = self.admin.put("/api/admin/resource-groups", json=payload)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertEqual(self.store.path.read_bytes(), before)
+        response = self.alice.put("/api/admin/resource-groups", json={"resource_key": self.keys[0], "group_ids": []})
+        self.assertEqual(response.status_code, 403)
+        with self.assertRaisesRegex(ValueError, "需要管理员权限"):
+            self.store.assign_resource_groups(self.identities["alice"]["id"], self.keys[0], [], set(self.keys))
+        self.assertEqual(self.store.path.read_bytes(), before)
+
     def test_login_uses_new_credentials_and_http_only_cookie(self):
         client = TestClient(self.module.app, follow_redirects=False)
         self.addCleanup(client.close)

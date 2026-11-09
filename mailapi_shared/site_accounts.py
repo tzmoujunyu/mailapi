@@ -313,6 +313,23 @@ class SiteAccountStore:
         with self._lock:
             return any(user_id in group["member_ids"] and resource_key in group["resource_keys"] for group in self._data["groups"].values())
 
+    def assign_resource_groups(self, actor_id, resource_key, group_ids, valid_resources):
+        with self._edit() as data:
+            self._administrator(data, actor_id)
+            if not isinstance(resource_key, str) or resource_key not in valid_resources:
+                raise SiteAccountError("请选择有效资源")
+            if not isinstance(group_ids, list) or any(not isinstance(value, str) or value not in data["groups"] for value in group_ids):
+                raise SiteAccountError("分配包含无效分组，请刷新后重试")
+            selected = set(group_ids)
+            for group in data["groups"].values():
+                keys = group["resource_keys"]
+                if group["id"] in selected:
+                    if resource_key not in keys:
+                        keys.append(resource_key)
+                else:
+                    group["resource_keys"] = [key for key in keys if key != resource_key]
+        return deepcopy(list(data["groups"].values()))
+
     def save_group(self, actor_id, group_id, payload, valid_resources):
         with self._edit() as data:
             self._administrator(data, actor_id)

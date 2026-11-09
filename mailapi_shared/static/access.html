@@ -29,7 +29,7 @@
         <h2 id="overview-title">组别总览</h2>
         <span class="help-hint">
           <button type="button" class="help-hint-trigger" aria-label="组别总览说明" aria-expanded="false" aria-pressed="false" aria-controls="overview-help" aria-describedby="overview-help">?</button>
-          <span id="overview-help" class="help-hint-content" role="tooltip" popover="manual" hidden>点击格子管理小组与成员，悬停后可删除。通过边缘的 ＋ 添加小组或类别。点击问号可固定这条提示，再次点击关闭。</span>
+          <span id="overview-help" class="help-hint-content" role="tooltip" popover="manual" hidden>点击格子管理小组、成员和资源分配，悬停后可删除。表格保留成员和 GPT 账号摘要，完整资源在编辑窗口中配置。通过边缘的 ＋ 添加小组或类别。点击问号可固定这条提示，再次点击关闭。</span>
         </span>
       </div>
       <div class="table-wrap">
@@ -52,7 +52,7 @@
           <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users" data-search-scope="网站账号" data-search-tab="users-tab"></tbody></table></div>
         </section>
         <section id="groups-panel" class="management-panel" role="tabpanel" aria-labelledby="groups-tab" aria-hidden="true" inert>
-          <div class="section-head"><h2>Group 分组</h2><button id="add-group" type="button" class="primary">创建分组</button></div>
+          <div class="section-head"><h2>Group 分组</h2><div class="actions"><button id="batch-resources" type="button">批量分配</button><button id="add-group" type="button" class="primary">创建分组</button></div></div>
           <p class="muted">一个账号或资源可以加入多个分组。用户可使用各分组分配的资源；未分配的资源仅管理员可见。GPT 账号和邮箱接码资源下架后对用户隐藏。独立邮箱接码会共享该邮箱全部收件规则的结果和历史；GPT 接码只显示 OpenAI 验证码。</p>
           <div class="table-wrap"><table><thead><tr><th>分组名称</th><th>成员</th><th>资源</th><th>操作</th></tr></thead><tbody id="groups" data-search-scope="Group 分组" data-search-tab="groups-tab"></tbody></table></div>
         </section>
@@ -97,6 +97,24 @@
       </div>
       <p class="error" id="group-error" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close="group-dialog">取消</button><button class="primary" type="submit">保存分组</button></div>
+    </form>
+  </dialog>
+  <dialog id="batch-resource-dialog" class="wide-dialog">
+    <form id="batch-resource-form">
+      <h2>批量分配资源</h2>
+      <p class="muted">先在左侧选择一个资源，再勾选右侧分组，点击“保存分配”统一生效。仅调整所选资源，下架资源仍需上架后用户才能使用。</p>
+      <div class="group-config batch-resource-config">
+        <fieldset id="batch-resource-fields"><legend>候选资源</legend><div id="batch-resource-options" class="options"></div></fieldset>
+        <fieldset id="batch-group-fields" disabled>
+          <legend>分配到分组</legend>
+          <p id="batch-current-resource" class="muted">请先选择左侧资源。</p>
+          <div class="batch-group-toolbar"><div class="actions"><button id="batch-groups-all" type="button">全选</button><button id="batch-groups-none" type="button">全不选</button></div><span id="batch-group-count" class="muted" aria-live="polite"></span></div>
+          <div id="batch-group-options" class="options"><p class="muted">选择资源后显示当前分配情况。</p></div>
+        </fieldset>
+      </div>
+      <p id="batch-resource-result" class="muted" role="status" aria-live="polite"></p>
+      <p id="batch-resource-error" class="error" role="alert"></p>
+      <div class="dialog-actions"><button id="batch-resource-close" type="button" data-close="batch-resource-dialog">关闭</button><button id="batch-resource-save" class="primary" type="submit" disabled>保存分配</button></div>
     </form>
   </dialog>
 </body>

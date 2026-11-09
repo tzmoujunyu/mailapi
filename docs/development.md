@@ -120,8 +120,15 @@ GPT 的“监听邮箱”支持搜索、同名推荐、多选和清空，但同�
 不区分大小写，多个关键词用空格分隔并同时匹配。各模块显示命中数并支持点击跳转，清除后恢复
 原列表和顺序；后台刷新列表后仍保留筛选。搜索只改变界面展示，不改变账号、分组或勾选项。
 组别总览第二行显示首个完整 GPT 账号名，多账号时标注“等多个账号”，搜索仍包含其他账号名。
-分组配置在桌面上按成员、资源左右排列，手机上纵向排列。资源按 GPT、Coding Plan、中转站分段；
+总览格子的编辑窗口也可分配资源，表格仍只显示成员和 GPT 账号摘要。
+分组配置在桌面上按成员、资源左右排列，手机上纵向排列。资源按 GPT、邮箱接码、Coding Plan、中转站分段；
 GPT 候选项的 `x Group shared` 按已保存的分配计算，包含当前分组，不受搜索筛选影响。
+
+Group 分组的“批量分配”以一个资源为单位：左侧选择资源，右侧自动勾选当前已分配的全部分组，
+支持逐组调整、全选和全不选，点击“保存分配”统一生效。保存后窗口保留，可继续选择其他资源；
+未保存就切换资源时提示是否放弃修改。候选包含下架资源，但分配不会自动上架。
+后端在同一次原子写入中校验并调整所选资源的分组关系，保留分组顺序、名称、成员和其他资源，
+也保留其他资源的旧失效引用。admin 和普通管理员均可操作，普通用户无权限。
 
 GPT 订阅日期从现有授权文件导入的 `id_token` 中解析，由 `mailapi_shared/subscription_dates.py`
 集中处理日期格式。读取 `https://api.openai.com/auth` 下的
@@ -185,6 +192,7 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 | `GET/POST /api/admin/groups` | 列表、创建分组 |
 | `PUT/DELETE /api/admin/groups/{id}` | 编辑、删除分组 |
 | `GET /api/admin/resources` | 可分配资源目录（不包含凭据） |
+| `PUT /api/admin/resource-groups` | 批量设置一个资源的分组：`resource_key`、`group_ids`；空列表取消该资源的全部分配 |
 | `POST /api/admin/gpt/accounts` | 创建独立 GPT 账号，`login` 必填，`password`、`secret`、`listed`、`mailbox_ids` 可选 |
 | `PUT /api/admin/gpt/accounts/{key}` | 编辑 GPT 账号；密码和 2FA 留空保留原值，清除使用原有删除接口 |
 | `GET /api/admin/gpt/accounts/{key}/mailboxes` | 邮箱选项、推荐、选中及占用状态，仅管理员可读 |

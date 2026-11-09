@@ -56,9 +56,7 @@ button:disabled { opacity: .55; cursor: wait; }
 dialog { width: min(430px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; border: 1px solid #c7ced6; border-radius: 8px; padding: 22px; }
 dialog::backdrop { background: #11182770; }
 .wide-dialog { width: min(1000px, calc(100vw - 32px)); }
-.wide-dialog.members-only { width: min(720px, calc(100vw - 24px)); }
 .group-config { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 18px; margin: 18px 0; }
-.group-config.members-only { grid-template-columns: minmax(0, 1fr); }
 .group-config fieldset { min-width: 0; margin: 0; padding: 14px; }
 .group-config .options { min-height: 180px; max-height: min(44vh, 360px); align-content: start; }
 .group-config fieldset > p { margin: 0 0 12px; }
@@ -69,11 +67,16 @@ dialog::backdrop { background: #11182770; }
 .resource-kind .option:hover { background: #f7f8fb; }
 .resource-option-name { display: block; }
 .resource-sharing { display: block; color: #61738c; font-size: 12px; }
+.batch-resource-config .option { padding: 8px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
+.batch-resource-config .option:hover { background: #f7f8fb; }
+.batch-resource-config .option:has(input:checked) { border-color: #bfdbfe; background: #eff6ff; }
+.batch-group-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+#batch-current-resource { overflow-wrap: anywhere; }
 form > label { display: grid; gap: 7px; margin: 16px 0; font-size: 14px; }
 label[hidden], fieldset[hidden] { display: none; }
 .group-position-fields { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
 .group-position-fields label { display: grid; align-content: start; gap: 7px; font-size: 14px; }
-input:not([type="checkbox"]), select, textarea { width: 100%; min-width: 0; border: 1px solid #c7ced6; border-radius: 5px; padding: 9px; font: inherit; }
+input:not([type="checkbox"]):not([type="radio"]), select, textarea { width: 100%; min-width: 0; border: 1px solid #c7ced6; border-radius: 5px; padding: 9px; font: inherit; }
 textarea { resize: vertical; line-height: 1.5; }
 input:focus, select:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
 fieldset { border: 1px solid #dfe3e8; border-radius: 5px; margin: 16px 0; padding: 12px; }

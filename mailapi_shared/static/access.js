@@ -6,6 +6,8 @@ let groups = [];
 let resources = [];
 let editingUser = null;
 let editingGroup = null;
+let batchResource = null;
+let batchSaving = false;
 let loadVersion = 0;
 const byId = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -78,7 +80,7 @@ function renderGroupOverview(memberTags, resourceNames) {
         const searchText = [group.name, number ? `组${number}` : '未编号', ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
         return `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}" data-search-text="${escapeHtml(searchText)}">
         <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
-          title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组与成员 · ${escapeHtml(group.name)}">
+          title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组、成员与资源 · ${escapeHtml(group.name)}">
           <span class="matrix-members">${group.member_ids.length ? memberTags(group) : '<span class="muted">暂无成员</span>'}</span>
           <span class="matrix-account">${summary}</span>
         </button>
@@ -138,6 +140,7 @@ async function load() {
     byId('batch-users').disabled = currentUser.role !== 'admin';
     byId('batch-users').hidden = currentUser.role !== 'admin';
     byId('add-group').disabled = false;
+    byId('batch-resources').disabled = false;
   } catch (error) {
     if (version !== loadVersion) return;
     byId('message').textContent = error.message;
@@ -159,39 +162,111 @@ function openUser(user = null) {
   byId('user-dialog').showModal();
 }
 
-function openGroup(group = null, { membersOnly = false, category = '', number = '1' } = {}) {
+function openGroup(group = null, { fromOverview = false, category = '', number = '1' } = {}) {
   editingGroup = group;
   byId('group-form').reset();
-  const action = membersOnly ? '小组' : '分组';
+  const action = fromOverview ? '小组' : '分组';
   byId('group-title').textContent = group ? `编辑${action} · ${group.name}` : `创建${action}`;
   byId('group-name').value = group?.name || '';
-  byId('group-name-field').hidden = membersOnly;
-  byId('group-name').disabled = membersOnly;
-  byId('group-position').hidden = !membersOnly;
-  byId('group-position').disabled = !membersOnly;
+  byId('group-name-field').hidden = fromOverview;
+  byId('group-name').disabled = fromOverview;
+  byId('group-position').hidden = !fromOverview;
+  byId('group-position').disabled = !fromOverview;
   const position = group ? groupPosition(group.name) : { category, number };
   byId('group-category').value = position.category;
   byId('group-number').value = position.number;
   byId('group-category-options').innerHTML = [...new Set(groups.map(item => groupPosition(item.name).category))]
     .map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
   byId('member-options').innerHTML = users.map(user => `<label class="option"><input type="checkbox" value="${escapeHtml(user.id)}" ${group?.member_ids.includes(user.id) ? 'checked' : ''}><span>${escapeHtml(user.username)} <small>${roleNames[user.role]}</small></span></label>`).join('');
-  byId('group-resources').hidden = membersOnly;
-  byId('group-config').classList.toggle('members-only', membersOnly);
-  byId('group-dialog').classList.toggle('members-only', membersOnly);
-  if (!membersOnly) {
-    byId('resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
-      const candidates = resources.filter(item => item.kind === kind);
-      if (!candidates.length) return '';
-      return `<div class="resource-kind" data-resource-kind="${kind}"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => {
-        const shared = kind === 'gpt' ? groups.filter(candidate => candidate.resource_keys.includes(item.key)).length : 0;
-        return `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="resource-option-name">${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span>${kind === 'gpt' ? `<small class="resource-sharing" title="已分配至 ${shared} 个分组">${shared} Group shared</small>` : ''}</span></label>`;
-      }).join('')}</div>`;
-    }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
-  }
+  byId('resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
+    const candidates = resources.filter(item => item.kind === kind);
+    if (!candidates.length) return '';
+    return `<div class="resource-kind" data-resource-kind="${kind}"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => {
+      const shared = kind === 'gpt' ? groups.filter(candidate => candidate.resource_keys.includes(item.key)).length : 0;
+      return `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="resource-option-name">${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span>${kind === 'gpt' ? `<small class="resource-sharing" title="已分配至 ${shared} 个分组">${shared} Group shared</small>` : ''}</span></label>`;
+    }).join('')}</div>`;
+  }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
   byId('group-error').textContent = '';
   byId('group-dialog').showModal();
-  if (membersOnly) byId(position.category ? 'group-number' : 'group-category').focus();
+  if (fromOverview) byId(position.category ? 'group-number' : 'group-category').focus();
 }
+
+function batchGroupIds() {
+  return [...byId('batch-group-options').querySelectorAll('input:checked')].map(input => input.value);
+}
+
+function updateBatchGroupCount() {
+  byId('batch-group-count').textContent = batchResource ? `已选 ${batchGroupIds().length} / ${groups.length} 个分组` : '';
+  byId('batch-resource-result').textContent = '';
+}
+
+function renderBatchGroups() {
+  const resource = resources.find(item => item.key === batchResource);
+  byId('batch-current-resource').textContent = resource ? `${kindNames[resource.kind]} · ${resource.name}${resource.listed === false ? '（已下架）' : ''}` : '请先选择左侧资源。';
+  byId('batch-group-fields').disabled = !resource;
+  byId('batch-resource-save').disabled = !resource || !groups.length;
+  byId('batch-group-options').innerHTML = resource
+    ? groups.map(group => `<label class="option"><input type="checkbox" value="${escapeHtml(group.id)}" ${group.resource_keys.includes(batchResource) ? 'checked' : ''}><span>${escapeHtml(group.name)}</span></label>`).join('') || '<p class="muted">暂无分组，请先创建分组。</p>'
+    : '<p class="muted">选择资源后显示当前分配情况。</p>';
+  updateBatchGroupCount();
+}
+
+function openBatchResources() {
+  batchResource = null;
+  byId('batch-resource-form').reset();
+  byId('batch-resource-error').textContent = '';
+  byId('batch-resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
+    const candidates = resources.filter(item => item.kind === kind);
+    if (!candidates.length) return '';
+    return `<div class="resource-kind"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => `<label class="option"><input type="radio" name="batch-resource" value="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span></label>`).join('')}</div>`;
+  }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
+  renderBatchGroups();
+  byId('batch-resource-dialog').showModal();
+}
+
+byId('batch-resource-options').addEventListener('change', event => {
+  const selected = event.target;
+  if (!selected.matches('input[type="radio"]') || selected.value === batchResource) return;
+  const saved = new Set(groups.filter(group => group.resource_keys.includes(batchResource)).map(group => group.id));
+  const checked = batchGroupIds();
+  const changed = batchResource && (saved.size !== checked.length || checked.some(id => !saved.has(id)));
+  if (changed && !confirm('当前资源的分配尚未保存，切换将放弃这些修改。继续切换？')) {
+    byId('batch-resource-options').querySelectorAll('input').forEach(input => { input.checked = input.value === batchResource; });
+    return;
+  }
+  batchResource = selected.value;
+  byId('batch-resource-error').textContent = '';
+  renderBatchGroups();
+});
+byId('batch-group-options').addEventListener('change', updateBatchGroupCount);
+for (const [id, checked] of [['batch-groups-all', true], ['batch-groups-none', false]]) {
+  byId(id).addEventListener('click', () => {
+    byId('batch-group-options').querySelectorAll('input').forEach(input => { input.checked = checked; });
+    updateBatchGroupCount();
+  });
+}
+byId('batch-resource-dialog').addEventListener('cancel', event => { if (batchSaving) event.preventDefault(); });
+byId('batch-resource-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!batchResource || batchSaving) return;
+  batchSaving = true;
+  loadVersion += 1;
+  const payload = { resource_key: batchResource, group_ids: batchGroupIds() };
+  for (const id of ['batch-resource-fields', 'batch-group-fields', 'batch-resource-save', 'batch-resource-close']) byId(id).disabled = true;
+  byId('batch-resource-error').textContent = '';
+  byId('batch-resource-result').textContent = '';
+  try {
+    const data = await api('/api/admin/resource-groups', jsonRequest('PUT', payload));
+    groups = data.items;
+    render();
+    renderBatchGroups();
+    byId('batch-resource-result').textContent = '分配已保存，可继续选择其他资源。';
+  } catch (error) { byId('batch-resource-error').textContent = error.message; }
+  finally {
+    batchSaving = false;
+    for (const id of ['batch-resource-fields', 'batch-group-fields', 'batch-resource-save', 'batch-resource-close']) byId(id).disabled = false;
+  }
+});
 
 function openBatchUsers() {
   byId('batch-user-form').reset();
@@ -235,8 +310,7 @@ byId('group-form').addEventListener('submit', event => submitForm(event, 'group-
     name = original && original.category === category && original.number === number
       ? editingGroup.name : category + (number ? `-${number}` : '');
   }
-  const payload = { name, member_ids: checked('member-options') };
-  if (!byId('group-resources').hidden) payload.resource_keys = checked('resource-options');
+  const payload = { name, member_ids: checked('member-options'), resource_keys: checked('resource-options') };
   await api(editingGroup ? `/api/admin/groups/${encodeURIComponent(editingGroup.id)}` : '/api/admin/groups', jsonRequest(editingGroup ? 'PUT' : 'POST', payload));
   byId('group-dialog').close();
   byId('message').className = '';
@@ -285,13 +359,13 @@ function handleGroupAction(event) {
   }
   const add = event.target.closest('[data-create-group]');
   if (add) {
-    openGroup(null, { membersOnly: true, category: add.dataset.category, number: add.dataset.number });
+    openGroup(null, { fromOverview: true, category: add.dataset.category, number: add.dataset.number });
     return;
   }
   const edit = event.target.closest('[data-edit-group]');
   if (edit) {
     const group = groups.find(group => group.id === edit.dataset.editGroup);
-    if (group) openGroup(group, { membersOnly: event.currentTarget.id === 'group-overview' });
+    if (group) openGroup(group, { fromOverview: event.currentTarget.id === 'group-overview' });
   }
 }
 byId('groups').addEventListener('click', handleGroupAction);
@@ -300,8 +374,10 @@ document.querySelectorAll('[data-close]').forEach(button => button.addEventListe
 byId('add-user').addEventListener('click', () => openUser());
 byId('batch-users').addEventListener('click', openBatchUsers);
 byId('add-group').addEventListener('click', () => openGroup());
+byId('batch-resources').addEventListener('click', openBatchResources);
 byId('add-user').disabled = true;
 byId('add-group').disabled = true;
+byId('batch-resources').disabled = true;
 
 window.addEventListener('focus', () => { if (!document.querySelector('dialog[open]')) load(); });
 load();
