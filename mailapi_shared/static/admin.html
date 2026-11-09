@@ -312,13 +312,13 @@
         </section>
         <section id="relay-pool-panel" class="section management-panel" role="tabpanel" aria-labelledby="relay-pool-tab" aria-hidden="true" inert>
           <div class="section-head">
-            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、网址、账号、密码和备注。密码选填，仅验证码登录的账号可留空；修改时密码留空会保留原值。</p></div>
+            <div><h2>中转站账号</h2><p class="muted">维护中转站账号和登录方式。可配置密码、接码邮箱，或同时配置两种方式。</p></div>
             <button class="btn btn-primary" type="button" id="add-relay-account">添加中转站账号</button>
           </div>
           <div id="relay-account-message" class="message muted"></div>
           <div class="table-wrap">
             <table class="resource-table">
-              <thead><tr><th>中转站</th><th>账号</th><th>密码</th><th>备注</th><th>管理</th></tr></thead>
+              <thead><tr><th>中转站</th><th>账号</th><th>登录方式</th><th>备注</th><th>管理</th></tr></thead>
               <tbody id="relay-account-rows" data-search-scope="中转站" data-search-tab="relay-pool-tab"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
@@ -437,6 +437,10 @@
         <label>中转站网址<input id="relay-account-url" type="url" maxlength="2048" placeholder="https://example.com" required /></label>
         <label>账号<input id="relay-account-login" type="text" maxlength="120" required /></label>
         <label>密码（选填）<input id="relay-account-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="仅验证码登录可留空；修改时留空保留原值" /></label>
+        <label>接码邮箱（选填）
+          <select id="relay-account-mailbox"></select>
+          <span class="field-help">获得此中转站的用户可查看所选邮箱的全部收件规则结果和历史。未独立上架的邮箱也可以选择。</span>
+        </label>
         <label>备注<input id="relay-account-note" type="text" maxlength="500" placeholder="可选" /></label>
         <div class="dialog-actions"><button id="relay-account-cancel" class="btn" type="button">取消</button><button id="relay-account-save" class="btn btn-primary" type="submit">保存</button></div>
       </form>
@@ -587,9 +591,10 @@
       const relayAccountUrl = document.getElementById('relay-account-url');
       const relayAccountLogin = document.getElementById('relay-account-login');
       const relayAccountPassword = document.getElementById('relay-account-password');
+      const relayAccountMailbox = document.getElementById('relay-account-mailbox');
       const relayAccountNote = document.getElementById('relay-account-note');
       const relayAccountSave = document.getElementById('relay-account-save');
-      let editingRelayAccountId = '';
+      let editingRelayAccount = null;
       let relayAccounts = [];
       const filterRows = document.getElementById('filter-rows');
       const filterMessage = document.getElementById('filter-message');
@@ -676,7 +681,11 @@
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
         const name = item.url ? `<a class="resource-link" href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name || '-')}</a>` : escapeHtml(item.name || '-');
-        return `<tr><td><strong>${name}</strong></td><td>${escapeHtml(item.account || '-')}</td><td>${escapeHtml(masked)}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-relay-account-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-relay-account-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+        const methods = [];
+        if (item.has_password !== false && masked !== '未设置') methods.push(`<div>密码 · ${escapeHtml(masked)}</div>`);
+        if (item.mailbox_email) methods.push(`<div>验证码 · ${escapeHtml(item.mailbox_email)}</div>`);
+        else if (item.mailbox_key) methods.push('<div class="warn">接码邮箱已移除</div>');
+        return `<tr><td><strong>${name}</strong></td><td>${escapeHtml(item.account || '-')}</td><td>${methods.join('') || '<span class="muted">未设置</span>'}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-relay-account-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-relay-account-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
       }
 
       async function loadCodingPlans() {
@@ -721,12 +730,20 @@
       }
 
       function openRelayAccountDialog(item = null) {
-        editingRelayAccountId = item?.id || '';
+        editingRelayAccount = item;
         document.getElementById('relay-account-title').textContent = item ? '修改中转站账号' : '添加中转站账号';
         relayAccountName.value = item?.name || '';
         relayAccountUrl.value = item?.url || '';
         relayAccountLogin.value = item?.account || '';
         relayAccountPassword.value = '';
+        const mailboxKey = item?.mailbox_key || '';
+        const mailboxOptions = mailboxAccounts.map(mail =>
+          `<option value="${escapeAttr(mail.resource_key)}">${escapeHtml(mail.email)} · ${escapeHtml(mail.provider)}</option>`);
+        if (mailboxKey && !mailboxAccounts.some(mail => mail.resource_key === mailboxKey)) {
+          mailboxOptions.push(`<option value="${escapeAttr(mailboxKey)}">${escapeHtml(item.mailbox_email || '接码邮箱已移除')}</option>`);
+        }
+        relayAccountMailbox.innerHTML = '<option value="">不配置接码邮箱</option>' + mailboxOptions.join('');
+        relayAccountMailbox.value = mailboxKey;
         relayAccountNote.value = item?.note || '';
         relayAccountPassword.required = false;
         document.getElementById('relay-account-error').textContent = '';
@@ -772,10 +789,14 @@
         event.preventDefault();
         const payload = { name: relayAccountName.value.trim(), url: relayAccountUrl.value.trim(), account: relayAccountLogin.value.trim(), note: relayAccountNote.value.trim() };
         if (relayAccountPassword.value.trim()) payload.password = relayAccountPassword.value.trim();
+        if (relayAccountMailbox.value !== (editingRelayAccount?.mailbox_key || '')) {
+          payload.mailbox_key = relayAccountMailbox.value;
+        }
+        const editingId = editingRelayAccount?.id;
         try {
           relayAccountSave.disabled = true;
-          await api(editingRelayAccountId ? `/api/admin/relay-accounts/${encodeURIComponent(editingRelayAccountId)}` : '/api/admin/relay-accounts', {
-            method: editingRelayAccountId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          await api(editingId ? `/api/admin/relay-accounts/${encodeURIComponent(editingId)}` : '/api/admin/relay-accounts', {
+            method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
           });
           relayAccountDialog.close();
           setMessage(relayAccountMessage, '中转站账号已保存。');

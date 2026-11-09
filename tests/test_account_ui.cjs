@@ -16,10 +16,10 @@ const fixture = () => [{
   codex: [{ id: 'codex-2', email: 'only@example.com', usage_status: 'unavailable', status_reason: 'usage_missing_weekly' }], mail: [],
 }];
 const flush = () => new Promise(resolve => setImmediate(resolve));
-const mailboxFixture = () => [{ name: 'account-1', email: 'user@example.com', provider: 'gmail', listed: true,
+const mailboxFixture = () => [{ name: 'account-1', resource_key: 'mailbox:one', email: 'user@example.com', provider: 'gmail', listed: true,
   note: '硅基流动登录码 <img src=x onerror=alert(1)>',
   enabled: true, result_type: 'code', result_value: '321321', rule_name: 'SiliconFlow', subject: 'All-rule code' },
-{ name: 'account-2', email: 'mail-only@example.com', provider: 'outlook', listed: false,
+{ name: 'account-2', resource_key: 'mailbox:two', email: 'mail-only@example.com', provider: 'outlook', listed: false,
   enabled: false, result_type: 'link', result_value: 'https://claude.ai/login#mail-only', rule_name: 'Claude', subject: 'Claude login' }];
 function page(file, preview = false, previewUserId = '') {
   const nodes = new Map();
@@ -441,14 +441,47 @@ test('relay passwords are optional and passwordless rows omit the copy button', 
   app.nodes.get('relay-account-name').value = '硅基流动';
   app.nodes.get('relay-account-url').value = 'https://relay.example.com';
   app.nodes.get('relay-account-login').value = 'user@example.com';
+  const mailbox = app.nodes.get('relay-account-mailbox');
+  assert.match(mailbox.innerHTML, /value="mailbox:two">mail-only@example.com/);
+  mailbox.value = 'mailbox:two';
   await app.nodes.get('relay-account-form').listeners.submit[0]({ preventDefault() {} });
   const request = app.calls.find(([url, options]) => url === '/api/admin/relay-accounts' && options.method === 'POST');
   assert.equal(Object.hasOwn(JSON.parse(request[1].body), 'password'), false);
+  assert.equal(JSON.parse(request[1].body).mailbox_key, 'mailbox:two');
   const home = page('static/index.html'); await flush();
   const item = { id: 'relay-1', name: '硅基流动', account: 'user@example.com', has_password: false, password_masked: '未设置' };
   const html = vm.runInContext(`relayAccountRow(${JSON.stringify(item)})`, home.context);
-  assert.match(html, /未设置密码/);
+  assert.match(html, /未设置登录方式/);
   assert.doesNotMatch(html, /data-resource-copy="relay-password"/);
+  const linked = vm.runInContext(`relayAccountRow(${JSON.stringify({ ...item, has_mailbox: true })})`, home.context);
+  assert.match(linked, /data-relay-mail="relay-1"[^>]*>验证码/);
+  assert.doesNotMatch(linked, /未设置登录方式|data-resource-copy/);
+});
+
+test('relay verification opens a preview-scoped mailbox and clears results after access is lost', async () => {
+  const app = page('static/index.html', true, 'reader'); await flush();
+  const path = '/api/relay-accounts/relay-1/mailbox?preview=1&user_id=reader';
+  let allowed = true;
+  app.context.fetch = async url => {
+    assert.equal(url, path);
+    return allowed
+      ? { ok: true, json: async () => ({ item: mailboxFixture()[0], history: [{ code: '654321', subject: 'Historical code' }] }) }
+      : { ok: false, status: 404 };
+  };
+  await app.click('relay-account-rows', '[data-relay-mail]', { relayMail: 'relay-1' });
+  const dialog = app.nodes.get('relay-mail-dialog');
+  const content = app.nodes.get('relay-mail-content');
+  assert.equal(dialog.open, true);
+  assert.match(content.innerHTML, /321321/);
+  assert.match(content.innerHTML, /654321/);
+  allowed = false;
+  await [...app.timers.values()].at(-1)();
+  assert.match(content.textContent, /分组权限已变更/);
+  const timerCount = app.timers.size;
+  dialog.close();
+  dialog.listeners.close[0]();
+  assert.equal(app.timers.size, timerCount - 1);
+  assert.equal(content.textContent, '');
 });
 
 test('homepage and console render each Coding Plan window with the Codex quota meter', async () => {

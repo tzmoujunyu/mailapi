@@ -63,6 +63,8 @@ class ResourceStore:
             }
             if self.secret_field == "password":
                 item["account"] = str(raw.get("account") or "")[:MAX_NAME_LENGTH]
+                mailbox_key = raw.get("mailbox_key")
+                item["mailbox_key"] = mailbox_key if isinstance(mailbox_key, str) else ""
                 try:
                     item["url"] = self._url(raw.get("url"))
                 except ResourceStoreError:
@@ -153,6 +155,10 @@ class ResourceStore:
                 required=True,
             )
             item["url"] = self._url(payload.get("url", current.get("url")))
+            mailbox_key = payload.get("mailbox_key", current.get("mailbox_key", ""))
+            if not isinstance(mailbox_key, str):
+                raise ResourceStoreError("接码邮箱标识须为文本")
+            item["mailbox_key"] = mailbox_key
         elif self.secret_field == "api_key":
             provider = payload.get("provider", current.get("provider", ""))
             if not isinstance(provider, str) or (provider and provider not in CODING_PLAN_ENDPOINTS):
@@ -180,7 +186,9 @@ class ResourceStore:
             masked = self._mask(item["api_key"])
             result.update({"api_key": masked, "api_key_masked": masked, "has_api_key": True, "provider": item["provider"]})
         else:
-            result.update({"account": item.get("account", ""), "url": item.get("url", "")})
+            result.update({
+                "account": item["account"], "url": item["url"], "mailbox_key": item["mailbox_key"],
+            })
             masked = self._mask(item["password"])
             result.update({"password": masked, "password_masked": masked, "has_password": bool(item["password"])})
         return result
@@ -188,6 +196,11 @@ class ResourceStore:
     def list_public(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [self._public(item) for item in self._items]
+
+    def get_public(self, item_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            item = next((item for item in self._items if item["id"] == item_id), None)
+            return self._public(item) if item else None
 
     def get_secret(self, item_id: str) -> Optional[str]:
         with self._lock:

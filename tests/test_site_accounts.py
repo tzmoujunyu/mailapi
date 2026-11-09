@@ -600,6 +600,56 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.alice.post("/api/relay-accounts/" + item["id"] + "/password").json()["password"], "relay-test-password")
         self.assertEqual(self.bob.post("/api/relay-accounts/" + item["id"] + "/password").status_code, 404)
 
+    def test_relay_mailbox_access_follows_the_relay_grant_without_granting_standalone_access(self):
+        cfg = self.module.ACCOUNTS[1]
+        key = self.module.mailbox_resource_key(cfg)
+        relay_id = self.relay["id"]
+        self.module.CODE_HISTORY[cfg["name"]].insert(0, {
+            "email": cfg["email"], "type": "code", "code": "321321", "rule_id": "custom",
+        })
+        response = self.manager.put(f"/api/admin/relay-accounts/{relay_id}", json={"mailbox_key": key})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.manager.get("/api/relay-accounts").json()["items"][0]["mailbox_key"], key)
+        listed = self.alice.get("/api/relay-accounts").json()["items"][0]
+        self.assertTrue(listed["has_mailbox"])
+        self.assertNotIn("mailbox_key", listed)
+        self.assertNotIn("mailbox_email", listed)
+
+        path = f"/api/relay-accounts/{relay_id}/mailbox"
+        response = self.alice.get(path, params={"mailbox_key": self.module.mailbox_resource_key(self.module.ACCOUNTS[0])})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["item"]["email"], cfg["email"])
+        self.assertFalse(response.json()["item"]["listed"])
+        self.assertEqual(response.json()["item"]["last_code"], "321321")
+        self.assertEqual([item["code"] for item in response.json()["history"]], ["321321", "222222"])
+        self.assertIn("no-store", response.headers["cache-control"])
+        self.assertEqual(self.alice.get("/api/mailboxes").json()["items"], [])
+        self.assertEqual(self.alice.get(f"/api/history/{cfg['name']}?scope=mailbox").status_code, 404)
+        self.assertEqual(self.alice.get(f"/api/history/{cfg['name']}").status_code, 404)
+        self.assertEqual(self.bob.get(path).status_code, 404)
+        preview = {"preview": "1", "user_id": self.identities["bob"]["id"]}
+        self.assertEqual(self.admin.get(path, params=preview).status_code, 404)
+        self.manager.put(f"/api/admin/groups/{self.group['id']}", json={"resource_keys": []})
+        self.assertEqual(self.alice.get(path).status_code, 404)
+
+    def test_relay_mailbox_binding_survives_reload_and_does_not_follow_a_reused_mailbox_name(self):
+        cfg = self.module.ACCOUNTS[1]
+        key = self.module.mailbox_resource_key(cfg)
+        path = f"/api/admin/relay-accounts/{self.relay['id']}"
+        self.assertEqual(self.manager.put(path, json={"mailbox_key": "mailbox:unknown"}).status_code, 400)
+        self.assertEqual(self.manager.put(path, json={"mailbox_key": {}}).status_code, 400)
+        self.assertEqual(self.alice.put(path, json={"mailbox_key": key}).status_code, 403)
+        self.assertEqual(self.manager.put(path, json={"mailbox_key": key}).status_code, 200)
+        self.assertEqual(self.manager.put(path, json={"note": "验证码登录"}).status_code, 200)
+        reopened = ResourceStore(self.relays.path, "password", "密码")
+        self.assertEqual(reopened.get_public(self.relay["id"])["mailbox_key"], key)
+        self.module.ACCOUNTS[1] = {**cfg, "resource_id": "c" * 32, "email": "replacement@example.com"}
+        self.assertEqual(self.alice.get(f"/api/relay-accounts/{self.relay['id']}/mailbox").status_code, 404)
+        self.assertFalse(self.alice.get("/api/relay-accounts").json()["items"][0]["has_mailbox"])
+        response = self.manager.put(path, json={"mailbox_key": ""})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"]["mailbox_key"], "")
+
     def test_gpt_results_are_separated_from_full_mailbox_history_and_union_grants(self):
         cfg = self.module.ACCOUNTS[0]
         address = cfg["email"]

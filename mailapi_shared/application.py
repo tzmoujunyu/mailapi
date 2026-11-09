@@ -4298,6 +4298,15 @@ def resource_list_response(store: ResourceStore, request: FastAPIRequest, kind: 
                 item["quota_query_enabled"] = EXTERNAL_WATCHERS
                 item["quota_refresh_due"] = EXTERNAL_WATCHERS and refresh_due
                 item["quota"] = snapshot
+    elif kind == "relay-account":
+        with MAIL_ACCOUNTS_LOCK:
+            mailboxes = {mailbox_resource_key(cfg): cfg["email"] for cfg in ACCOUNTS}
+        administrator = request_access_role(request) == "admin" and not is_user_preview(request)
+        for item in items:
+            key = item.pop("mailbox_key")
+            item["has_mailbox"] = key in mailboxes
+            if administrator:
+                item.update(mailbox_key=key, mailbox_email=mailboxes.get(key, ""))
     return JSONResponse(
         content={"items": items, "updated_at": now_iso()},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
@@ -4312,6 +4321,23 @@ def get_coding_plans(request: FastAPIRequest):
 @app.get("/api/relay-accounts")
 def get_relay_accounts(request: FastAPIRequest):
     return resource_list_response(RELAY_ACCOUNT_STORE, request, "relay-account")
+
+
+def find_mailbox_by_resource_key(key: str) -> Optional[AccountConfig]:
+    with MAIL_ACCOUNTS_LOCK:
+        return next((cfg for cfg in ACCOUNTS if mailbox_resource_key(cfg) == key), None)
+
+
+@app.get("/api/relay-accounts/{account_id}/mailbox")
+def get_relay_mailbox(account_id: str, request: FastAPIRequest):
+    relay = RELAY_ACCOUNT_STORE.get_public(account_id) if can_access_resource(request, "relay-account:" + account_id) else None
+    cfg = find_mailbox_by_resource_key(relay["mailbox_key"]) if relay and relay["mailbox_key"] else None
+    if cfg is None:
+        return JSONResponse({"detail": "接码邮箱不可用或分组权限已变更"}, status_code=404)
+    return JSONResponse(
+        {"item": public_mailbox(cfg), "history": mailbox_history(cfg)},
+        headers={"Cache-Control": "no-store, private"},
+    )
 
 
 @app.get("/api/coding-plans/{plan_id}/api-key")
@@ -4383,10 +4409,19 @@ def delete_coding_plan(plan_id: str):
     return JSONResponse(content={"ok": True})
 
 
+async def relay_account_payload(request: FastAPIRequest) -> Dict[str, Any]:
+    payload = await resource_payload(request, "中转站账号")
+    if "mailbox_key" in payload:
+        key = payload["mailbox_key"]
+        if not isinstance(key, str) or (key and find_mailbox_by_resource_key(key) is None):
+            raise ResourceStoreError("请选择邮箱池中的接码邮箱")
+    return payload
+
+
 @app.post("/api/admin/relay-accounts")
 async def create_relay_account(request: FastAPIRequest):
     try:
-        item = RELAY_ACCOUNT_STORE.create(await resource_payload(request, "中转站账号"))
+        item = RELAY_ACCOUNT_STORE.create(await relay_account_payload(request))
     except ResourceStoreError as error:
         return JSONResponse(content={"detail": str(error)}, status_code=400)
     return JSONResponse(content={"item": item}, status_code=201)
@@ -4395,7 +4430,7 @@ async def create_relay_account(request: FastAPIRequest):
 @app.put("/api/admin/relay-accounts/{account_id}")
 async def update_relay_account(account_id: str, request: FastAPIRequest):
     try:
-        item = RELAY_ACCOUNT_STORE.update(account_id, await resource_payload(request, "中转站账号"))
+        item = RELAY_ACCOUNT_STORE.update(account_id, await relay_account_payload(request))
     except ResourceStoreError as error:
         return JSONResponse(content={"detail": str(error)}, status_code=400)
     if item is None:
