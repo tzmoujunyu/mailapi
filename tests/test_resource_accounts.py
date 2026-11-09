@@ -44,6 +44,27 @@ class ResourceStoreTests(unittest.TestCase):
             self.assertNotEqual(item["password"], "secret")
             self.assertEqual(store.get_secret(item["id"]), "secret")
 
+    def test_relay_account_can_omit_password_and_survives_reload_and_edits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "relay-accounts.json"
+            store = ResourceStore(path, "password", "密码")
+            item = store.create({"name": "硅基流动", "url": "https://relay.example.com", "account": "user@example.com"})
+            self.assertFalse(item["has_password"])
+            self.assertEqual(item["password_masked"], "未设置")
+            reopened = ResourceStore(path, "password", "密码")
+            self.assertEqual(reopened.list_public(), [item])
+            self.assertFalse(reopened.update(item["id"], {"note": "邮箱验证码登录"})["has_password"])
+            self.assertTrue(reopened.update(item["id"], {"password": "secret"})["has_password"])
+            self.assertTrue(reopened.update(item["id"], {"password": ""})["has_password"])
+            self.assertTrue(reopened.update(item["id"], {"password": "  "})["has_password"])
+            self.assertEqual(reopened.get_secret(item["id"]), "secret")
+            for value in (None, 123, {}):
+                with self.assertRaises(ResourceStoreError):
+                    reopened.create({"name": "中转站", "url": "https://relay.example.com", "account": "user", "password": value})
+            plan = ResourceStore(Path(directory) / "plans.json", "api_key", "API key")
+            with self.assertRaises(ResourceStoreError):
+                plan.create({"name": "Coding Plan"})
+
 
 if __name__ == "__main__":
     unittest.main()

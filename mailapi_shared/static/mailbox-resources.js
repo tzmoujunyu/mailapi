@@ -11,7 +11,7 @@
         const content = loading ? '历史记录加载中…' : historyError || (history.length ? renderMailHistory(history) : '暂无历史收件记录。');
         detail = `<tr class="detail-row"><td colspan="5"><div class="detail-panel">${loading || historyError || !history.length ? `<span class="muted">${escapeHtml(content)}</span>` : content}</div></td></tr>`;
       }
-      return `<tr><td><div class="account-main"><span class="account-email">${escapeHtml(mail.email)}</span></div><div class="muted">${escapeHtml(mail.provider)}${mail.listed === false ? ' · 未上架（仅管理员可见）' : ''}</div></td>
+      return `<tr><td><div class="account-main"><span class="account-email">${escapeHtml(mail.email)}</span></div><div class="muted">${escapeHtml(mail.provider)}${mail.listed === false ? ' · 未上架（仅管理员可见）' : ''}</div>${mail.note ? `<div class="muted mailbox-note">${escapeHtml(mail.note)}</div>` : ''}</td>
         <td>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}<div class="muted">${escapeHtml(formatDateTime(mail.updated_at))}</div></td>
         <td>${mailSourceTag(mail.rule_name, mail.subject)}${escapeHtml(mail.subject || '-')}</td>
         <td><span class="${mail.enabled === false ? 'status-warn' : 'muted'}">${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')}</span></td>

@@ -347,6 +347,7 @@ class AccountConfig(TypedDict, total=False):
     enabled: bool
     resource_id: str
     listed: bool
+    note: str
 
 
 app = FastAPI(title="MailAPI 测试版" if IS_TEST else "MailAPI")
@@ -2104,6 +2105,7 @@ def load_accounts() -> List[AccountConfig]:
             "enabled": item.get("enabled") is not False,
             "resource_id": str(item.get("resource_id") or ""),
             "listed": item.get("listed") is True,
+            "note": str(item.get("note") or "").strip()[:500],
         }
         if not re.fullmatch(r"[0-9a-f]{32}", cfg["resource_id"]) or cfg["resource_id"] in used_resources:
             cfg["resource_id"] = secrets.token_hex(16)
@@ -2366,6 +2368,7 @@ def public_mailbox(cfg: AccountConfig, *, gpt_only: bool = False) -> Dict[str, A
     return {
         "name": cfg["name"], "email": cfg["email"], "provider": cfg.get("provider", "gmail"),
         "resource_key": mailbox_resource_key(cfg), "listed": cfg.get("listed") is True,
+        **({"note": cfg.get("note", "")} if not gpt_only else {}),
         "enabled": cfg.get("enabled", True), "status": state.get("status") or "未知",
         "last_code": latest.get("code") or latest.get("last_code"),
         "result_type": latest.get("type") or latest.get("result_type") or "code",
@@ -3110,7 +3113,7 @@ def complete_managed_gmail_auth(
             current = ACCOUNTS[index]
             if current["email"].casefold() == email.casefold():
                 mailbox_resource_key(current)
-                cfg.update(resource_id=current["resource_id"], listed=current["listed"])
+                cfg.update(resource_id=current["resource_id"], listed=current["listed"], note=current.get("note", ""))
             ACCOUNTS[index] = cfg
     save_mail_accounts()
     ensure_mail_state(cfg)
@@ -3176,7 +3179,7 @@ def complete_managed_outlook_auth(
             current = ACCOUNTS[index]
             if current["email"].casefold() == email.casefold():
                 mailbox_resource_key(current)
-                cfg.update(resource_id=current["resource_id"], listed=current["listed"])
+                cfg.update(resource_id=current["resource_id"], listed=current["listed"], note=current.get("note", ""))
             ACCOUNTS[index] = cfg
     save_mail_accounts()
     ensure_mail_state(cfg)
@@ -3513,7 +3516,7 @@ def delete_totp_secret(account_name: str):
 @app.get("/api/admin/gmail/accounts")
 def get_mail_accounts():
     with MAIL_ACCOUNTS_LOCK:
-        items = [sanitize_mail_account(item) for item in ACCOUNTS]
+        items = [{**sanitize_mail_account(item), "note": item.get("note", "")} for item in ACCOUNTS]
     return JSONResponse(content={"items": items, "updated_at": now_iso()})
 
 
@@ -3822,6 +3825,21 @@ async def complete_outlook_admin_auth(request: FastAPIRequest):
         f"{cfg['email']} 已授权并开始监听验证码。",
         200,
     )
+
+
+@app.put("/api/admin/mail/accounts/{account_name}/note")
+async def set_mailbox_note(account_name: str, request: FastAPIRequest):
+    payload = await read_payload(request, {"note"})
+    note = payload.get("note")
+    if not isinstance(note, str) or len(note.strip()) > 500:
+        return JSONResponse({"detail": "接码说明须为不超过 500 个字符的文本"}, status_code=400)
+    with MAIL_ACCOUNTS_LOCK:
+        cfg = next((item for item in ACCOUNTS if item["name"] == account_name), None)
+        if cfg is None:
+            return JSONResponse({"detail": "未找到邮箱"}, status_code=404)
+        cfg["note"] = note.strip()
+    save_mail_accounts()
+    return JSONResponse({"item": {"name": cfg["name"], "note": cfg["note"]}})
 
 
 @app.put("/api/admin/mail/accounts/{account_name}/listing")
@@ -4329,7 +4347,7 @@ def refresh_coding_plan_quota(plan_id: str, request: FastAPIRequest):
 @app.post("/api/relay-accounts/{account_id}/password")
 def get_relay_account_password(account_id: str, request: FastAPIRequest):
     value = RELAY_ACCOUNT_STORE.get_secret(account_id) if can_access_resource(request, "relay-account:" + account_id) else None
-    if value is None:
+    if not value:
         return JSONResponse(content={"detail": "未找到中转站账号"}, status_code=404)
     return JSONResponse(
         content={"password": value},

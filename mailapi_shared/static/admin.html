@@ -78,6 +78,8 @@
       .resource-link { color: #2563eb; text-decoration: none; }
       .resource-link:hover { text-decoration: underline; }
       .muted { color: #6b7280; font-size: 13px; }
+      .mailbox-note { margin-top: 6px; white-space: pre-line; }
+      #mail-note-input { width: 100%; border: 1px solid #c7ced6; border-radius: 6px; padding: 7px 9px; font: inherit; line-height: 1.5; resize: vertical; }
       .good { color: #15803d; font-weight: 700; }
       .bad { color: #b91c1c; font-weight: 700; }
       .warn { color: #b45309; font-weight: 700; }
@@ -310,7 +312,7 @@
         </section>
         <section id="relay-pool-panel" class="section management-panel" role="tabpanel" aria-labelledby="relay-pool-tab" aria-hidden="true" inert>
           <div class="section-head">
-            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、网址、账号、密码和备注。点击名称打开网站；修改时密码留空会保留原值。</p></div>
+            <div><h2>中转站账号</h2><p class="muted">维护中转站名称、网址、账号、密码和备注。密码选填，仅验证码登录的账号可留空；修改时密码留空会保留原值。</p></div>
             <button class="btn btn-primary" type="button" id="add-relay-account">添加中转站账号</button>
           </div>
           <div id="relay-account-message" class="message muted"></div>
@@ -364,6 +366,17 @@
           <button id="codex-auth-close" class="btn" type="button">关闭</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="mail-note-dialog">
+      <form id="mail-note-form" class="password-form">
+        <h2>编辑接码说明</h2>
+        <div id="mail-note-account" class="muted"></div>
+        <label>接码说明（用户可见）<textarea id="mail-note-input" rows="4" maxlength="500" placeholder="例如：接收硅基流动登录码、Kimi 验证码"></textarea></label>
+        <p class="muted">显示在主页邮箱地址下方，最多 500 个字符，留空清除。实际收件范围请在“收件设置”中配置。</p>
+        <div id="mail-note-error" class="bad" role="alert"></div>
+        <div class="dialog-actions"><button id="mail-note-cancel" class="btn" type="button">取消</button><button id="mail-note-save" class="btn btn-primary" type="submit">保存说明</button></div>
+      </form>
     </dialog>
 
     <dialog id="password-dialog">
@@ -423,7 +436,7 @@
         <label>中转站名称<input id="relay-account-name" type="text" maxlength="120" placeholder="例如：中转站 A" required /></label>
         <label>中转站网址<input id="relay-account-url" type="url" maxlength="2048" placeholder="https://example.com" required /></label>
         <label>账号<input id="relay-account-login" type="text" maxlength="120" required /></label>
-        <label>密码<input id="relay-account-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="新增时必填，修改时留空保留原值" /></label>
+        <label>密码（选填）<input id="relay-account-password" type="password" maxlength="4096" autocomplete="new-password" placeholder="仅验证码登录可留空；修改时留空保留原值" /></label>
         <label>备注<input id="relay-account-note" type="text" maxlength="500" placeholder="可选" /></label>
         <div class="dialog-actions"><button id="relay-account-cancel" class="btn" type="button">取消</button><button id="relay-account-save" class="btn btn-primary" type="submit">保存</button></div>
       </form>
@@ -532,6 +545,7 @@
       let mailboxesLoading = false;
       const mailboxRows = document.getElementById('mailbox-rows');
       const mailPoolMessage = document.getElementById('mail-pool-message');
+      let mailNoteAccount = '';
       const gptMessage = document.getElementById('gpt-message');
       const codexMessage = document.getElementById('codex-message');
       const gmailCallbackForm = document.getElementById('gmail-callback-form');
@@ -714,7 +728,7 @@
         relayAccountLogin.value = item?.account || '';
         relayAccountPassword.value = '';
         relayAccountNote.value = item?.note || '';
-        relayAccountPassword.required = !item;
+        relayAccountPassword.required = false;
         document.getElementById('relay-account-error').textContent = '';
         relayAccountDialog.showModal();
         relayAccountName.focus();
@@ -1143,7 +1157,35 @@
         }
       });
 
+      document.getElementById('mail-note-cancel').addEventListener('click', () => document.getElementById('mail-note-dialog').close());
+      document.getElementById('mail-note-form').addEventListener('submit', async event => {
+        event.preventDefault();
+        const save = document.getElementById('mail-note-save');
+        save.disabled = true;
+        document.getElementById('mail-note-error').textContent = '';
+        try {
+          await api(`/api/admin/mail/accounts/${encodeURIComponent(mailNoteAccount)}/note`, { method: 'PUT',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note: document.getElementById('mail-note-input').value.trim() }) });
+          document.getElementById('mail-note-dialog').close();
+          setMessage(mailPoolMessage, '接码说明已保存。');
+          await loadMailboxes();
+        } catch (error) { document.getElementById('mail-note-error').textContent = error.message; }
+        finally { save.disabled = false; }
+      });
+
       mailboxRows.addEventListener('click', async (event) => {
+        const note = event.target.closest('[data-mail-note]');
+        if (note) {
+          const mail = mailboxAccounts.find(item => item.name === note.dataset.name);
+          if (!mail) return;
+          mailNoteAccount = mail.name;
+          document.getElementById('mail-note-account').textContent = mail.email;
+          document.getElementById('mail-note-input').value = mail.note || '';
+          document.getElementById('mail-note-error').textContent = '';
+          document.getElementById('mail-note-dialog').showModal();
+          document.getElementById('mail-note-input').focus();
+          return;
+        }
         const listing = event.target.closest('[data-mail-listing]');
         const button = listing || event.target.closest('[data-mail-action]');
         if (!button) return;
@@ -1275,8 +1317,9 @@
 
       function mailboxRow(mail) {
         const name = escapeAttr(mail.name);
-        return `<tr><td>${escapeHtml(mail.email)}</td><td>${escapeHtml(mail.provider)}</td>
+        return `<tr><td>${escapeHtml(mail.email)}${mail.note ? `<div class="muted mailbox-note">${escapeHtml(mail.note)}</div>` : ''}</td><td>${escapeHtml(mail.provider)}</td>
           <td>${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')}</td><td><span class="${mail.listed ? 'good' : 'muted'}">${mail.listed ? '已上架' : '未上架'}</span></td><td><div class="actions">
+          <button class="btn" data-mail-note data-name="${name}">接码说明</button>
           <button class="btn" data-mail-listing data-name="${name}" data-listed="${!mail.listed}">${mail.listed ? '下架接码' : '上架接码'}</button>
           ${['gmail', 'outlook'].includes(mail.provider) ? `<form action="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" method="post" target="_blank" rel="noopener"><button class="btn">重新授权</button></form>` : ''}
           <button class="btn" data-mail-action="${mail.enabled === false ? 'enable' : 'disable'}" data-name="${name}">${mail.enabled === false ? '启用监听' : '停用监听'}</button>

@@ -52,8 +52,8 @@ class ResourceStore:
             name = str(raw.get("name") or "").strip()
             if not item_id or not name:
                 continue
-            value = raw.get(self.secret_field)
-            if not isinstance(value, str) or not value:
+            value = raw.get(self.secret_field, "")
+            if not isinstance(value, str) or (not value and self.secret_field != "password"):
                 continue
             item: Dict[str, str] = {
                 "id": item_id,
@@ -132,9 +132,13 @@ class ResourceStore:
         name = self._text(payload.get("name", current.get("name")), "名称", MAX_NAME_LENGTH, required=True)
         note = self._text(payload.get("note", current.get("note", "")), "备注", MAX_NOTE_LENGTH)
         value = payload.get(self.secret_field, current.get(self.secret_field, ""))
+        if self.secret_field == "password" and isinstance(value, str):
+            value = value.strip()
         if value == "" and existing is not None:
             value = current.get(self.secret_field, "")
-        value = self._text(value, self.value_label, MAX_VALUE_LENGTH, required=True)
+        if self.secret_field == "password" and not isinstance(value, str):
+            raise ResourceStoreError("密码须为文本")
+        value = self._text(value, self.value_label, MAX_VALUE_LENGTH, required=self.secret_field != "password")
         item: Dict[str, str] = {
             "id": str(current.get("id") or secrets.token_hex(8)),
             "name": name,
@@ -178,7 +182,7 @@ class ResourceStore:
         else:
             result.update({"account": item.get("account", ""), "url": item.get("url", "")})
             masked = self._mask(item["password"])
-            result.update({"password": masked, "password_masked": masked, "has_password": True})
+            result.update({"password": masked, "password_masked": masked, "has_password": bool(item["password"])})
         return result
 
     def list_public(self) -> List[Dict[str, Any]]:

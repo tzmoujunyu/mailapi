@@ -524,7 +524,8 @@ class SiteAccountHTTPTests(unittest.TestCase):
 
     def test_pending_gmail_reauthorization_does_not_restore_an_older_listing_state(self):
         cfg = self.module.ACCOUNTS[0]
-        raw = {**cfg, "listed": True, "token_file": str(Path(self.directory.name) / "token.json")}
+        cfg["note"] = "新的接码说明"
+        raw = {**cfg, "note": "旧说明", "listed": True, "token_file": str(Path(self.directory.name) / "token.json")}
         service = Mock()
         service.users.return_value.getProfile.return_value.execute.return_value = {"emailAddress": cfg["email"]}
         credentials = Mock()
@@ -533,6 +534,71 @@ class SiteAccountHTTPTests(unittest.TestCase):
             updated = self.module.complete_managed_gmail_auth({"cfg": raw, "managed_action": "reauth"}, credentials)
         self.assertFalse(updated["listed"])
         self.assertEqual(updated["resource_id"], cfg["resource_id"])
+        self.assertEqual(updated["note"], "新的接码说明")
+
+    def test_pending_outlook_reauthorization_preserves_latest_mailbox_note(self):
+        cfg = self.module.ACCOUNTS[1]
+        cfg["note"] = "新的 Outlook 接码说明"
+        raw = {**cfg, "note": "旧说明", "token_file": str(Path(self.directory.name) / "outlook-token.json")}
+        authorization = Mock(spec=self.module.OutlookAuthorization)
+        authorization.complete.return_value = "isolated-access-token"
+        authorization.serialized_cache.return_value = "{}"
+        with patch.object(self.module, "fetch_outlook_profile", return_value={"email": cfg["email"]}), patch.object(self.module, "start_mail_watcher"), patch.object(self.module, "stop_mail_watcher"):
+            updated = self.module.complete_managed_outlook_auth({"cfg": raw, "managed_action": "reauth", "authorization": authorization, "flow": {}}, {})
+        self.assertEqual(updated["note"], "新的 Outlook 接码说明")
+
+    def test_mailbox_note_persists_and_follows_independent_resource_permissions(self):
+        cfg = self.module.ACCOUNTS[0]
+        before = dict(cfg)
+        note = "接收硅基流动登录码\nKimi 验证码"
+        path = "/api/admin/mail/accounts/account-1/note"
+        with patch.object(self.module, "start_mail_watcher") as start, patch.object(self.module, "stop_mail_watcher") as stop:
+            response = self.manager.put(path, json={"note": " " + note + " "})
+            self.assertEqual(response.status_code, 200, response.text)
+            start.assert_not_called()
+            stop.assert_not_called()
+        self.assertEqual({key: value for key, value in cfg.items() if key != "note"}, before)
+        self.assertEqual(self.module.load_accounts()[0]["note"], note)
+        self.assertEqual(self.admin.get("/api/admin/mail/accounts").json()["items"][0]["note"], note)
+        self.assertNotIn('"note"', self.alice.get("/api/accounts").text)
+        self.assertNotIn('"note"', self.alice.get("/api/codes").text)
+        key = self.module.mailbox_resource_key(cfg)
+        self.create_group("Mailbox notes", [self.identities["bob"]["id"]], [key])
+        self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])
+        self.admin.put("/api/admin/mail/accounts/account-1/listing", json={"listed": True})
+        self.assertEqual(self.bob.get("/api/mailboxes").json()["items"][0]["note"], note)
+        self.assertEqual(self.alice.get("/api/mailboxes").json()["items"], [])
+        preview = self.admin.get("/api/mailboxes", params={"preview": "1", "user_id": self.identities["bob"]["id"]})
+        self.assertEqual(preview.json()["items"][0]["note"], note)
+        self.assertEqual(self.manager.put(path, json={"note": ""}).status_code, 200)
+        self.assertEqual(self.module.load_accounts()[0]["note"], "")
+
+    def test_mailbox_note_rejects_invalid_or_unauthorized_updates(self):
+        path = "/api/admin/mail/accounts/account-1/note"
+        before = dict(self.module.ACCOUNTS[0])
+        for payload in ({}, {"note": None}, {"note": 123}, {"note": "x" * 501}, {"note": "说明", "listed": True}):
+            self.assertEqual(self.admin.put(path, json=payload).status_code, 400)
+        self.assertEqual(self.alice.put(path, json={"note": "说明"}).status_code, 403)
+        self.assertEqual(self.admin.put("/api/admin/mail/accounts/missing/note", json={"note": "说明"}).status_code, 404)
+        self.assertEqual(self.module.ACCOUNTS[0], before)
+
+    def test_passwordless_relay_can_be_created_assigned_and_edited(self):
+        payload = {"name": "硅基流动", "url": "https://relay.example.com", "account": "user@example.com"}
+        response = self.manager.post("/api/admin/relay-accounts", json=payload)
+        self.assertEqual(response.status_code, 201, response.text)
+        item = response.json()["item"]
+        self.assertFalse(item["has_password"])
+        path = "/api/admin/relay-accounts/" + item["id"]
+        self.assertEqual(self.manager.put(path, json={"note": "邮箱验证码登录"}).status_code, 200)
+        self.assertEqual(ResourceStore(self.relays.path, "password", "密码").get_secret(item["id"]), "")
+        self.admin.put("/api/admin/groups/" + self.group["id"], json={"resource_keys": ["relay-account:" + item["id"]]})
+        self.assertFalse(self.alice.get("/api/relay-accounts").json()["items"][0]["has_password"])
+        self.assertEqual(self.alice.post("/api/relay-accounts/" + item["id"] + "/password").status_code, 404)
+        response = self.manager.put(path, json={"password": "relay-test-password"})
+        self.assertTrue(response.json()["item"]["has_password"])
+        self.manager.put(path, json={"password": "", "note": "新备注"})
+        self.assertEqual(self.alice.post("/api/relay-accounts/" + item["id"] + "/password").json()["password"], "relay-test-password")
+        self.assertEqual(self.bob.post("/api/relay-accounts/" + item["id"] + "/password").status_code, 404)
 
     def test_gpt_results_are_separated_from_full_mailbox_history_and_union_grants(self):
         cfg = self.module.ACCOUNTS[0]

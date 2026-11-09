@@ -112,6 +112,15 @@ GPT 的“监听邮箱”支持搜索、同名推荐、多选和清空，但同�
 兼容没有规则 ID 但名称为“OpenAI 验证码”的旧记录；无来源标记的旧记录只保留在完整邮箱历史中。
 两个界面沿用原有收件历史及容量限制，不删除或重新分类原始数据。
 
+邮箱池每个邮箱的“接码说明”可由管理员编辑，支持最多 500 字文本，留空清除，保存在
+`runtime/gmail_accounts.json` 的 `note` 字段中。控制台和主页“邮箱接码”均在邮箱地址下方展示，
+按纯文本显示，支持换行。主页说明沿用邮箱上架和分组权限，不随 GPT 接码接口返回；说明仅提示用途，
+不改变收件规则、上架状态或监听。Gmail、Outlook 重新授权保留最新说明。
+
+中转站账号的密码选填，名称、网址和账号仍必填。仅验证码登录的账号可不保存密码，
+`has_password=false` 时主页显示“未设置密码”并隐藏密码复制按钮，密码读取接口返回 404。
+编辑时不填密码或传入空字符串仍保留原密码；这不会清除已有密码。Coding Plan 的 API Key 仍必填。
+
 两处管理页的滑块滚动到页面顶部后吸顶，组别总览仍在上方时保持原位。各功能面板分别记忆本次页面
 打开期间的浏览位置，首次切换到新面板从内容顶部开始；刷新或重新打开页面后回到首个面板和页面顶部，
 不在浏览器存储中保存位置。
@@ -195,6 +204,7 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 | `GET/POST /api/admin/groups` | 列表、创建分组 |
 | `PUT/DELETE /api/admin/groups/{id}` | 编辑、删除分组 |
 | `GET /api/admin/resources` | 可分配资源目录（不包含凭据） |
+| `PUT /api/admin/mail/accounts/{name}/note` | 管理员设置用户可见的邮箱接码说明，JSON `note`，最多 500 字，空字符串清除 |
 | `PUT /api/admin/resource-groups` | 批量设置一个资源的分组：`resource_key`、`group_ids`；空列表取消该资源的全部分配 |
 | `POST /api/admin/gpt/accounts` | 创建独立 GPT 账号，`login` 必填，`password`、`secret`、`listed`、`mailbox_ids` 可选 |
 | `PUT /api/admin/gpt/accounts/{key}` | 编辑 GPT 账号；密码和 2FA 留空保留原值，清除使用原有删除接口 |

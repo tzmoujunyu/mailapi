@@ -17,6 +17,7 @@ const fixture = () => [{
 }];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const mailboxFixture = () => [{ name: 'account-1', email: 'user@example.com', provider: 'gmail', listed: true,
+  note: '硅基流动登录码 <img src=x onerror=alert(1)>',
   enabled: true, result_type: 'code', result_value: '321321', rule_name: 'SiliconFlow', subject: 'All-rule code' },
 { name: 'account-2', email: 'mail-only@example.com', provider: 'outlook', listed: false,
   enabled: false, result_type: 'link', result_value: 'https://claude.ai/login#mail-only', rule_name: 'Claude', subject: 'Claude login' }];
@@ -93,6 +94,24 @@ test('console changes mailbox listing without toggling its listener', async () =
   assert.equal(call[1].method, 'PUT');
   assert.equal(JSON.parse(call[1].body).listed, false);
   assert.ok(!app.calls.some(([url, options]) => /account-1\/(enable|disable)$/.test(url) && options?.method === 'POST'));
+});
+
+test('mailbox notes render as text and can be edited independently of listing and listeners', async () => {
+  for (const file of ['static/index.html', 'static/admin.html']) {
+    const app = page(file); await flush();
+    const html = app.nodes.get(file === 'static/index.html' ? 'mailbox-resource-rows' : 'mailbox-rows').innerHTML;
+    assert.match(html, /硅基流动登录码 &lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.doesNotMatch(html, /<img src=x/);
+  }
+  const app = page('static/admin.html'); await flush();
+  await app.click('mailbox-rows', '[data-mail-note]', { name: 'account-1' });
+  assert.equal(app.nodes.get('mail-note-input').value, mailboxFixture()[0].note);
+  app.nodes.get('mail-note-input').value = '硅基流动、Kimi 验证码';
+  await app.nodes.get('mail-note-form').listeners.submit[0]({ preventDefault() {} });
+  const request = app.calls.find(([url]) => url === '/api/admin/mail/accounts/account-1/note');
+  assert.equal(request[1].method, 'PUT');
+  assert.deepEqual(JSON.parse(request[1].body), { note: '硅基流动、Kimi 验证码' });
+  assert.ok(!app.calls.some(([url, options]) => /account-1\/(listing|enable|disable)$/.test(url) && options?.method !== 'GET'));
 });
 
 test('subscription dates label expiry and use old or undated authorization before the manual fallback', async () => {
@@ -413,6 +432,23 @@ test('console loads the relay website for edits and submits it for new accounts'
   const request = app.calls.find(([url, options]) => url === '/api/admin/relay-accounts' && options.method === 'POST');
   assert.ok(request);
   assert.equal(JSON.parse(request[1].body).url, 'https://new.example/panel');
+});
+
+test('relay passwords are optional and passwordless rows omit the copy button', async () => {
+  const app = page('static/admin.html'); await flush();
+  vm.runInContext('openRelayAccountDialog()', app.context);
+  assert.equal(app.nodes.get('relay-account-password').required, false);
+  app.nodes.get('relay-account-name').value = '硅基流动';
+  app.nodes.get('relay-account-url').value = 'https://relay.example.com';
+  app.nodes.get('relay-account-login').value = 'user@example.com';
+  await app.nodes.get('relay-account-form').listeners.submit[0]({ preventDefault() {} });
+  const request = app.calls.find(([url, options]) => url === '/api/admin/relay-accounts' && options.method === 'POST');
+  assert.equal(Object.hasOwn(JSON.parse(request[1].body), 'password'), false);
+  const home = page('static/index.html'); await flush();
+  const item = { id: 'relay-1', name: '硅基流动', account: 'user@example.com', has_password: false, password_masked: '未设置' };
+  const html = vm.runInContext(`relayAccountRow(${JSON.stringify(item)})`, home.context);
+  assert.match(html, /未设置密码/);
+  assert.doesNotMatch(html, /data-resource-copy="relay-password"/);
 });
 
 test('homepage and console render each Coding Plan window with the Codex quota meter', async () => {

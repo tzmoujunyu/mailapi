@@ -27,6 +27,7 @@
       .account-table th:nth-child(4) { width: 25%; }
       tbody tr:last-child td { border-bottom: 0; }
       .muted { color: #6b7280; }
+      .mailbox-note { margin-top: 6px; white-space: pre-line; }
       .status { font-weight: 700; }
       .status-good { color: #15803d; }
       .status-warn { color: #b45309; }
@@ -353,7 +354,9 @@
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
         const name = item.url ? `<a class="resource-link" href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name || '-')}</a>` : escapeHtml(item.name || '-');
-        return `<tr><td><div class="resource-name">${name}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td><div class="resource-secret"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="relay-password" data-id="${escapeAttr(item.id || '')}">复制</button></div></td><td>${escapeHtml(item.note || '-')}</td></tr>`;
+        const password = item.has_password !== false && masked !== '未设置'
+          ? `<div class="resource-secret"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="relay-password" data-id="${escapeAttr(item.id || '')}">复制</button></div>` : '<span class="muted">未设置密码</span>';
+        return `<tr><td><div class="resource-name">${name}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td>${password}</td><td>${escapeHtml(item.note || '-')}</td></tr>`;
       }
       function renderResources() {
         codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="4" class="muted">暂无 Coding Plan。</td></tr>';
