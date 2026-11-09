@@ -22,12 +22,13 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import jwt
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from fastapi import FastAPI, Request as FastAPIRequest
+from fastapi import FastAPI, Query, Request as FastAPIRequest
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -35,6 +36,7 @@ from fastapi.responses import (
     RedirectResponse,
 )
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from typing import TypedDict
 
@@ -84,7 +86,8 @@ from .auth_storage import (
     migrate_auth_file,
     secure_auth_file,
 )
-from .account_credentials import AccountCredentialStore
+from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore
+from .gpt_history import SOURCE_LABELS, describe_change
 from .subscription_dates import public_subscription, read_subscription_claims
 from .account_passwords import (
     AccountPasswordError,
@@ -310,6 +313,7 @@ CODEX_CLIENT_ID = os.getenv("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann").s
 CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oauth/token").strip()
 CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
 CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
+CODEX_SIGNING_KEYS = jwt.PyJWKClient(f"{CODEX_ISSUER}/.well-known/jwks.json", timeout=10)
 CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "60"))
 CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS", "7200"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
@@ -688,7 +692,8 @@ def build_codex_authorize_url(code_challenge: str, state: str) -> str:
 
 
 def create_codex_auth_session(
-    reason: str, target_account: Optional[Dict[str, Any]] = None
+    reason: str, target_account: Optional[Dict[str, Any]] = None,
+    actor: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     pkce = generate_codex_pkce()
     state = generate_codex_state()
@@ -699,6 +704,7 @@ def create_codex_auth_session(
         "auth_url": build_codex_authorize_url(pkce["code_challenge"], state),
         "reason": reason,
         "target_email": str(target.get("email") or "").strip(),
+        "actor": actor,
         "created_at": now_iso(),
     }
     with CODEX_AUTH_SESSION_LOCK:
@@ -956,11 +962,6 @@ def migrate_codex_auth_layout() -> None:
 migrate_codex_auth_layout()
 
 
-def save_codex_auth_file(payload: Dict[str, Any]) -> None:
-    path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
-    write_json_atomic(path, payload)
-
-
 def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
     token = record.get("token") if isinstance(record.get("token"), dict) else {}
     payload = {
@@ -1069,8 +1070,8 @@ def complete_codex_oauth_callback(code: str, state: str) -> List[Dict[str, Any]]
         str(session.get("target_email") or ""),
         str(payload.get("email") or ""),
     )
-    save_codex_auth_file(payload)
-    return import_codex_auth_json(json.dumps(payload), refresh_snapshot=True)
+    return import_codex_auth_json(json.dumps(payload), refresh_snapshot=True,
+                                  actor=session.get("actor"), save_auth=True)
 
 
 def decode_jwt_claims(token: str) -> Dict[str, Any]:
@@ -1341,7 +1342,38 @@ def build_codex_account_record(
         "last_refresh_at": previous.get("last_refresh_at"),
     }
     record["subscription"] = id_token_subscription(record)
+    if previous.get("validate_token_identity"):
+        record["validate_token_identity"] = True
     return record
+
+
+def scoped_codex_identity(access_token, id_token):
+    access = decode_jwt_claims(access_token)
+    identity = decode_jwt_claims(id_token)
+    email = AccountCredentialStore.email_key(identity.get("email"))
+    account = extract_chatgpt_account_id_from_token(id_token)
+    workspace = extract_workspace_id_from_token(id_token)
+    if ("@" not in email or not identity.get("sub") or identity["sub"] != access.get("sub")
+            or not account or extract_chatgpt_account_id_from_token(access_token) != account
+            or not workspace):
+        raise ValueError("Codex 授权文件的账号或工作区不一致")
+    return email, identity["sub"], account, workspace
+
+
+def verify_scoped_codex_auth(raw_text):
+    item = json.loads(raw_text)
+    if not isinstance(item, dict):
+        raise ValueError("请选择单个 Codex auth.json 文件")
+    payload = extract_codex_token_payload(item)
+    access, identity, refresh = (payload[field] for field in ("access_token", "id_token", "refresh_token"))
+    if not identity or not refresh or not refresh.isascii() or not refresh.isprintable() or " " in refresh:
+        raise ValueError("Codex 授权文件须包含完整的访问、身份和刷新令牌")
+    for token, audience in ((access, "https://api.openai.com/v1"), (identity, CODEX_CLIENT_ID)):
+        key = CODEX_SIGNING_KEYS.get_signing_key_from_jwt(token)
+        jwt.decode(token, key.key, algorithms=["RS256"], audience=audience, issuer=CODEX_ISSUER,
+                   options={"require": ["exp", "sub"]})
+    email, _, _, _ = scoped_codex_identity(access, identity)
+    return {"access_token": access, "id_token": identity, "refresh_token": refresh, "email": email}
 
 
 def normalize_codex_base_url(base_url: str) -> str:
@@ -1454,7 +1486,8 @@ def id_token_subscription(record: Dict[str, Any], id_token: Optional[str] = None
         and (not workspace_id or extract_workspace_id_from_token(token) == workspace_id)
     )
     snapshot = read_subscription_claims(decode_jwt_claims(token), account_id, workspace_id, identity_matches)
-    previous = record.get("subscription") or {}
+    previous = record.get("subscription")
+    previous = previous if isinstance(previous, dict) else {}
     # A file imported at startup can have newer dates than the cached token.
     if (previous.get("source") == "id_token"
             and not previous.get("invalid_reason")
@@ -1672,6 +1705,13 @@ def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
     if not access_token:
         raise RuntimeError("刷新 token 响应缺少 access_token")
 
+    if record.get("validate_token_identity"):
+        id_token = str(value.get("id_token") or token.get("id_token") or "").strip()
+        expected = (AccountCredentialStore.email_key(record.get("email")), record.get("subject"),
+                    record.get("chatgpt_account_id"), record.get("workspace_id"))
+        if scoped_codex_identity(access_token, id_token) != expected:
+            raise ValueError("续期返回的账号与已关联账号不一致")
+
     token["access_token"] = access_token
     if isinstance(value.get("refresh_token"), str) and value["refresh_token"].strip():
         token["refresh_token"] = value["refresh_token"].strip()
@@ -1691,7 +1731,6 @@ def refresh_codex_access_token(record: Dict[str, Any]) -> bool:
     refreshed_record = build_codex_account_record(refreshed_payload, record)
     record.update(refreshed_record)
     record["status"] = "token 已刷新"
-    save_codex_record_auth_file(record)
     return True
 
 
@@ -1822,7 +1861,6 @@ def load_codex_accounts() -> None:
             for item in items:
                 if isinstance(item, dict) and item.get("id"):
                     record = dict(item)
-                    record.pop("subscription", None)
                     record["subscription"] = id_token_subscription(record)
                     record["subscription_error"] = None
                     record.pop("subscription_last_refresh_at", None)
@@ -1910,10 +1948,36 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def record_codex_changes(before, after, *, actor=None):
+    record = after or before
+    if not record:
+        return
+    account = CREDENTIAL_STORE.account_for_codex_email(record.get("email"))
+    if not account:
+        return
+
+    def expiry(value):
+        snapshot = (value or {}).get("subscription") or {}
+        if snapshot.get("invalid_reason") or not snapshot.get("expires_at"):
+            return ""
+        return datetime.fromtimestamp(snapshot["expires_at"], timezone.utc).date().isoformat()
+
+    if actor:
+        CREDENTIAL_STORE.record_change(account["key"], actor, describe_change(
+            "codex", (before or {}).get("token"), (after or {}).get("token"),
+        ))
+    updated_expiry = expiry(after)
+    if updated_expiry:
+        CREDENTIAL_STORE.record_change(account["key"], GPT_SYSTEM_ACTOR, describe_change(
+            "automatic_expiry", expiry(before), updated_expiry,
+        ))
+
+
 def import_codex_auth_json(
     raw_text: str,
     refresh_snapshot: bool = True,
     overwrite_existing_tokens: bool = True,
+    *, actor: Optional[Dict[str, Any]] = None, save_auth: bool = False,
 ) -> List[Dict[str, Any]]:
     imported: List[Dict[str, Any]] = []
     for item in parse_codex_auth_items(raw_text):
@@ -1927,9 +1991,12 @@ def import_codex_auth_json(
             record["subscription_error"] = None
             record.pop("subscription_last_refresh_at", None)
             with CODEX_ACCOUNTS_LOCK:
+                if CODEX_ACCOUNTS.get(str(record["id"])) is not existing:
+                    continue
                 CODEX_ACCOUNTS[str(record["id"])] = record
-            if CREDENTIAL_STORE.pool_ready:
-                CREDENTIAL_STORE.ensure_codex_account(str(record.get("email") or ""))
+                if CREDENTIAL_STORE.pool_ready:
+                    CREDENTIAL_STORE.ensure_codex_account(str(record.get("email") or ""))
+                    record_codex_changes(existing, record)
             imported.append(sanitize_codex_account(record))
             continue
         record = build_codex_account_record(payload, existing)
@@ -1949,9 +2016,15 @@ def import_codex_auth_json(
                 )
                 record["updated_at"] = now_iso()
         with CODEX_ACCOUNTS_LOCK:
+            if CODEX_ACCOUNTS.get(str(record["id"])) is not existing:
+                raise ValueError("Codex 账号信息已更新，请重新导入")
+            if save_auth or record.get("token") != candidate.get("token"):
+                save_codex_record_auth_file(record)
             CODEX_ACCOUNTS[str(record["id"])] = record
-        if CREDENTIAL_STORE.pool_ready:
-            CREDENTIAL_STORE.ensure_codex_account(str(record.get("email") or ""))
+            if CREDENTIAL_STORE.pool_ready:
+                CREDENTIAL_STORE.ensure_codex_account(str(record.get("email") or ""), actor=actor)
+            if actor or not overwrite_existing_tokens:
+                record_codex_changes(existing, record, actor=actor)
         imported.append(sanitize_codex_account(record))
     save_codex_accounts()
     return imported
@@ -1989,11 +2062,13 @@ def refresh_all_codex_accounts_once() -> None:
 
         with CODEX_ACCOUNTS_LOCK:
             if account_id not in CODEX_ACCOUNTS:
-                delete_codex_record_auth_files(updated)
                 continue
             if CODEX_ACCOUNTS[account_id] is not record:
                 continue
+            if record.get("token") != updated.get("token"):
+                save_codex_record_auth_file(updated)
             CODEX_ACCOUNTS[account_id] = updated
+            record_codex_changes(record, updated)
         changed = True
 
     if changed:
@@ -2312,6 +2387,15 @@ def request_access_role(request: FastAPIRequest) -> Optional[str]:
     if user:
         return "admin" if user["role"] in ADMIN_ROLES else "user"
     return None
+
+
+GPT_SYSTEM_ACTOR = {"source": "system", "name": "系统", "id": None}
+
+
+def gpt_history_actor(request: FastAPIRequest) -> Dict[str, Any]:
+    user = request.state.site_user
+    return {"source": "admin" if user["role"] in ADMIN_ROLES else "user",
+            "name": user["username"], "id": user["id"]}
 
 
 def request_access_ok(request: FastAPIRequest) -> bool:
@@ -3305,8 +3389,8 @@ def start_watchers():
         list(ACCOUNTS) + [{"name": f"codex:{item['id']}", "email": item.get("email") or ""} for item in CODEX_ACCOUNTS.values()],
         GPT_PASSWORD_STORE, TOTP_SECRET_STORE, {} if IS_TEST else os.environ,
     )
-    import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
     ensure_gpt_pool()
+    import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
     if EXTERNAL_WATCHERS:
         threading.Thread(target=codex_refresh_loop, daemon=True).start()
         for cfg in ACCOUNTS:
@@ -3484,7 +3568,7 @@ async def set_gpt_password(account_name: str, request: FastAPIRequest):
         password = payload.get("password") if isinstance(payload, dict) else None
         if not isinstance(password, str):
             raise AccountPasswordError("请求缺少 GPT 密码")
-        CREDENTIAL_STORE.set(cfg["email"], "password", password)
+        CREDENTIAL_STORE.set(cfg["email"], "password", password, actor=gpt_history_actor(request))
     except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
         return JSONResponse(content={"detail": str(error)}, status_code=400)
 
@@ -3496,11 +3580,11 @@ async def set_gpt_password(account_name: str, request: FastAPIRequest):
 
 @app.delete("/api/admin/accounts/{account_name}/gpt-password")
 @app.delete("/api/admin/mail/accounts/{account_name}/gpt-password")
-def delete_gpt_password(account_name: str):
+def delete_gpt_password(account_name: str, request: FastAPIRequest):
     cfg = find_login_account(account_name)
     if not cfg:
         return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
-    CREDENTIAL_STORE.delete(cfg["email"], "password")
+    CREDENTIAL_STORE.delete(cfg["email"], "password", actor=gpt_history_actor(request))
     return JSONResponse(
         content={"ok": True, "item": sanitize_login_account(cfg)},
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
@@ -3554,18 +3638,18 @@ async def set_totp_secret(account_name: str, request: FastAPIRequest):
         secret = normalize_totp_secret(
             payload.get("secret") if isinstance(payload, dict) else None
         )
-        CREDENTIAL_STORE.set(cfg["email"], "secret", secret)
+        CREDENTIAL_STORE.set(cfg["email"], "secret", secret, actor=gpt_history_actor(request))
     except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
         return JSONResponse(content={"detail": str(error)}, status_code=400)
     return JSONResponse(content={"ok": True, "item": sanitize_login_account(cfg)})
 
 @app.delete("/api/admin/accounts/{account_name}/totp-secret")
 @app.delete("/api/admin/mail/accounts/{account_name}/totp-secret")
-def delete_totp_secret(account_name: str):
+def delete_totp_secret(account_name: str, request: FastAPIRequest):
     cfg = find_login_account(account_name)
     if not cfg:
         return JSONResponse(content={"detail": f"未找到账号：{account_name}"}, status_code=404)
-    CREDENTIAL_STORE.delete(cfg["email"], "secret")
+    CREDENTIAL_STORE.delete(cfg["email"], "secret", actor=gpt_history_actor(request))
     return JSONResponse(content={"ok": True, "item": sanitize_login_account(cfg)})
 
 @app.get("/api/admin/mail/accounts")
@@ -4148,7 +4232,7 @@ def start_codex_auth(request: FastAPIRequest):
     except Exception as error:  # noqa: BLE001
         log_exception("启动 Codex OAuth 回调服务", error)
         return JSONResponse(content={"detail": str(error)}, status_code=500)
-    session = create_codex_auth_session(reason, target_account)
+    session = create_codex_auth_session(reason, target_account, gpt_history_actor(request))
     headers = {"Cache-Control": "no-store, private", "Pragma": "no-cache"}
     if request.query_params.get("format") == "json":
         return JSONResponse(content={"auth_url": session["auth_url"]}, headers=headers)
@@ -4281,11 +4365,15 @@ async def save_gpt_account(request: FastAPIRequest, account_key: Optional[str] =
     ensure_gpt_pool()
     if account_key and CREDENTIAL_STORE.account_by_key(account_key) is None:
         return JSONResponse({"detail": "未找到 GPT 账号"}, status_code=404)
-    payload = await read_payload(request, {"login", "password", "secret", "listed", "mailbox_ids", "subscription_started_on"})
+    payload = await read_payload(request, ACCOUNT_FIELDS | {"listed", "mailbox_ids", "revision"})
     with MAIL_ACCOUNTS_LOCK:
         valid_mailboxes = {cfg["name"]: cfg["email"] for cfg in ACCOUNTS}
     try:
-        item = CREDENTIAL_STORE.save_account(account_key, payload, valid_mailboxes)
+        with CREDENTIAL_STORE.edit_lock():
+            if account_key and "revision" in payload:
+                editable_gpt_account(request, account_key, payload["revision"])
+            payload.pop("revision", None)
+            item = CREDENTIAL_STORE.save_account(account_key, payload, valid_mailboxes, actor=gpt_history_actor(request))
     except AccountPasswordError as error:
         return JSONResponse({"detail": str(error)}, status_code=400)
     return JSONResponse({"item": item}, status_code=200 if account_key else 201)
@@ -4299,6 +4387,94 @@ async def create_gpt_account(request: FastAPIRequest):
 @app.put("/api/admin/gpt/accounts/{account_key}")
 async def update_gpt_account(account_key: str, request: FastAPIRequest):
     return await save_gpt_account(request, account_key)
+
+
+def editable_gpt_account(request, account_key, revision):
+    account = CREDENTIAL_STORE.account_by_key(account_key)
+    if (not account or is_user_preview(request) or (
+            request_access_role(request) != "admin"
+            and (not account["listed"] or not can_access_resource(request, "gpt:" + account_key)))):
+        raise SiteAccountError("未找到可编辑的 GPT 账号", 404)
+    if not isinstance(revision, str) or revision != account["revision"]:
+        raise SiteAccountError("账号信息已更新，请重新打开编辑窗口", 409)
+    return account
+
+
+@app.put("/api/accounts/gpt/{account_key}/info")
+async def edit_gpt_account_info(account_key: str, request: FastAPIRequest):
+    ensure_gpt_pool()
+    payload = await read_payload(request, (ACCOUNT_FIELDS - {"subscription_started_on"}) | {"revision"})
+    revision = payload.pop("revision", None)
+    with CREDENTIAL_STORE.edit_lock():
+        editable_gpt_account(request, account_key, revision)
+        try:
+            item = CREDENTIAL_STORE.save_account(account_key, payload, {}, actor=gpt_history_actor(request))
+        except AccountPasswordError as error:
+            raise SiteAccountError(str(error)) from None
+    return JSONResponse({"item": item}, headers={"Cache-Control": "no-store, private"})
+
+
+@app.put("/api/accounts/gpt/{account_key}/codex-auth")
+async def edit_gpt_codex_auth(account_key: str, request: FastAPIRequest):
+    ensure_gpt_pool()
+    payload = await read_payload(request, {"auth_json", "revision"})
+    revision = payload.get("revision")
+    editable_gpt_account(request, account_key, revision)
+    raw = payload.get("auth_json")
+    if not isinstance(raw, str) or not raw.strip():
+        raise SiteAccountError("请选择 Codex auth.json 文件")
+    try:
+        tokens = await run_in_threadpool(verify_scoped_codex_auth, raw)
+    except jwt.PyJWKClientConnectionError:
+        raise SiteAccountError("暂时无法获取 Codex 签名公钥，请稍后再试", 503) from None
+    except (jwt.PyJWTError, ValueError, RecursionError):
+        raise SiteAccountError("无法验证 Codex 授权文件，请上传完整且未过期的 auth.json") from None
+
+    record = build_codex_account_record(tokens)
+    email = record["email"]
+    with CODEX_ACCOUNTS_LOCK, CREDENTIAL_STORE.edit_lock():
+        account = editable_gpt_account(request, account_key, revision)
+        bound_email = CREDENTIAL_STORE.get(account["login"], "codex_email")
+        owner = CREDENTIAL_STORE.account_for_codex_email(email)
+        if (email != AccountCredentialStore.email_key(bound_email or account["login"])
+                or (owner and owner["key"] != account_key)):
+            raise SiteAccountError("授权邮箱与当前账号不匹配，或已关联其他 GPT 账号", 409)
+        existing = CODEX_ACCOUNTS.get(record["id"])
+        if existing and (AccountCredentialStore.email_key(existing.get("email")) != email
+                         or (existing.get("subject") and record["subject"] != existing["subject"])):
+            raise SiteAccountError("授权文件与已关联的 Codex 账号不匹配", 409)
+        if not existing and any(AccountCredentialStore.email_key(value.get("email")) == email
+                                for value in CODEX_ACCOUNTS.values()):
+            raise SiteAccountError("请选择当前 GPT 账号已关联工作区的授权文件", 409)
+        record = build_codex_account_record(tokens, existing)
+        record["validate_token_identity"] = True
+        save_codex_record_auth_file(record)
+        CODEX_ACCOUNTS[record["id"]] = record
+        CREDENTIAL_STORE.ensure_codex_account(email)
+        record_codex_changes(existing, record, actor=gpt_history_actor(request))
+    save_codex_accounts()
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store, private"})
+
+
+@app.get("/api/admin/gpt/accounts/{account_key}/changes")
+def get_gpt_changes(account_key: str, q: str = Query("", max_length=200),
+                    source: str = Query("", max_length=16), offset: int = Query(0, ge=0)):
+    ensure_gpt_pool()
+    if not CREDENTIAL_STORE.account_by_key(account_key):
+        return JSONResponse({"detail": "未找到 GPT 账号"}, status_code=404)
+    if source and source not in SOURCE_LABELS:
+        return JSONResponse({"detail": "未知修改记录标签"}, status_code=400)
+    return JSONResponse(CREDENTIAL_STORE.history(account_key, q, source, offset),
+                        headers={"Cache-Control": "no-store, private"})
+
+
+@app.post("/api/admin/gpt/accounts/{account_key}/changes/{event_id}/review")
+def review_gpt_change(account_key: str, event_id: str, request: FastAPIRequest):
+    if not CREDENTIAL_STORE.account_by_key(account_key) or not CREDENTIAL_STORE.review_change(
+        account_key, event_id, gpt_history_actor(request),
+    ):
+        return JSONResponse({"detail": "未找到可审核的修改记录"}, status_code=404)
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/admin/gpt/accounts/{account_key}/mailboxes")
@@ -4532,16 +4708,16 @@ async def set_account_listing(account_name: str, request: FastAPIRequest):
 
 
 @app.delete("/api/admin/accounts/{account_name}")
-def delete_chatgpt_account(account_name: str):
+def delete_chatgpt_account(account_name: str, request: FastAPIRequest):
     groups = account_groups()
     group = next((item for item in groups if item["key"] == account_name), None)
     if group is None:
         return JSONResponse(content={"detail": "未找到账号"}, status_code=404)
     for item in group["codex"]:
-        response = delete_codex_account(item["id"])
+        response = delete_codex_account(item["id"], request)
         if response.status_code != 200:
             return response
-    CREDENTIAL_STORE.delete(group["email"])
+    CREDENTIAL_STORE.delete(group["email"], actor=gpt_history_actor(request))
     return JSONResponse(content={"ok": True})
 
 
@@ -4579,7 +4755,8 @@ async def import_codex_accounts(request: FastAPIRequest):
         pass
 
     try:
-        imported = import_codex_auth_json(raw_text)
+        ensure_gpt_pool()
+        imported = import_codex_auth_json(raw_text, actor=gpt_history_actor(request), save_auth=True)
     except Exception as e:  # noqa: BLE001
         log_exception("导入 Codex auth 内容", e)
         return JSONResponse(content={"detail": str(e)}, status_code=400)
@@ -4625,27 +4802,28 @@ def refresh_codex_account(account_id: str):
 
     with CODEX_ACCOUNTS_LOCK:
         if account_id not in CODEX_ACCOUNTS:
-            delete_codex_record_auth_files(updated)
             return JSONResponse(content={"detail": "账号已删除"}, status_code=404)
         if CODEX_ACCOUNTS[account_id] is not record:
             return JSONResponse(content={"detail": "账号信息已更新，请重新加载"}, status_code=409)
+        if record.get("token") != updated.get("token"):
+            save_codex_record_auth_file(updated)
         CODEX_ACCOUNTS[account_id] = updated
+        record_codex_changes(record, updated)
     save_codex_accounts()
     return JSONResponse(content={"item": sanitize_codex_account(updated), "updated_at": now_iso()})
 
 
 @app.delete("/api/codex/accounts/{account_id}")
-def delete_codex_account(account_id: str):
+def delete_codex_account(account_id: str, request: FastAPIRequest):
     ensure_gpt_pool()
     with CODEX_ACCOUNTS_LOCK:
-        existed = CODEX_ACCOUNTS.pop(account_id, None)
-    if not existed:
-        return JSONResponse(
-            content={"detail": f"未找到 Codex 账号：{account_id}"},
-            status_code=404,
-        )
-    delete_unlinked_credentials(str(existed.get("email") or ""))
-    delete_codex_record_auth_files(existed)
+        existed = CODEX_ACCOUNTS.get(account_id)
+        if not existed:
+            return JSONResponse({"detail": f"未找到 Codex 账号：{account_id}"}, status_code=404)
+        delete_unlinked_credentials(str(existed.get("email") or ""))
+        delete_codex_record_auth_files(existed)
+        CODEX_ACCOUNTS.pop(account_id)
+        record_codex_changes(existed, None, actor=gpt_history_actor(request))
     save_codex_accounts()
     return JSONResponse(content={"ok": True, "account": account_id})
 

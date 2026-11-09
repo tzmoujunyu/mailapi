@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const fixture = () => [{
-  key: 'email:user@example.com', email: 'user@example.com',
+  key: 'email:user@example.com', email: 'user@example.com', login: 'user@example.com', revision: 'rev-1',
   has_gpt_password: true, has_totp_secret: true,
   gpt_password_account: 'email:user@example.com', totp_secret_account: 'email:user@example.com',
   codex: [{ id: 'codex-1', email: 'user@example.com', chatgpt_plan_type: 'pro', usage_status: 'available', usage: { used_percent: 25 } }],
@@ -30,12 +30,12 @@ function page(file, preview = false, previewUserId = '') {
     innerHTML: '', textContent: '', dataset: {}, value: '', listeners: {},
     addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
     querySelector() { return null; }, querySelectorAll() { return []; },
-    showModal() { this.open = true; }, close() { this.open = false; }, focus() {},
+    showModal() { this.open = true; }, close() { this.open = false; }, focus() {}, reset() {},
   });
   const document = { ...element(), getElementById(id) { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
     createElement() { const node = element(); Object.defineProperty(node, 'textContent', { set(text) { this.innerHTML = String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } }); return node; },
   };
-  const context = vm.createContext({ document, console, Date, Map, Set, Promise, AbortSignal,
+  const context = vm.createContext({ document, console, Date, Map, Set, Promise, AbortSignal, URLSearchParams,
     performance: { now: () => Date.now() },
     setInterval(callback) { timers.set(++counter, callback); return counter; }, clearInterval(id) { timers.delete(id); },
     setTimeout(callback) { return ++counter; },
@@ -71,6 +71,40 @@ test('subscription display warns at five days and expires without assuming renew
   assert.match(render(23), /5 Day left/);
   assert.match(render(28), /已到期/);
   assert.match(vm.runInContext('renderAccountSubscription({},escapeHtml)', app.context), /未设置/);
+});
+
+test('homepage member edits shared fields without sending blank secrets or a mailbox change', async () => {
+  const app = page('static/index.html'); await flush();
+  await app.click('rows', '[data-edit-gpt-key]', { editGptKey: 'email:user@example.com' });
+  assert.equal(app.nodes.get('gpt-edit-dialog').open, true);
+  assert.equal(app.nodes.get('gpt-edit-login').value, 'user@example.com');
+  app.nodes.get('gpt-edit-expiry').value = '2027-03-02';
+  app.nodes.get('gpt-edit-form').listeners.submit[0]({ preventDefault() {} });
+  await flush();
+  const [, request] = app.calls.find(([url]) => url.endsWith('/info'));
+  assert.deepEqual(JSON.parse(request.body), { subscription_expires_on: '2027-03-02', revision: 'rev-1' });
+  assert.equal(app.nodes.get('gpt-edit-dialog').open, false);
+  const preview = page('static/index.html', true); await flush();
+  assert.doesNotMatch(preview.nodes.get('rows').innerHTML, /data-edit-gpt-key/);
+});
+
+test('console history escapes content, searches by tag and sends the selected review', async () => {
+  const app = page('static/admin.html'); await flush();
+  app.context.fetch = async (url, options) => {
+    app.calls.push([url, options]);
+    return { ok: true, json: async () => ({ total: 1, items: [{ id: 'event-1', source: 'user',
+      actor: 'reader', at: '2026-11-09T00:00:00Z', descriptions: ['更新了 <img src=x>'] }] }) };
+  };
+  await app.click('account-rows', '[data-gpt-changes]', { gptChanges: 'email:user@example.com' });
+  assert.match(app.nodes.get('gpt-changes-list').innerHTML, /gpt-tag-user/);
+  assert.match(app.nodes.get('gpt-changes-list').innerHTML, /&lt;img src=x&gt;/);
+  app.nodes.get('gpt-changes-query').value = 'reader';
+  app.nodes.get('gpt-changes-source').value = 'user';
+  app.nodes.get('gpt-changes-filter').listeners.submit[0]({ preventDefault() {} });
+  await flush();
+  assert.ok(app.calls.some(([url]) => url.endsWith('?q=reader&source=user&offset=0')));
+  await app.click('gpt-changes-list', '[data-review-change]', { reviewChange: 'event-1' });
+  assert.ok(app.calls.some(([url, options]) => url.endsWith('/changes/event-1/review') && options.method === 'POST'));
 });
 
 test('standalone mailbox resources use full-history scope independently of GPT details', async () => {

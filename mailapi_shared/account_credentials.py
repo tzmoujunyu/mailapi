@@ -11,6 +11,10 @@ from datetime import date
 from pathlib import Path
 
 from .account_passwords import AccountPasswordError, MAX_PASSWORD_LENGTH, normalize_totp_secret
+from .gpt_history import describe_change, event, history_page
+
+
+ACCOUNT_FIELDS = {"login", "password", "secret", "subscription_started_on", "subscription_expires_on"}
 
 
 class AccountCredentialStore:
@@ -43,6 +47,40 @@ class AccountCredentialStore:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
+    def _save_change(self, data, key, actor, descriptions):
+        descriptions = [description for description in descriptions if description]
+        if key and actor and descriptions:
+            history = data.get("history", {})
+            entries = [*history.get(key, []), event(actor, descriptions)]
+            data = {**data, "history": {**history, key: entries}}
+        self._save(data)
+
+    def record_change(self, key, actor, *descriptions):
+        if key and actor and any(descriptions):
+            with self._lock:
+                self._save_change(self._data, key, actor, descriptions)
+
+    def history(self, key, query="", source="", offset=0, limit=50):
+        with self._lock:
+            entries = self._data.get("history", {}).get(key, [])
+        return history_page(entries, query, source, offset, limit)
+
+    def edit_lock(self):
+        return self._lock
+
+    def review_change(self, key, event_id, actor):
+        with self._lock:
+            history = self._data.get("history", {})
+            entries = history.get(key, [])
+            original = next((item for item in entries if item["id"] == event_id), None)
+            if not original or original["source"] not in {"user", "system"}:
+                return False
+            if not any(item.get("review_of") == event_id for item in entries):
+                review = event(actor, [f"审核了 {original['actor']} 的修改", *original["descriptions"]],
+                               review_of=event_id)
+                self._save({**self._data, "history": {**history, key: [*entries, review]}})
+            return True
+
     def get(self, email, field):
         with self._lock:
             return self._data["items"].get(self.email_key(email), {}).get(field)
@@ -54,9 +92,9 @@ class AccountCredentialStore:
         month = started.month % 12 + 1
         return date(year, month, min(started.day, monthrange(year, month)[1])).isoformat()
 
-    @staticmethod
-    def _public(identity, record):
+    def _public(self, identity, record):
         start = record.get("subscription_started_on", "")
+        entries = self._data.get("history", {}).get(record["key"], [])
         return {
             "key": record["key"],
             "login": record.get("login", identity),
@@ -65,7 +103,9 @@ class AccountCredentialStore:
             "has_gpt_password": bool(record.get("password")),
             "has_totp_secret": bool(record.get("secret")),
             "subscription_started_on": start,
+            "subscription_expires_on": record.get("subscription_expires_on", ""),
             "subscription_ends_on": AccountCredentialStore.subscription_end(start) if start else "",
+            "revision": next((item["id"] for item in reversed(entries) if item["source"] in {"admin", "user"}), ""),
         }
 
     @property
@@ -88,6 +128,12 @@ class AccountCredentialStore:
         with self._lock:
             record = self._data["items"].get(identity)
             return self._public(identity, record) if record and record.get("key") else None
+
+    def account_for_codex_email(self, email):
+        identity = self.email_key(email)
+        with self._lock:
+            return next((self._public(login, record) for login, record in self._data["items"].items()
+                         if identity and record.get("key") and record.get("codex_email") == identity), None)
 
     def migrate_pool(self, mail_accounts, codex_accounts):
         with self._lock:
@@ -119,8 +165,8 @@ class AccountCredentialStore:
                 })
             self._save({**self._data, "items": items, "pool_migrated": True})
 
-    def save_account(self, key, payload, valid_mailboxes):
-        if not isinstance(payload, dict) or set(payload) - {"login", "password", "secret", "listed", "mailbox_ids", "subscription_started_on"}:
+    def save_account(self, key, payload, valid_mailboxes, *, actor=None):
+        if not isinstance(payload, dict) or set(payload) - (ACCOUNT_FIELDS | {"listed", "mailbox_ids"}):
             raise AccountPasswordError("GPT 账号包含无效字段")
         with self._lock:
             current = self.account_by_key(key) if key else None
@@ -134,20 +180,25 @@ class AccountCredentialStore:
             old_identity = self.email_key(current["login"]) if current else identity
             if identity in self._data["items"] and (not current or identity != old_identity):
                 raise AccountPasswordError("GPT 登录账号已存在")
-            record = dict(self._data["items"].get(old_identity, {})) if current else {
+            previous = self._data["items"].get(old_identity, {}) if current else {}
+            record = dict(previous) if current else {
                 "key": "account:" + secrets.token_hex(16), "mailbox_ids": [], "listed": True,
             }
             record["login"] = login
-            if "subscription_started_on" in payload:
-                start = payload["subscription_started_on"]
+            for field, label in (("subscription_started_on", "开始"), ("subscription_expires_on", "到期")):
+                if field not in payload:
+                    continue
+                value = payload[field]
                 try:
-                    if not isinstance(start, str) or (start and date.fromisoformat(start).isoformat() != start):
+                    if not isinstance(value, str) or (value and date.fromisoformat(value).isoformat() != value):
                         raise ValueError
-                    if start:
-                        self.subscription_end(start)
+                    if field == "subscription_started_on" and value:
+                        self.subscription_end(value)
                 except (ValueError, OverflowError):
-                    raise AccountPasswordError("订阅开始日期须为有效的 YYYY-MM-DD 日期") from None
-                record["subscription_started_on"] = start
+                    raise AccountPasswordError(f"订阅{label}日期须为有效的 YYYY-MM-DD 日期") from None
+                record[field] = value
+            if "subscription_expires_on" in payload and "subscription_started_on" not in payload:
+                record.pop("subscription_started_on", None)
             if "listed" in payload:
                 if not isinstance(payload["listed"], bool):
                     raise AccountPasswordError("上架状态必须为布尔值")
@@ -172,33 +223,36 @@ class AccountCredentialStore:
                     raise AccountPasswordError("登录信息须为字符串且不能超过 4096 字符")
                 if value:
                     record[field] = normalize_totp_secret(value) if field == "secret" else value
+            if current and record == previous:
+                return current
             items = dict(self._data["items"])
             if current and identity != old_identity:
                 items = {identity if name == old_identity else name: value for name, value in items.items()}
             items[identity] = record
-            self._save({**self._data, "items": items})
+            changes = [describe_change(field, previous.get(field) or "", record.get(field) or "")
+                       for field in ("login", "password", "secret", "subscription_started_on", "subscription_expires_on")]
+            self._save_change({**self._data, "items": items}, record["key"], actor, changes)
             return self._public(identity, record)
 
-    def ensure_account(self, login):
+    def ensure_account(self, login, *, actor=None):
         with self._lock:
             current = self.account_for_login(login)
-            return current or self.save_account(None, {"login": login}, set())
+            return current or self.save_account(None, {"login": login}, set(), actor=actor)
 
-    def ensure_codex_account(self, email):
+    def ensure_codex_account(self, email, *, actor=None):
         identity = self.email_key(email)
         if "@" not in identity:
             return
         with self._lock:
-            current = next((self._public(login, record) for login, record in self._data["items"].items()
-                            if record.get("key") and record.get("codex_email") == identity), None)
-            current = current or self.account_for_login(email)
-            current = current or self.ensure_account(email)
+            current = self.account_for_codex_email(email) or self.account_for_login(email)
+            current = current or self.ensure_account(email, actor=actor)
             login = self.email_key(current["login"])
             if self._data["items"][login].get("codex_email") == identity:
-                return
+                return current
             items = dict(self._data["items"])
             items[login] = {**items[login], "codex_email": identity}
             self._save({**self._data, "items": items})
+            return current
 
     def linked_mailbox_ids(self, login, mail_accounts):
         with self._lock:
@@ -225,7 +279,7 @@ class AccountCredentialStore:
             if changed:
                 self._save({**self._data, "items": items})
 
-    def set(self, email, field, value):
+    def set(self, email, field, value, *, actor=None):
         email = self.email_key(email)
         if field not in {"password", "secret", "listed"}:
             raise AccountPasswordError("未知登录信息字段")
@@ -238,14 +292,17 @@ class AccountCredentialStore:
             if not email or ("@" not in email and not self._data["items"].get(email, {}).get("key")):
                 raise AccountPasswordError("请先添加 GPT 账号")
             data = {**self._data, "items": {**self._data["items"]}}
-            data["items"][email] = {**data["items"].get(email, {}), field: value}
-            self._save(data)
+            previous = data["items"].get(email, {})
+            data["items"][email] = {**previous, field: value}
+            changes = [describe_change(field, previous.get(field), value)] if field in ACCOUNT_FIELDS else []
+            self._save_change(data, previous.get("key"), actor, changes)
 
-    def delete(self, email, field=None):
+    def delete(self, email, field=None, *, actor=None):
         email = self.email_key(email)
         with self._lock:
             data = {**self._data, "items": {**self._data["items"]}}
-            record = dict(data["items"].get(email, {}))
+            previous = data["items"].get(email, {})
+            record = dict(previous)
             if field is None:
                 record.clear()
             else:
@@ -254,7 +311,9 @@ class AccountCredentialStore:
                 data["items"][email] = record
             else:
                 data["items"].pop(email, None)
-            self._save(data)
+            fields = (field,) if field in ACCOUNT_FIELDS else ("login",) if field is None else ()
+            changes = [describe_change(name, previous.get(name), None) for name in fields if previous.get(name)]
+            self._save_change(data, previous.get("key"), actor, changes)
 
     def migrate(self, accounts, passwords, totp, environment):
         """Run once; preserve legacy files and never restore deliberately deleted secrets."""

@@ -1,5 +1,6 @@
 function renderAccountSubscription(item, escapeHtml, now = new Date()) {
   const start = item.subscription_started_on;
+  const manualEnd = item.subscription_expires_on || item.subscription_ends_on;
   const snapshots = (item.codex || []).map(account => account.subscription).filter(value => value?.source === 'id_token');
   const automatic = snapshots.find(value => value.available === true
     && Number.isFinite(value.expires_at));
@@ -7,7 +8,7 @@ function renderAccountSubscription(item, escapeHtml, now = new Date()) {
   const inspected = automatic || latest || snapshots[0];
   const checked = inspected?.checked_at;
   const checkedText = checked ? new Date(checked * 1000).toLocaleString('zh-CN', { hour12: false }) : '无记录';
-  const manual = Boolean(start && item.subscription_ends_on);
+  const manual = Boolean(manualEnd);
   let note = '';
   if (!automatic && snapshots.length) {
     const reasons = {
@@ -28,11 +29,12 @@ function renderAccountSubscription(item, escapeHtml, now = new Date()) {
   } else {
     if (!manual) return `<div class="subscription-time muted"><div>订阅到期：未设置</div>${metadata}</div>`;
     const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-    days = Math.round((Date.parse(item.subscription_ends_on + 'T00:00:00Z') - today) / 86400000);
-    displayDate = start.slice(2).replaceAll('-', '.');
-    source = '手填开通日';
-    label = '订阅开通';
-    title = '未取得有效授权日期；按手填开通日计算到期：' + item.subscription_ends_on;
+    days = Math.round((Date.parse(manualEnd + 'T00:00:00Z') - today) / 86400000);
+    const direct = Boolean(item.subscription_expires_on);
+    displayDate = (direct ? manualEnd : start).slice(2).replaceAll('-', '.');
+    source = direct ? '手填到期日' : '手填开通日';
+    label = direct ? '订阅到期' : '订阅开通';
+    title = `${source}计算到期：${manualEnd}`;
   }
   const remaining = days <= 0 ? '已到期' : `${days} Day left`;
   return `<div class="subscription-time${days <= 5 ? ' subscription-due' : ''}" title="${escapeHtml(title)}"><div>${label}：${escapeHtml(displayDate)} (${remaining}) <span class="subscription-source">${escapeHtml(source)}</span></div>${metadata}</div>`;

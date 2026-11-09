@@ -12,7 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import jwt
 import pyotp
+from cryptography.hazmat.primitives.asymmetric import rsa
+from types import SimpleNamespace
 
 from mailapi_shared.accounts import SESSION_COOKIE
 from mailapi_shared.site_accounts import SiteAccountStore
@@ -162,6 +165,94 @@ class CodexAccountRefreshTests(unittest.TestCase):
     def use_session(self, client, token):
         client.cookies.clear()
         client.cookies.set(SESSION_COOKIE, token)
+
+    def test_member_edits_shared_gpt_and_admin_can_search_and_review(self):
+        with self.account_client() as (client, store):
+            key = "email:user@example.com"
+            admin_path = f"/api/admin/gpt/accounts/{key}"
+            changes_path = admin_path + "/changes"
+            edit_path = f"/api/accounts/gpt/{key}/info"
+            store_account = client.put(admin_path, json={"password": "before-password"}).json()["item"]
+            revision = store_account["revision"]
+            self.assertTrue(revision)
+            self.assertEqual(client.put(edit_path + "?preview=1", json={"revision": revision, "login": "blocked"}).status_code, 404)
+            unassigned = client.post("/api/admin/gpt/accounts", json={"login": "other@example.com"}).json()["item"]
+            self.use_session(client, self.user_token)
+            self.assertEqual(client.put(f"/api/accounts/gpt/{unassigned['key']}/info", json={"revision": unassigned["revision"], "login": "blocked"}).status_code, 404)
+            self.assertEqual(client.put(edit_path, json={"revision": revision, "mailbox_ids": []}).status_code, 400)
+            self.assertEqual(client.put(edit_path, json={"revision": revision, "password": "blocked"}, headers={"Origin": "https://wrong.example"}).status_code, 403)
+            edited = client.put(edit_path, json={"revision": revision, "login": "Renamed@example.com",
+                                "subscription_expires_on": "2027-01-05", "password": "after-password",
+                                "secret": "JBSWY3DPEHPK3PXP"})
+            self.assertEqual(edited.status_code, 200, edited.text)
+            self.assertEqual(edited.json()["item"]["mailbox_ids"], ["account-1"])
+            self.assertEqual(client.put(edit_path, json={"revision": revision, "login": "stale"}).status_code, 409)
+            self.assertEqual(client.get(changes_path).status_code, 403)
+            self.assertEqual(store.get("renamed@example.com", "password"), "after-password")
+            self.use_session(client, self.admin_token)
+            results = client.get(changes_path, params={"q": "READER 2027-01-05", "source": "user"}).json()
+            self.assertEqual(results["total"], 1)
+            original = results["items"][0]
+            self.assertIn("Renamed@example.com", str(original))
+            self.assertFalse(original["reviewed"])
+            review_url = f"{changes_path}/{original['id']}/review"
+            for _ in range(2):
+                self.assertEqual(client.post(review_url).status_code, 200)
+            history = client.get(changes_path).json()
+            self.assertEqual([item["source"] for item in history["items"]], ["review", "user", "admin"])
+            self.assertTrue(history["items"][1]["reviewed"])
+            self.assertNotIn("password", json.dumps(history))
+            self.assertNotIn("JBSWY3DPEHPK3PXP", json.dumps(history))
+            self.assertEqual(AccountCredentialStore(store.path).history(key), history)
+            self.assertEqual(client.put(admin_path, json={"listed": False}).status_code, 200)
+            self.use_session(client, self.user_token)
+            self.assertEqual(client.put(edit_path, json={"revision": edited.json()["item"]["revision"], "login": "blocked"}).status_code, 404)
+
+    def test_member_codex_import_requires_signed_matching_tokens_and_tracks_expiry(self):
+        module = self.module
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+        def auth_file(email="user@example.com", workspace="workspace-id", day=0):
+            checked = int(time.time()) + day * 86400 - 3600
+            token = self.subscription_token(checked, workspace_id=workspace)
+            claims = module.decode_jwt_claims(token)
+            claims.update(iss=module.CODEX_ISSUER, aud=[module.CODEX_CLIENT_ID], exp=int(time.time()) + 3600, email=email)
+            identity = jwt.encode(claims, private_key, algorithm="RS256")
+            access = jwt.encode({"sub": claims["sub"], "iss": module.CODEX_ISSUER, "aud": "https://api.openai.com/v1",
+                                 "exp": claims["exp"], "https://api.openai.com/auth": {"chatgpt_account_id": "account-id"}},
+                                private_key, algorithm="RS256")
+            return {"tokens": {"access_token": access, "id_token": identity, "refresh_token": "hidden-refresh"}}
+
+        with self.account_client() as (client, store), patch.object(module, "save_codex_record_auth_file") as save, \
+                patch.object(module.CODEX_SIGNING_KEYS, "get_signing_key_from_jwt",
+                             return_value=SimpleNamespace(key=private_key.public_key())):
+            module.CODEX_ACCOUNTS.pop("codex-1")
+            key = "email:user@example.com"
+            path = f"/api/accounts/gpt/{key}/codex-auth"
+            self.use_session(client, self.user_token)
+
+            def upload(data, revision=""):
+                return client.put(path, json={"revision": revision, "auth_json": json.dumps(data)})
+
+            self.assertEqual(upload(auth_file("wrong@example.com")).status_code, 409)
+            invalid = auth_file()
+            parts = invalid["tokens"]["access_token"].split(".")
+            invalid["tokens"]["access_token"] = ".".join([*parts[:2], "ZmFrZQ"])
+            self.assertEqual(upload(invalid).status_code, 400)
+            save.assert_not_called()
+            self.assertEqual(upload(auth_file()).status_code, 200)
+            revision = store.account_by_key(key)["revision"]
+            self.assertEqual(upload(auth_file(workspace="other-workspace"), revision).status_code, 409)
+            self.assertEqual(upload(auth_file(day=1), revision).status_code, 200)
+            self.assertEqual(save.call_count, 2)
+            events = store.history(key)["items"]
+            self.assertEqual([item["source"] for item in events], ["system", "user", "system", "user"])
+            self.assertIn("替换了Codex 授权文件", str(events[1]))
+            self.assertNotIn("hidden-refresh", str(events))
+            with module.CODEX_ACCOUNTS_LOCK:
+                record = module.CODEX_ACCOUNTS["account-id::ws=workspace-id"]
+            module.record_codex_changes(record, record)
+            self.assertEqual(store.history(key)["total"], 4)
 
     def test_unified_accounts_share_credentials_without_exposing_secrets(self):
         with self.account_client() as (client, store):

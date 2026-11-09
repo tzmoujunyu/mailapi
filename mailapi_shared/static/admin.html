@@ -125,6 +125,16 @@
       }
       dialog::backdrop { background: rgba(17, 24, 39, 0.42); }
       #gpt-account-dialog { max-height: 90vh; overflow-y: auto; }
+      #gpt-changes-dialog { width: min(660px, calc(100vw - 24px)); max-height: 86dvh; }
+      .gpt-history-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+      .gpt-history-filters input { flex: 1 1 200px; }
+      .gpt-history-list { padding: 0; list-style: none; }
+      .gpt-history-list > li { padding: 10px 0; border-bottom: 1px solid #e5e7eb; overflow-wrap: anywhere; }
+      .gpt-history-list ul { margin: 5px 0; padding-left: 1.25em; }
+      .gpt-tag-admin { background: #e0e7ff; color: #3730a3; }
+      .gpt-tag-user { background: #dbeafe; color: #1e40af; }
+      .gpt-tag-system { background: #f1f5f9; color: #334155; }
+      .gpt-tag-review { background: #dcfce7; color: #166534; }
       .password-form { display: grid; gap: 14px; }
       .mail-settings { margin-top: 26px; padding-top: 22px; border-top: 1px solid #e5e7eb; }
       #mailbox-dialog { width: min(620px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
@@ -335,12 +345,31 @@
         <label>GPT 密码（选填）<input id="gpt-initial-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
         <label>身份验证器密钥（选填）<input id="gpt-initial-secret" autocomplete="off" spellcheck="false" maxlength="4096" /></label>
         <div id="gpt-subscription-status"></div>
-        <label>手动兜底：本次订阅开始日期（选填）<input id="gpt-subscription-start" type="date" /><small class="muted">优先读取授权文件 ID Token 中的订阅到期日，不限制授权或核对时间。仅日期缺失或无效时，按手填开通日加一个自然月计算。旧授权可能未反映后续续费；提前 5 天标红，清空仅移除手填记录。</small></label>
+        <label>手填订阅到期日（选填）<input id="gpt-subscription-end" type="date" /><small class="muted">授权文件提供有效到期日时优先显示自动日期。清空可移除手填日期。</small></label>
         <label class="checkbox-label"><input id="gpt-initial-listed" type="checkbox" checked />上架到账号主页</label>
         <p class="muted">编辑时密码和验证器留空可保留原值。主页按分组授权展示账号。</p>
         <p id="gpt-account-error" class="bad" role="alert"></p>
         <div class="dialog-actions"><button class="btn" type="button" data-close-pool="gpt-account-dialog">取消</button><button id="gpt-account-save" class="btn btn-primary" type="submit">保存</button></div>
       </form>
+    </dialog>
+    <dialog id="gpt-changes-dialog" aria-labelledby="gpt-changes-title">
+      <h2 id="gpt-changes-title">修改记录</h2>
+      <p id="gpt-changes-account" class="muted"></p>
+      <form id="gpt-changes-filter" class="gpt-history-filters" role="search">
+        <input id="gpt-changes-query" type="search" maxlength="200" placeholder="搜索用户名、字段或日期" aria-label="搜索修改记录" />
+        <select id="gpt-changes-source" aria-label="修改记录标签">
+          <option value="">全部标签</option><option value="admin">管理员</option><option value="user">用户</option>
+          <option value="system">系统</option><option value="review">已审核</option>
+        </select>
+        <button class="btn" type="submit">搜索</button>
+      </form>
+      <p id="gpt-changes-status" class="muted" aria-live="polite"></p>
+      <ol id="gpt-changes-list" class="gpt-history-list"></ol>
+      <div class="dialog-actions">
+        <button id="gpt-changes-prev" class="btn" type="button">上一页</button>
+        <button id="gpt-changes-next" class="btn" type="button">下一页</button>
+        <button class="btn" type="button" data-close-pool="gpt-changes-dialog">关闭</button>
+      </div>
     </dialog>
     <dialog id="mailbox-dialog">
       <form id="mailbox-form" class="password-form">
@@ -1297,7 +1326,7 @@
           <td>${item.codex.length ? item.codex.map(account => quotaCell(account.usage)).join('<hr>') : '<span class="muted">未提供</span>'}</td>
           <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}${mailboxActions}</td>
           <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan">邮箱</span></div>'}</td>
-          <td><div class="actions"><button class="btn" data-edit-gpt="${escapeAttr(item.key)}">编辑账号</button><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>${codexActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除 GPT 账号</button></td></tr>`;
+          <td><div class="actions"><button class="btn" data-edit-gpt="${escapeAttr(item.key)}">编辑账号</button><button class="btn" data-gpt-changes="${escapeAttr(item.key)}">修改记录</button><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>${codexActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除 GPT 账号</button></td></tr>`;
       }
 
       async function loadAccounts(force = true) {
@@ -1383,13 +1412,17 @@
       const gptDialog = document.getElementById('gpt-account-dialog');
       const gptForm = document.getElementById('gpt-account-form');
       let editingGptKey = '';
+      let originalGptExpiry = '';
+      let originalGptRevision = '';
 
       function openGptAccount(item = null) {
         editingGptKey = item?.key || '';
+        originalGptRevision = item?.revision || '';
         gptForm.reset();
         document.getElementById('gpt-account-title').textContent = item ? '编辑 GPT 账号' : '添加 GPT 账号';
         document.getElementById('gpt-login').value = item?.login || item?.email || '';
-        document.getElementById('gpt-subscription-start').value = item?.subscription_started_on || '';
+        originalGptExpiry = item?.subscription_expires_on || item?.subscription_ends_on || '';
+        document.getElementById('gpt-subscription-end').value = originalGptExpiry;
         const subscriptionStatus = document.getElementById('gpt-subscription-status');
         subscriptionStatus.hidden = !item;
         subscriptionStatus.innerHTML = item ? renderAccountSubscription(item, escapeHtml) : '';
@@ -1416,9 +1449,11 @@
         const key = editingGptKey;
         const payload = {
           login: document.getElementById('gpt-login').value,
-          subscription_started_on: document.getElementById('gpt-subscription-start').value,
           listed: document.getElementById('gpt-initial-listed').checked,
         };
+        if (key) payload.revision = originalGptRevision;
+        const expiry = document.getElementById('gpt-subscription-end').value;
+        if (expiry !== originalGptExpiry) payload.subscription_expires_on = expiry;
         for (const [field, id] of [['password', 'gpt-initial-password'], ['secret', 'gpt-initial-secret']]) {
           const value = document.getElementById(id).value;
           if (value) payload[field] = value;
@@ -1435,6 +1470,74 @@
           await loadAccounts();
         } catch (error) { document.getElementById('gpt-account-error').textContent = error.message; }
         finally { save.disabled = false; }
+      });
+
+      const changesDialog = document.getElementById('gpt-changes-dialog');
+      const changesFilter = document.getElementById('gpt-changes-filter');
+      const changesQuery = document.getElementById('gpt-changes-query');
+      const changesSource = document.getElementById('gpt-changes-source');
+      const changesList = document.getElementById('gpt-changes-list');
+      const changesStatus = document.getElementById('gpt-changes-status');
+      const changesPrev = document.getElementById('gpt-changes-prev');
+      const changesNext = document.getElementById('gpt-changes-next');
+      const changeLabels = { admin: '管理员', user: '用户', system: '系统', review: '已审核' };
+      let changesKey = '', changesOffset = 0, changesRequest = 0;
+
+      function changesUrl() { return `/api/admin/gpt/accounts/${encodeURIComponent(changesKey)}/changes`; }
+
+      async function loadGptChanges(offset = 0) {
+        const request = ++changesRequest;
+        changesPrev.disabled = changesNext.disabled = true;
+        changesStatus.textContent = '加载中…';
+        changesList.innerHTML = '';
+        const params = new URLSearchParams({ q: changesQuery.value.trim(), source: changesSource.value, offset });
+        try {
+          const { items, total } = await api(`${changesUrl()}?${params}`);
+          if (request !== changesRequest) return;
+          changesOffset = offset;
+          changesStatus.textContent = total ? `第 ${offset + 1}–${offset + items.length} 条，共 ${total} 条` : '没有匹配的修改记录';
+          changesList.innerHTML = items.map(item => {
+            const tag = `<span class="plan gpt-tag-${escapeAttr(item.source)}">${escapeHtml(changeLabels[item.source])}</span>`;
+            const review = item.reviewed ? '<span class="plan gpt-tag-review">已审核</span>' :
+              (['user', 'system'].includes(item.source) ? `<button class="btn" type="button" data-review-change="${escapeAttr(item.id)}">标记已审核</button>` : '');
+            const messages = item.descriptions.map(description => `<li>${escapeHtml(description)}</li>`).join('');
+            return `<li><div class="actions">${tag}<strong>${escapeHtml(item.actor)}</strong><time class="muted">${escapeHtml(new Date(item.at).toLocaleString('zh-CN', { hour12: false }))}</time>${review}</div><ul>${messages}</ul></li>`;
+          }).join('');
+          changesPrev.disabled = offset === 0;
+          changesNext.disabled = offset + items.length >= total;
+        } catch (error) {
+          if (request === changesRequest) changesStatus.textContent = error.message;
+        }
+      }
+
+      accountRows.addEventListener('click', event => {
+        const button = event.target.closest('[data-gpt-changes]');
+        if (!button) return;
+        const item = gptAccounts.find(account => account.key === button.dataset.gptChanges);
+        if (!item) return;
+        changesKey = item.key;
+        document.getElementById('gpt-changes-account').textContent = item.login;
+        changesFilter.reset();
+        changesDialog.showModal();
+        loadGptChanges();
+      });
+      changesDialog.addEventListener('close', () => { changesRequest++; });
+      changesFilter.addEventListener('submit', event => { event.preventDefault(); loadGptChanges(); });
+      changesSource.addEventListener('change', () => loadGptChanges());
+      changesPrev.addEventListener('click', () => loadGptChanges(Math.max(0, changesOffset - 50)));
+      changesNext.addEventListener('click', () => loadGptChanges(changesOffset + 50));
+      changesList.addEventListener('click', async event => {
+        const button = event.target.closest('[data-review-change]');
+        if (!button) return;
+        const request = changesRequest;
+        button.disabled = true;
+        try {
+          await api(`${changesUrl()}/${encodeURIComponent(button.dataset.reviewChange)}/review`, { method: 'POST' });
+          if (request === changesRequest) await loadGptChanges(changesOffset);
+        } catch (error) {
+          if (request === changesRequest) changesStatus.textContent = error.message;
+          button.disabled = false;
+        }
       });
 
       const mailboxDialog = document.getElementById('mailbox-dialog');

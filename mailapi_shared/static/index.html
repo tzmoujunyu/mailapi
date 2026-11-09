@@ -91,6 +91,12 @@
       .relay-mail-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
       .relay-mail-header h2 { margin: 0; }
       #relay-mail-content { overflow: auto; overflow-wrap: anywhere; }
+      #gpt-edit-dialog { box-sizing: border-box; width: min(490px, calc(100vw - 24px)); max-height: 86dvh; padding: 20px; border: 1px solid #dfe3e8; border-radius: 14px; color: #1f2937; }
+      #gpt-edit-dialog::backdrop { background: #11182770; }
+      #gpt-edit-dialog form, #gpt-edit-dialog label { display: grid; gap: 8px; }
+      #gpt-edit-dialog input { box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid #cbd5e1; border-radius: 6px; }
+      #gpt-edit-dialog form + form { margin-top: 16px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+      #gpt-edit-dialog form button { justify-self: start; }
       .relay-mail-latest { display: grid; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f8fafc; }
       @media (max-width: 680px) { body { padding: 8px; } .container { min-height: calc(100vh - 16px); padding: 10px; } .page-head { align-items: flex-start; } .login-detail, .email-detail { grid-template-columns: 1fr; } }
     </style>
@@ -177,6 +183,22 @@
         <form method="dialog"><button type="submit" class="small-btn">关闭</button></form>
       </div>
       <div id="relay-mail-content"></div>
+    </dialog>
+    <dialog id="gpt-edit-dialog" aria-labelledby="gpt-edit-title">
+      <div class="relay-mail-header"><h2 id="gpt-edit-title">编辑 GPT 账号</h2><button id="gpt-edit-close" class="small-btn" type="button">关闭</button></div>
+      <p class="muted">保存后立即更新共享账号信息。密码和 2FA 留空可保留原值。</p>
+      <form id="gpt-edit-form">
+        <label>登录账号（邮箱或用户名）<input id="gpt-edit-login" autocomplete="off" maxlength="120" required /></label>
+        <label>GPT 密码<input id="gpt-edit-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
+        <label>2FA 密钥<input id="gpt-edit-secret" type="password" autocomplete="off" maxlength="4096" /></label>
+        <label>手填订阅到期日<input id="gpt-edit-expiry" type="date" /><small class="muted">授权文件有有效到期日时优先显示自动日期。清空可移除手填日期。</small></label>
+        <button class="small-btn" type="submit">保存账号信息</button>
+      </form>
+      <form id="gpt-edit-auth-form">
+        <label>Codex 授权文件<input id="gpt-edit-auth" type="file" accept=".json,application/json" required /><small class="muted">上传对应账号及工作区的完整 auth.json。已有授权会被替换。</small></label>
+        <button class="small-btn" type="submit">保存 Codex 授权</button>
+      </form>
+      <p id="gpt-edit-error" class="status-bad" role="alert"></p>
     </dialog>
     <!-- PREVIEW_SCRIPT -->
     <script src="/static/coding-plan-quota.js"></script>
@@ -330,7 +352,9 @@
         const emailStatuses = row.mails.map(mail => ({ text: mail.enabled === false ? '已停用' : (mail.status || '未知'), cls: mail.enabled === false ? 'status-warn' : (/失败|异常|错误|重新授权/.test(mail.status || '') ? 'status-bad' : (/监测中|监听中/.test(mail.status || '') ? 'status-good' : 'status-warn')), detail: row.mails.length > 1 ? mail.email : '' }));
         const expanded = expandedKey === row.key;
         const hasDetails = row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length;
-        const loginActions = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button>` : '<span class="muted">仅账号名</span>';
+        const edit = previewMode ? '' : `<button class="small-btn" type="button" data-edit-gpt-key="${escapeAttr(row.key)}" aria-haspopup="dialog">编辑账号</button>`;
+        const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button>` : '<span class="muted">仅账号名</span>';
+        const loginActions = `<div class="resource-secret">${details}${edit}</div>`;
         const statuses = row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') + emailStatuses.map(status => statusLine(status, '邮箱')).join('');
         return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => quotaCell(item.usage)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>${expanded && hasDetails ? detailRow(row) : ''}`;
       }
@@ -457,7 +481,75 @@
           document.getElementById('load-error').textContent = '账号刷新失败，请检查服务或重新登录。';
         } finally { refreshing = false; }
       }
-      rowsNode.addEventListener('click', event => { const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
+      const gptEditDialog = document.getElementById('gpt-edit-dialog');
+      const gptEditForm = document.getElementById('gpt-edit-form');
+      const gptAuthForm = document.getElementById('gpt-edit-auth-form');
+      const gptEditError = document.getElementById('gpt-edit-error');
+      const gptEditLogin = document.getElementById('gpt-edit-login');
+      const gptEditExpiry = document.getElementById('gpt-edit-expiry');
+      let gptEditTarget = null;
+      let gptEditSaving = false;
+
+      function openGptEdit(key) {
+        gptEditTarget = accountRows.find(row => row.key === key)?.credentials;
+        if (!gptEditTarget) return;
+        gptEditForm.reset();
+        gptAuthForm.reset();
+        gptEditLogin.value = gptEditTarget.login;
+        gptEditExpiry.value = gptEditTarget.subscription_expires_on || gptEditTarget.subscription_ends_on || '';
+        gptEditError.textContent = '';
+        gptEditDialog.showModal();
+      }
+
+      async function saveGptEdit(action, prepare) {
+        if (gptEditSaving || !gptEditTarget) return;
+        const target = gptEditTarget;
+        const buttons = gptEditDialog.querySelectorAll('button');
+        gptEditSaving = true;
+        buttons.forEach(button => { button.disabled = true; });
+        gptEditError.textContent = '';
+        try {
+          const payload = await prepare(target);
+          const response = await fetch(`/api/accounts/gpt/${encodeURIComponent(target.key)}/${action}`, {
+            method: 'PUT', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...payload, revision: target.revision }),
+          });
+          if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || '保存失败');
+          gptEditDialog.close();
+          await refreshAccounts();
+        } catch (error) { gptEditError.textContent = error.message; }
+        finally {
+          gptEditSaving = false;
+          buttons.forEach(button => { button.disabled = false; });
+        }
+      }
+
+      document.getElementById('gpt-edit-close').addEventListener('click', () => gptEditDialog.close());
+      gptEditDialog.addEventListener('cancel', event => { if (gptEditSaving) event.preventDefault(); });
+      gptEditDialog.addEventListener('close', () => { gptEditForm.reset(); gptAuthForm.reset(); gptEditTarget = null; });
+      gptEditForm.addEventListener('submit', event => {
+        event.preventDefault();
+        saveGptEdit('info', target => {
+          const payload = {};
+          if (gptEditLogin.value !== target.login) payload.login = gptEditLogin.value;
+          if (gptEditExpiry.value !== (target.subscription_expires_on || target.subscription_ends_on || '')) payload.subscription_expires_on = gptEditExpiry.value;
+          const password = document.getElementById('gpt-edit-password').value;
+          const secret = document.getElementById('gpt-edit-secret').value;
+          if (password) payload.password = password;
+          if (secret) payload.secret = secret;
+          return payload;
+        });
+      });
+      gptAuthForm.addEventListener('submit', event => {
+        event.preventDefault();
+        saveGptEdit('codex-auth', async () => {
+          const file = document.getElementById('gpt-edit-auth').files[0];
+          if (!file || file.size > 60000) throw new Error('请选择小于 60 KB 的 Codex auth.json 文件');
+          return { auth_json: await file.text() };
+        });
+      });
+
+      rowsNode.addEventListener('click', event => { const edit = event.target.closest('[data-edit-gpt-key]'); if (edit && !previewMode) { openGptEdit(edit.dataset.editGptKey); return; } const expand = event.target.closest('[data-expand-key]'); if (expand) { const nextKey = expandedKey === expand.dataset.expandKey ? '' : expand.dataset.expandKey; if (historyTimer) clearInterval(historyTimer); historyTimer = null; historyName = ''; historyItems = []; historyError = ''; historyRequest++; expandedKey = nextKey; render(); return; } const history = event.target.closest('[data-history-name]'); if (history) { toggleHistory(history.dataset.historyName); return; } const copy = event.target.closest('[data-copy-type]'); if (copy) copySecret(copy); });
       codingPlanRows.addEventListener('click', event => {
         const base = event.target.closest('[data-base-url]');
         if (base) return copyCodingPlanValue(base, () => base.dataset.baseUrl);
