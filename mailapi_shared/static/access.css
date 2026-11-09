@@ -70,6 +70,8 @@ dialog::backdrop { background: #11182770; }
 .batch-resource-config .option { padding: 8px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
 .batch-resource-config .option:hover { background: #f7f8fb; }
 .batch-resource-config .option:has(input:checked) { border-color: #bfdbfe; background: #eff6ff; }
+.batch-filter { display: grid; gap: 6px; margin-bottom: 12px; color: #475569; font-size: 13px; }
+.batch-filter input { font-size: 13px; }
 .batch-group-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 #batch-current-resource { overflow-wrap: anywhere; }
 form > label { display: grid; gap: 7px; margin: 16px 0; font-size: 14px; }

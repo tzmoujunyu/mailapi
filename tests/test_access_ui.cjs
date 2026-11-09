@@ -27,9 +27,23 @@ async function page() {
         value: /value="([^"]*)"/.exec(match[1])?.[1] || '', checked: /\bchecked\b/.test(match[1]),
         matches: selector => selector === 'input[type="radio"]' && /type="radio"/.test(match[1]),
       }));
+      this.options = [...value.matchAll(/<label class="option"([^>]*)>([\s\S]*?)<\/label>/g)].map(match => {
+        const inputValue = /value="([^"]*)"/.exec(match[2])?.[1];
+        const input = this.inputs.find(item => item.value === inputValue);
+        return { hidden: false, textContent: match[2].replace(/<[^>]*>/g, ''),
+          dataset: { searchText: /data-search-text="([^"]*)"/.exec(match[1])?.[1] || '' },
+          querySelector: () => input };
+      });
+      this.sections = [...value.matchAll(/<div class="resource-kind"[^>]*>[\s\S]*?<\/div>/g)].map(match => ({
+        hidden: false, querySelector: () => this.options.find(option => match[0].includes(`value="${option.querySelector().value}"`) && !option.hidden),
+      }));
     },
     get innerHTML() { return this.html; },
-    querySelectorAll(selector) { return selector === 'input:checked' ? this.inputs.filter(input => input.checked) : this.inputs; },
+    querySelectorAll(selector) {
+      if (selector === '.option') return this.options || [];
+      if (selector === '.resource-kind') return this.sections || [];
+      return selector === 'input:checked' ? this.inputs.filter(input => input.checked) : this.inputs;
+    },
     querySelector() { return { disabled: false }; },
     classList: { toggle() {} }, reset() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; },
     addEventListener(type, callback) { this.listeners[type] = callback; },
@@ -168,4 +182,65 @@ test('bulk assignment retains unsaved choices on failed save or cancelled resour
   assert.equal(app.nodes.get('batch-group-options').inputs.filter(input => input.checked).length, 0);
   assert.equal(vm.runInContext('groups[0].resource_keys.includes("gpt:first")', app.context), true);
   assert.equal(app.nodes.get('batch-resource-save').disabled, false);
+});
+
+function searchCandidates(app, kind, query) {
+  const input = app.nodes.get(`batch-${kind}-search`);
+  input.value = query;
+  input.listeners.input();
+}
+
+test('resource search filters names and kinds without changing the selection or group draft', async () => {
+  const app = await page();
+  app.nodes.get('batch-resources').listeners.click();
+  chooseResource(app, 'gpt:first');
+  const right = app.nodes.get('batch-group-options');
+  right.inputs.find(input => input.value === 'vla-1').checked = true;
+  const left = app.nodes.get('batch-resource-options');
+  searchCandidates(app, 'resource', 'glm DEMO');
+  assert.deepEqual(left.options.filter(option => !option.hidden).map(option => option.querySelector().value), ['coding-plan:one']);
+  assert.equal(left.sections.filter(section => !section.hidden).length, 1);
+  assert.equal(left.inputs.find(input => input.value === 'gpt:first').checked, true);
+  assert.equal(vm.runInContext('batchResource', app.context), 'gpt:first');
+  assert.equal(right.inputs.filter(input => input.checked).length, 3);
+  searchCandidates(app, 'resource', 'ＧＰＴ COMPLETE');
+  assert.deepEqual(left.options.filter(option => !option.hidden).map(option => option.querySelector().value), ['gpt:first']);
+  searchCandidates(app, 'resource', '邮箱接码');
+  assert.deepEqual(left.options.filter(option => !option.hidden).map(option => option.querySelector().value), ['mailbox:one']);
+  searchCandidates(app, 'resource', 'missing-resource');
+  assert.equal(app.nodes.get('batch-resource-empty').hidden, false);
+  searchCandidates(app, 'resource', '');
+  assert.equal(left.options.filter(option => !option.hidden).length, 6);
+  assert.equal(app.nodes.get('batch-resource-empty').hidden, true);
+  assert.equal(right.inputs.filter(input => input.checked).length, 3);
+});
+
+test('group filtering retains hidden selections and bulk actions affect only matches before saving', async () => {
+  const app = await page();
+  app.nodes.get('batch-resources').listeners.click();
+  chooseResource(app, 'gpt:first');
+  const right = app.nodes.get('batch-group-options');
+  searchCandidates(app, 'group', 'ＶＬＡ');
+  assert.deepEqual(right.options.filter(option => !option.hidden).map(option => option.querySelector().value), ['vla-1']);
+  app.nodes.get('batch-groups-all').listeners.click();
+  assert.equal(right.inputs.filter(input => input.checked).length, 3);
+  app.nodes.get('batch-groups-none').listeners.click();
+  assert.deepEqual(right.inputs.filter(input => input.checked).map(input => input.value), ['agent-1', 'agent-2']);
+  assert.equal(app.nodes.get('batch-group-count').textContent, '匹配 1 / 3 · 已选 2 / 3 个分组');
+  await app.nodes.get('batch-resource-form').listeners.submit({ preventDefault() {} });
+  const request = app.requests.find(item => item.url === '/api/admin/resource-groups');
+  assert.deepEqual(JSON.parse(request.options.body).group_ids, ['agent-1', 'agent-2']);
+  assert.equal(right.options.filter(option => !option.hidden).length, 1);
+  searchCandidates(app, 'group', '');
+  assert.equal(right.options.filter(option => !option.hidden).length, 3);
+  assert.deepEqual(right.inputs.filter(input => input.checked).map(input => input.value), ['agent-1', 'agent-2']);
+  searchCandidates(app, 'group', 'missing-group');
+  app.nodes.get('batch-groups-none').listeners.click();
+  assert.equal(right.inputs.filter(input => input.checked).length, 2);
+  assert.equal(app.nodes.get('batch-group-empty').hidden, false);
+  for (const kind of ['resource', 'group']) {
+    let prevented = false;
+    app.nodes.get(`batch-${kind}-search`).listeners.keydown({ key: 'Enter', preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+  }
 });

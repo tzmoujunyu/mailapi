@@ -196,8 +196,31 @@ function batchGroupIds() {
 }
 
 function updateBatchGroupCount() {
-  byId('batch-group-count').textContent = batchResource ? `已选 ${batchGroupIds().length} / ${groups.length} 个分组` : '';
+  const shown = [...byId('batch-group-options').querySelectorAll('.option')].filter(option => !option.hidden).length;
+  const matches = byId('batch-group-search').value.trim() ? `匹配 ${shown} / ${groups.length} · ` : '';
+  byId('batch-group-count').textContent = batchResource ? `${matches}已选 ${batchGroupIds().length} / ${groups.length} 个分组` : '';
   byId('batch-resource-result').textContent = '';
+}
+
+function filterBatchOptions(kind) {
+  const normalize = value => value.normalize('NFKC').toLocaleLowerCase();
+  const terms = normalize(byId(`batch-${kind}-search`).value).trim().split(/\s+/).filter(Boolean);
+  const root = byId(`batch-${kind}-options`);
+  const options = [...root.querySelectorAll('.option')];
+  for (const option of options) {
+    const text = normalize(option.textContent + ' ' + (option.dataset.searchText || ''));
+    option.hidden = !terms.every(term => text.includes(term));
+  }
+  root.querySelectorAll('.resource-kind').forEach(section => { section.hidden = !section.querySelector('.option:not([hidden])'); });
+  const shown = options.filter(option => !option.hidden).length;
+  byId(`batch-${kind}-empty`).hidden = !terms.length || !options.length || shown > 0;
+  if (kind === 'resource') byId('batch-resource-count').textContent = terms.length ? `匹配 ${shown} / ${options.length} 个资源` : `共 ${options.length} 个资源`;
+  else updateBatchGroupCount();
+}
+
+for (const kind of ['resource', 'group']) {
+  byId(`batch-${kind}-search`).addEventListener('input', () => filterBatchOptions(kind));
+  byId(`batch-${kind}-search`).addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
 }
 
 function renderBatchGroups() {
@@ -208,7 +231,7 @@ function renderBatchGroups() {
   byId('batch-group-options').innerHTML = resource
     ? groups.map(group => `<label class="option"><input type="checkbox" value="${escapeHtml(group.id)}" ${group.resource_keys.includes(batchResource) ? 'checked' : ''}><span>${escapeHtml(group.name)}</span></label>`).join('') || '<p class="muted">暂无分组，请先创建分组。</p>'
     : '<p class="muted">选择资源后显示当前分配情况。</p>';
-  updateBatchGroupCount();
+  filterBatchOptions('group');
 }
 
 function openBatchResources() {
@@ -218,8 +241,9 @@ function openBatchResources() {
   byId('batch-resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
     const candidates = resources.filter(item => item.kind === kind);
     if (!candidates.length) return '';
-    return `<div class="resource-kind"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => `<label class="option"><input type="radio" name="batch-resource" value="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span></label>`).join('')}</div>`;
+    return `<div class="resource-kind"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => `<label class="option" data-search-text="${escapeHtml(kind === 'gpt' ? 'GPT 账号' : label)}"><input type="radio" name="batch-resource" value="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span></label>`).join('')}</div>`;
   }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
+  filterBatchOptions('resource');
   renderBatchGroups();
   byId('batch-resource-dialog').showModal();
 }
@@ -241,7 +265,9 @@ byId('batch-resource-options').addEventListener('change', event => {
 byId('batch-group-options').addEventListener('change', updateBatchGroupCount);
 for (const [id, checked] of [['batch-groups-all', true], ['batch-groups-none', false]]) {
   byId(id).addEventListener('click', () => {
-    byId('batch-group-options').querySelectorAll('input').forEach(input => { input.checked = checked; });
+    byId('batch-group-options').querySelectorAll('.option').forEach(option => {
+      if (!option.hidden) option.querySelector('input').checked = checked;
+    });
     updateBatchGroupCount();
   });
 }

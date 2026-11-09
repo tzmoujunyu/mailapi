@@ -104,12 +104,20 @@
       <h2>批量分配资源</h2>
       <p class="muted">先在左侧选择一个资源，再勾选右侧分组，点击“保存分配”统一生效。仅调整所选资源，下架资源仍需上架后用户才能使用。</p>
       <div class="group-config batch-resource-config">
-        <fieldset id="batch-resource-fields"><legend>候选资源</legend><div id="batch-resource-options" class="options"></div></fieldset>
+        <fieldset id="batch-resource-fields">
+          <legend>候选资源</legend>
+          <label class="batch-filter">查找资源<input id="batch-resource-search" type="search" placeholder="搜索名称、邮箱或资源类型" autocomplete="off"></label>
+          <p id="batch-resource-count" class="muted" role="status" aria-live="polite"></p>
+          <div id="batch-resource-options" class="options"></div>
+          <p id="batch-resource-empty" class="muted" hidden>没有匹配的资源。</p>
+        </fieldset>
         <fieldset id="batch-group-fields" disabled>
           <legend>分配到分组</legend>
           <p id="batch-current-resource" class="muted">请先选择左侧资源。</p>
+          <label class="batch-filter">查找分组<input id="batch-group-search" type="search" placeholder="搜索分组名称" autocomplete="off"><small>筛选保留勾选；全选／全不选仅调整匹配分组。</small></label>
           <div class="batch-group-toolbar"><div class="actions"><button id="batch-groups-all" type="button">全选</button><button id="batch-groups-none" type="button">全不选</button></div><span id="batch-group-count" class="muted" aria-live="polite"></span></div>
           <div id="batch-group-options" class="options"><p class="muted">选择资源后显示当前分配情况。</p></div>
+          <p id="batch-group-empty" class="muted" hidden>没有匹配的分组，已选分组仍然保留。</p>
         </fieldset>
       </div>
       <p id="batch-resource-result" class="muted" role="status" aria-live="polite"></p>
