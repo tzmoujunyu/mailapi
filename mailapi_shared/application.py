@@ -99,7 +99,7 @@ from .accounts import SESSION_COOKIE, create_account_router, read_payload
 from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
 
 
-def load_dotenv_file(path: str = ".env") -> None:
+def dotenv_entries(path: str | Path):
     if not os.path.exists(path):
         return
     try:
@@ -119,9 +119,14 @@ def load_dotenv_file(path: str = ".env") -> None:
                 value = value.strip()
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
                     value = value[1:-1]
-                os.environ.setdefault(key, value)
+                yield key, value
     except Exception as e:  # noqa: BLE001
         print(f".env 加载失败：{e}")
+
+
+def load_dotenv_file(path: str | Path = ".env") -> None:
+    for key, value in dotenv_entries(path):
+        os.environ.setdefault(key, value)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -168,17 +173,27 @@ def _validate_configured_test_data(path: Path) -> Path:
         and default_data not in path.parents
     ):
         raise RuntimeError("TEST_DATA_DIR 必须使用 runtime/test 或正式 runtime 以外的独立目录")
+    # Read the directory setting without loading production credentials into the test environment.
+    configured_roots = [os.getenv("MAILAPI_DATA_DIR")]
+    configured_roots.extend(value for key, value in dotenv_entries(BASE_DIR / ".env") if key == "MAILAPI_DATA_DIR")
+    for configured in configured_roots:
+        if configured is None:
+            continue
+        root = (BASE_DIR / Path(configured).expanduser()).resolve()
+        if root != _production_data and (path.is_relative_to(root) or root.is_relative_to(path)):
+            raise RuntimeError("TEST_DATA_DIR 不能与正式 MAILAPI_DATA_DIR 重叠")
+    for entry in path.rglob("*"):
+        if entry.is_symlink() and not entry.resolve().is_relative_to(path):
+            raise RuntimeError("TEST_DATA_DIR 含有指向目录外的符号链接")
     return path
 
 
 def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
-    if Path(directory).resolve() == _production_data:
-        return {
-            name
-            for name in names
-            if name in {"test", "site_accounts.json", "mail_relay_secret"}
-        }
-    return set()
+    path = Path(directory)
+    ignored = {name for name in names if (path / name).is_symlink()}
+    if path == _production_data:
+        ignored.update({"test", "site_accounts.json", "mail_relay_secret"})
+    return ignored
 
 
 def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, bool]:
@@ -2006,22 +2021,26 @@ def legacy_gmail_token_path(account_name: str) -> Optional[str]:
     return os.path.join(DATA_DIR, f"token_account{match.group(1)}.json")
 
 
+def mail_auth_path(configured_path: str, default_path: str) -> str:
+    if not IS_TEST:
+        return configured_path
+    data_dir = Path(DATA_DIR).resolve()
+    source = Path(configured_path).expanduser().resolve()
+    if TEST_DATA_EPHEMERAL and source.is_relative_to(_production_data):
+        source = (data_dir / source.relative_to(_production_data)).resolve()
+    if source.is_relative_to(data_dir):
+        return str(Path(DATA_DIR) / source.relative_to(data_dir))
+    if not Path(default_path).resolve().is_relative_to(data_dir):
+        raise RuntimeError("测试版授权文件必须位于测试数据目录内")
+    return default_path
+
+
 def migrate_gmail_token_layout(account_name: str, configured_path: str) -> str:
     target = gmail_token_path(account_name)
     backup_dir = os.path.join(GMAIL_TOKEN_BACKUP_DIR, account_name)
     ensure_private_directory(backup_dir)
 
-    if IS_TEST:
-        # A copied account config can still refer to the production token.
-        data_dir = Path(DATA_DIR).resolve()
-        source = Path(configured_path).resolve()
-        if TEST_DATA_EPHEMERAL and source.is_relative_to(_production_data):
-            source = data_dir / source.relative_to(_production_data)
-        configured_path = (
-            str(Path(DATA_DIR) / source.relative_to(data_dir))
-            if source.is_relative_to(data_dir)
-            else target
-        )
+    configured_path = mail_auth_path(configured_path, target)
 
     candidates = [configured_path, target]
     legacy = legacy_gmail_token_path(account_name)
@@ -2117,18 +2136,14 @@ def load_accounts() -> List[AccountConfig]:
             cfg["delivery_mode"] = (
                 delivery_mode if delivery_mode in {"direct", "relay"} else "direct"
             )
-            cfg["session_file"] = str(
-                item.get("session_file")
-                or os.path.join(PROTON_SESSION_DIR, f"{name}.pickle")
-            )
+            session_path = os.path.join(PROTON_SESSION_DIR, f"{name}.pickle")
+            cfg["session_file"] = mail_auth_path(str(item.get("session_file") or session_path), session_path)
             cfg["config_file"] = os.path.expanduser(
                 str(item.get("config_file") or PROTON_CONFIG_FILE)
             )
         elif provider == "outlook":
-            cfg["token_file"] = str(
-                item.get("token_file")
-                or os.path.join(OUTLOOK_TOKEN_DIR, f"{name}.json")
-            )
+            token_path = os.path.join(OUTLOOK_TOKEN_DIR, f"{name}.json")
+            cfg["token_file"] = mail_auth_path(str(item.get("token_file") or token_path), token_path)
             secure_auth_file(cfg["token_file"])
         else:
             cfg["provider"] = "gmail"
@@ -2674,8 +2689,7 @@ def read_history_id(cfg: AccountConfig) -> int:
 
 def write_history_id(cfg: AccountConfig, history_id: int):
     path = os.path.join(HISTORY_ID_DIR, f"{cfg['name']}.history")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(str(history_id))
+    write_json_atomic(path, history_id)
 
 
 def save_state(name: str, patch: Dict[str, Optional[str]]):
@@ -2730,17 +2744,63 @@ def process_message(service, cfg: AccountConfig, message_id: str) -> Optional[Di
     return extract_configured_result(gmail_incoming_mail(msg))
 
 
-def scan_unread_once(service, cfg: AccountConfig):
-    response = service.users().messages().list(
-        userId="me",
-        q=mail_filter_search_query(),
-        maxResults=100,
-    ).execute()
-    for item in response.get("messages", []):
-        result = process_message(service, cfg, item["id"])
+def capture_gmail_message(service, cfg: AccountConfig, message_id: str, status: str = "监听中") -> None:
+    try:
+        result = process_message(service, cfg, message_id)
         if result:
-            if store_code_result(cfg, result, status="已完成（补扫）"):
-                mark_as_read(service, result["message_id"])
+            store_code_result(cfg, result, status=status)
+            mark_as_read(service, result["message_id"])
+    except HttpError as error:
+        # An individual message can disappear after it was listed.
+        if error.resp.status != 404:
+            raise
+
+
+def scan_unread_once(service, cfg: AccountConfig, stop_event: Optional[threading.Event] = None):
+    stop_event = stop_event or threading.Event()
+    params = {"userId": "me", "q": mail_filter_search_query(), "maxResults": 100}
+    message_ids = {}
+    while not stop_event.is_set():
+        response = service.users().messages().list(**params).execute()
+        for item in response.get("messages", []):
+            message_ids[item["id"]] = None
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+        params["pageToken"] = page_token
+
+    # Marking messages read would change the unread query while it is being paginated.
+    for message_id in message_ids:
+        if stop_event.is_set():
+            return
+        capture_gmail_message(service, cfg, message_id, status="已完成（补扫）")
+
+
+class GmailHistoryExpired(RuntimeError):
+    pass
+
+
+def scan_gmail_history(service, cfg: AccountConfig, history_id: int, stop_event: threading.Event) -> Optional[int]:
+    params = {"userId": "me", "startHistoryId": history_id, "maxResults": MAX_POLL_RESULTS}
+    while not stop_event.is_set():
+        try:
+            response = service.users().history().list(**params).execute()
+        except HttpError as error:
+            if error.resp.status in (404, 410):
+                raise GmailHistoryExpired from error
+            raise
+        for item in response.get("history", []):
+            for added in item.get("messagesAdded", []):
+                if stop_event.is_set():
+                    return None
+                message_id = added.get("message", {}).get("id")
+                if message_id:
+                    capture_gmail_message(service, cfg, message_id)
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            return None if stop_event.is_set() else int(response.get("historyId") or history_id)
+        params["pageToken"] = page_token
+    return None
 
 
 def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event] = None):
@@ -2752,51 +2812,41 @@ def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event
         service = get_gmail_service(cfg, stop_event)
         if stop_event.is_set():
             return
-        profile = service.users().getProfile(userId="me").execute()
-        history_id = read_history_id(cfg) or int(profile["historyId"])
-
-        # 首次启动，先补扫一次未读验证码邮件，防止历史遗漏
-        scan_unread_once(service, cfg)
-
+        history_id = read_history_id(cfg)
+        scan_pending = True
         while not stop_event.is_set():
             try:
-                response = service.users().history().list(
-                    userId="me",
-                    startHistoryId=history_id,
-                    maxResults=MAX_POLL_RESULTS,
-                ).execute()
+                if scan_pending:
+                    # Get the baseline before scanning so mail arriving during the scan
+                    # is still visible to the next incremental query.
+                    baseline = history_id
+                    if not baseline:
+                        profile = service.users().getProfile(userId="me").execute()
+                        baseline = int(profile["historyId"])
+                    scan_unread_once(service, cfg, stop_event)
+                    if stop_event.is_set():
+                        break
+                    if not history_id:
+                        write_history_id(cfg, baseline)
+                        history_id = baseline
+                    scan_pending = False
 
-                got = False
-                for item in response.get("history", []):
-                    for added in item.get("messagesAdded", []):
-                        message = added.get("message", {})
-                        msg_id = message.get("id")
-                        if not msg_id:
-                            continue
-                        result = process_message(service, cfg, msg_id)
-                        if result:
-                            saved = store_code_result(cfg, result)
-                            got = saved or got
-                            if saved:
-                                mark_as_read(service, result["message_id"])
-                if response.get("historyId"):
-                    history_id = int(response["historyId"])
-                    write_history_id(cfg, history_id)
+                next_history_id = scan_gmail_history(service, cfg, history_id, stop_event)
+                if next_history_id is None:
+                    break
+                if next_history_id != history_id:
+                    write_history_id(cfg, next_history_id)
+                    history_id = next_history_id
+                save_state(name, {"status": "监听中"})
 
-                if not got:
-                    save_state(name, {"status": "监听中"})
-
-            except HttpError as e:
-                status = getattr(e, "status", None) or getattr(e.resp, "status", None)
-                if status in (404, 410):
-                    save_state(name, {"status": "历史游标过期，补扫"})
-                    scan_unread_once(service, cfg)
-                    profile = service.users().getProfile(userId="me").execute()
-                    history_id = int(profile["historyId"])
-                    write_history_id(cfg, history_id)
-                else:
-                    log_exception(f"Gmail API account={name} status={status}", e)
-                    save_state(name, {"status": f"API 错误: {status}"})
+            except GmailHistoryExpired:
+                save_state(name, {"status": "历史游标过期，补扫"})
+                history_id = 0
+                scan_pending = True
+            except HttpError as error:
+                status = error.resp.status
+                log_exception(f"Gmail API account={name} status={status}", error)
+                save_state(name, {"status": f"API 错误: {status}"})
             except Exception as e:  # noqa: BLE001
                 log_exception(f"Gmail 监听 account={name}", e)
                 save_state(name, {"status": f"运行错误: {e}"})

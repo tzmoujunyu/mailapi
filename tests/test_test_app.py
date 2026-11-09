@@ -44,11 +44,28 @@ class TestAppIsolationTests(unittest.TestCase):
         (production / "mail_relay_secret").write_text("production-mail-relay-secret-32-characters")
         (production / "site_accounts.json").write_text("{}")
         accounts = []
-        for name, relative in (("account-1", "gmail_tokens/account-1.json"), ("account-2", "legacy/token.json")):
+        for name, provider, field, relative in (
+            ("account-1", "gmail", "token_file", "gmail_tokens/account-1.json"),
+            ("account-2", "gmail", "token_file", "legacy/gmail.json"),
+            ("account-3", "outlook", "token_file", "legacy/outlook.json"),
+            ("account-4", "proton", "session_file", "proton_sessions/account-4.pickle"),
+        ):
             token = production / relative
             token.parent.mkdir(parents=True, exist_ok=True)
             token.write_text(name + "-token")
-            accounts.append({"name": name, "token_file": str(token)})
+            token.chmod(0o644)
+            account = {"name": name, "email": name + "@example.com", "provider": provider, field: str(token)}
+            if provider == "proton":
+                account["delivery_mode"] = "direct"
+            accounts.append(account)
+        outside = project / "outside-token.json"
+        outside.write_text("outside-token")
+        outside.chmod(0o644)
+        linked = production / "outlook_tokens/account-5.json"
+        linked.parent.mkdir()
+        linked.symlink_to(outside)
+        accounts.append({"name": "account-5", "provider": "outlook", "token_file": str(linked)})
+        accounts.append({"name": "account-6", "provider": "proton", "session_file": str(outside)})
         (production / "gmail_accounts.json").write_text(json.dumps({"items": accounts}))
         environment = dict(os.environ)
         environment.pop("TEST_DATA_DIR", None)
@@ -58,19 +75,44 @@ class TestAppIsolationTests(unittest.TestCase):
         script = "\n".join([
             "import json",
             "from pathlib import Path",
+            "from types import SimpleNamespace",
+            "from unittest.mock import Mock, patch",
             "from mailapi_shared import application as main",
             "data = Path(main.DATA_DIR)",
             "production = Path(main.TEST_DATA_SOURCE)",
             "assert main.TEST_DATA_EPHEMERAL is True",
             "assert data != production",
             "assert (data / 'gmail_accounts.json').read_bytes() == (production / 'gmail_accounts.json').read_bytes()",
-            "sources = json.loads((production / 'gmail_accounts.json').read_text())['items']",
-            "for cfg, source in zip(main.ACCOUNTS, sources, strict=True):",
-            "    source_token = Path(source['token_file'])",
-            "    snapshot_token = Path(cfg['token_file'])",
-            "    assert snapshot_token == data / 'gmail_tokens' / (cfg['name'] + '.json')",
-            "    assert snapshot_token.read_text() == source_token.read_text() == cfg['name'] + '-token'",
+            "production_accounts = production / 'gmail_accounts.json'",
+            "before_accounts = production_accounts.read_bytes()",
+            "sources = json.loads(before_accounts)['items']",
+            "auth_paths = [Path(main.account_auth_file(cfg)) for cfg in main.ACCOUNTS]",
+            "assert auth_paths[:2] == [data / 'gmail_tokens' / (cfg['name'] + '.json') for cfg in main.ACCOUNTS[:2]]",
+            "assert auth_paths[2:] == [data / path for path in ('legacy/outlook.json', 'proton_sessions/account-4.pickle', 'outlook_tokens/account-5.json', 'proton_sessions/account-6.pickle')]",
+            "for path, cfg in zip(auth_paths[:4], main.ACCOUNTS[:4], strict=True):",
+            "    assert path.read_text() == cfg['name'] + '-token'",
+            "assert not any(path.exists() or path.is_symlink() for path in auth_paths[4:])",
             "assert not (data / 'site_accounts.json').exists()",
+            "main.start_watchers()",
+            "assert not main.MAIL_WATCHERS",
+            "mailbox = Mock()",
+            "mailbox.save_refreshed_cache.side_effect = lambda writer: writer({'cache': 'test-only'})",
+            "main.save_outlook_cache(mailbox, main.ACCOUNTS[2])",
+            "assert json.loads(auth_paths[2].read_text()) == {'cache': 'test-only'}",
+            "proton = main.ACCOUNTS[3]",
+            "credentials = SimpleNamespace(username=proton['email'], password='test-only', totp_secret='', login_type='web')",
+            "client = Mock()",
+            "client.save_session.side_effect = lambda filename: Path(filename).write_text('new-test-session')",
+            "with patch.object(main, 'load_proton_credentials', return_value=credentials), patch.object(main.ProtonMailbox, '_types', return_value=(lambda: client, SimpleNamespace(WEB='web'), None)):",
+            "    assert main.login_proton_account(proton['name']).status_code == 200",
+            "assert auth_paths[3].read_text() == 'new-test-session'",
+            "for source in sources[:4]:",
+            "    original = Path(source.get('token_file') or source['session_file'])",
+            "    assert original.read_text() == source['name'] + '-token'",
+            "    assert original.stat().st_mode & 0o777 == 0o644",
+            "outside = production.parent / 'outside-token.json'",
+            "assert outside.read_text() == 'outside-token' and outside.stat().st_mode & 0o777 == 0o644",
+            "assert production_accounts.read_bytes() == before_accounts",
             "if (production / 'mail_relay_secret').is_file(): assert (data / 'mail_relay_secret').read_bytes() != (production / 'mail_relay_secret').read_bytes()",
             "before = (production / 'account_credentials.json').read_bytes()",
             "main.CREDENTIAL_STORE.set('simulation@example.com', 'listed', False)",
@@ -149,6 +191,31 @@ class TestAppIsolationTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("TEST_DATA_DIR", result.stderr)
+
+    def test_test_directory_rejects_custom_production_path_and_escaping_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            shutil.copytree(ROOT / "mailapi_shared", project / "mailapi_shared", ignore=shutil.ignore_patterns("__pycache__"))
+            production = root / "custom-production"
+            production.mkdir()
+            production.chmod(0o755)
+            (project / ".env").write_text(f'export MAILAPI_DATA_DIR="{production}"\n')
+            test_data = root / "test-data"
+            test_data.mkdir()
+            (test_data / "outlook_tokens").symlink_to(production, target_is_directory=True)
+            for selected in (production, production / "nested", test_data):
+                with self.subTest(selected=selected):
+                    result = subprocess.run(
+                        [sys.executable, "-c", "import mailapi_shared.application"],
+                        cwd=project,
+                        env={**os.environ, "MAILAPI_MODE": "test", "TEST_DATA_DIR": str(selected)},
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("TEST_DATA_DIR", result.stderr)
+            self.assertEqual(list(production.iterdir()), [])
+            self.assertEqual(production.stat().st_mode & 0o777, 0o755)
 
 
 if __name__ == "__main__":
