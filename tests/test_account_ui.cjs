@@ -93,7 +93,8 @@ test('console history escapes content, searches by tag and sends the selected re
   app.context.fetch = async (url, options) => {
     app.calls.push([url, options]);
     return { ok: true, json: async () => ({ total: 1, items: [{ id: 'event-1', source: 'user',
-      actor: 'reader', at: '2026-11-09T00:00:00Z', descriptions: ['更新了 <img src=x>'] }] }) };
+      actor: 'reader', at: '2026-11-09T00:00:00Z', descriptions: ['更新了 <img src=x>'],
+      restorable_fields: [{ field: 'secret', label: '2FA 密钥' }] }] }) };
   };
   await app.click('account-rows', '[data-gpt-changes]', { gptChanges: 'email:user@example.com' });
   assert.match(app.nodes.get('gpt-changes-list').innerHTML, /gpt-tag-user/);
@@ -105,6 +106,11 @@ test('console history escapes content, searches by tag and sends the selected re
   assert.ok(app.calls.some(([url]) => url.endsWith('?q=reader&source=user&offset=0')));
   await app.click('gpt-changes-list', '[data-review-change]', { reviewChange: 'event-1' });
   assert.ok(app.calls.some(([url, options]) => url.endsWith('/changes/event-1/review') && options.method === 'POST'));
+  assert.match(app.nodes.get('gpt-changes-list').innerHTML, /恢复2FA 密钥/);
+  await app.click('gpt-changes-list', '[data-restore-change]', { restoreChange: 'event-1', restoreField: 'secret', restoreLabel: '2FA 密钥' });
+  const [, restore] = app.calls.find(([url]) => url.endsWith('/changes/event-1/restore'));
+  assert.equal(restore.method, 'POST');
+  assert.deepEqual(JSON.parse(restore.body), { field: 'secret' });
 });
 
 test('standalone mailbox resources use full-history scope independently of GPT details', async () => {

@@ -86,7 +86,7 @@ from .auth_storage import (
     migrate_auth_file,
     secure_auth_file,
 )
-from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore
+from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore, AccountRestoreError
 from .gpt_history import SOURCE_LABELS, describe_change
 from .subscription_dates import public_subscription, read_subscription_claims
 from .account_passwords import (
@@ -195,7 +195,7 @@ def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
     path = Path(directory)
     ignored = {name for name in names if (path / name).is_symlink()}
     if path == _production_data:
-        ignored.update({"test", "site_accounts.json", "mail_relay_secret"})
+        ignored.update({"test", "site_accounts.json", "mail_relay_secret", "account_credentials.restore.key"})
     return ignored
 
 
@@ -322,7 +322,7 @@ GOOGLE_OAUTH_TRANSPORT_LOCK = threading.Lock()
 HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
 OUTLOOK_AUTH_SESSION_LOCK = threading.Lock()
-CODEX_ACCOUNTS_LOCK = threading.Lock()
+CODEX_ACCOUNTS_LOCK = threading.RLock()
 CODEX_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
@@ -984,7 +984,7 @@ def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
     write_json_atomic(path, payload)
 
 
-def delete_codex_record_auth_files(record: Dict[str, Any]) -> None:
+def delete_codex_record_auth_files(record: Dict[str, Any], *, strict: bool = False) -> None:
     paths = []
     if os.path.isdir(CODEX_AUTH_DIR):
         paths.extend(
@@ -1012,6 +1012,8 @@ def delete_codex_record_auth_files(record: Dict[str, Any]) -> None:
         except FileNotFoundError:
             continue
         except Exception as e:  # noqa: BLE001
+            if strict and isinstance(e, OSError):
+                raise
             log_exception(f"删除 Codex auth 文件 {path}", e)
             print(f"Codex auth 文件删除失败：{path}: {e}")
 
@@ -1344,6 +1346,8 @@ def build_codex_account_record(
     record["subscription"] = id_token_subscription(record)
     if previous.get("validate_token_identity"):
         record["validate_token_identity"] = True
+    if previous.get("auth_revision"):
+        record["auth_revision"] = previous["auth_revision"]
     return record
 
 
@@ -1948,6 +1952,15 @@ def sanitize_codex_account(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def codex_authorization_version(record):
+    return record.get("auth_revision", "") if record is not None else None
+
+
+def mark_codex_authorization_change(before, after):
+    if (before or {}).get("token") != after.get("token") or (before or {}).get("email") != after.get("email"):
+        after["auth_revision"] = secrets.token_hex(16)
+
+
 def record_codex_changes(before, after, *, actor=None):
     record = after or before
     if not record:
@@ -1963,9 +1976,15 @@ def record_codex_changes(before, after, *, actor=None):
         return datetime.fromtimestamp(snapshot["expires_at"], timezone.utc).date().isoformat()
 
     if actor:
-        CREDENTIAL_STORE.record_change(account["key"], actor, describe_change(
-            "codex", (before or {}).get("token"), (after or {}).get("token"),
-        ))
+        description = describe_change("codex", (before or {}).get("token"), (after or {}).get("token"))
+        if description:
+            email = AccountCredentialStore.email_key(record.get("email"))
+            if before and AccountCredentialStore.email_key(before.get("email")) != email:
+                CREDENTIAL_STORE.record_change(account["key"], actor, description)
+            else:
+                field = "codex:" + str(record["id"])
+                snapshot = {"before": before, "email": email, "version": codex_authorization_version(after)}
+                CREDENTIAL_STORE.record_codex_change(account["key"], actor, field, snapshot, description)
     updated_expiry = expiry(after)
     if updated_expiry:
         CREDENTIAL_STORE.record_change(account["key"], GPT_SYSTEM_ACTOR, describe_change(
@@ -2018,6 +2037,8 @@ def import_codex_auth_json(
         with CODEX_ACCOUNTS_LOCK:
             if CODEX_ACCOUNTS.get(str(record["id"])) is not existing:
                 raise ValueError("Codex 账号信息已更新，请重新导入")
+            if actor:
+                mark_codex_authorization_change(existing, record)
             if save_auth or record.get("token") != candidate.get("token"):
                 save_codex_record_auth_file(record)
             CODEX_ACCOUNTS[str(record["id"])] = record
@@ -2292,7 +2313,8 @@ ACCOUNTS = load_accounts()
 MAIL_FILTERS = load_mail_filters()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
 TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
-CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"))
+CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"),
+                                          fresh_restore_points=IS_TEST and TEST_DATA_EPHEMERAL)
 CODING_PLAN_STORE = ResourceStore(CODING_PLANS_FILE, "api_key", "API key")
 CODING_PLAN_QUOTAS = CodingPlanQuotaCache()
 RELAY_ACCOUNT_STORE = ResourceStore(RELAY_ACCOUNTS_FILE, "password", "密码")
@@ -4448,6 +4470,7 @@ async def edit_gpt_codex_auth(account_key: str, request: FastAPIRequest):
             raise SiteAccountError("请选择当前 GPT 账号已关联工作区的授权文件", 409)
         record = build_codex_account_record(tokens, existing)
         record["validate_token_identity"] = True
+        mark_codex_authorization_change(existing, record)
         save_codex_record_auth_file(record)
         CODEX_ACCOUNTS[record["id"]] = record
         CREDENTIAL_STORE.ensure_codex_account(email)
@@ -4475,6 +4498,67 @@ def review_gpt_change(account_key: str, event_id: str, request: FastAPIRequest):
     ):
         return JSONResponse({"detail": "未找到可审核的修改记录"}, status_code=404)
     return JSONResponse({"ok": True})
+
+
+def restore_codex_authorization(account_key, event_id, field, actor):
+    with CODEX_ACCOUNTS_LOCK, CREDENTIAL_STORE.edit_lock():
+        snapshot = CREDENTIAL_STORE.restore_snapshot(account_key, event_id, field)
+        account_id = field.removeprefix("codex:")
+        current = CODEX_ACCOUNTS.get(account_id)
+        previous = snapshot["before"]
+        email = snapshot["email"]
+        owner = CREDENTIAL_STORE.account_for_codex_email(email)
+        if (not owner or owner["key"] != account_key
+                or codex_authorization_version(current) != snapshot["version"]
+                or (current and AccountCredentialStore.email_key(current.get("email")) != email)):
+            raise AccountRestoreError("Codex 关联或授权已变化，请刷新修改记录")
+        restored = None
+        if previous:
+            restored = {**previous, "auth_revision": secrets.token_hex(16),
+                        "status": "已恢复", "updated_at": now_iso()}
+
+        def write_authorization(target, replaced):
+            if target is not None:
+                save_codex_record_auth_file(target)
+                CODEX_ACCOUNTS[account_id] = target
+            else:
+                delete_codex_record_auth_files(replaced, strict=True)
+                CODEX_ACCOUNTS.pop(account_id, None)
+            save_codex_accounts()
+
+        try:
+            write_authorization(restored, current)
+            undo = {"before": current, "email": email, "version": codex_authorization_version(restored)}
+            state = "已配置" if restored else "未配置"
+            CREDENTIAL_STORE.record_codex_change(
+                account_key, actor, field, undo, f"恢复了 Codex 授权文件到修改前（{state}）", restore_of=event_id,
+            )
+        except (OSError, AccountRestoreError):
+            write_authorization(current, restored)
+            raise
+
+
+@app.post("/api/admin/gpt/accounts/{account_key}/changes/{event_id}/restore")
+async def restore_gpt_change(account_key: str, event_id: str, request: FastAPIRequest):
+    if is_user_preview(request):
+        raise SiteAccountError("预览模式无法恢复账号信息", 403)
+    payload = await read_payload(request, {"field"})
+    field = payload.get("field")
+    if not isinstance(field, str) or not field:
+        raise SiteAccountError("请选择要恢复的字段")
+    if not CREDENTIAL_STORE.account_by_key(account_key):
+        raise SiteAccountError("未找到 GPT 账号", 404)
+    actor = gpt_history_actor(request)
+    try:
+        if field.startswith("codex:"):
+            await run_in_threadpool(restore_codex_authorization, account_key, event_id, field, actor)
+        elif field in {"login", "password", "secret", "subscription"}:
+            CREDENTIAL_STORE.restore_account_field(account_key, event_id, field, actor)
+        else:
+            raise SiteAccountError("请选择要恢复的字段")
+    except AccountRestoreError as error:
+        raise SiteAccountError(str(error), 409) from None
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store, private"})
 
 
 @app.get("/api/admin/gpt/accounts/{account_key}/mailboxes")

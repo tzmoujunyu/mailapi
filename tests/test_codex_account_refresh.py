@@ -201,12 +201,56 @@ class CodexAccountRefreshTests(unittest.TestCase):
             history = client.get(changes_path).json()
             self.assertEqual([item["source"] for item in history["items"]], ["review", "user", "admin"])
             self.assertTrue(history["items"][1]["reviewed"])
-            self.assertNotIn("password", json.dumps(history))
+            self.assertNotIn("before-password", json.dumps(history))
+            self.assertNotIn("after-password", json.dumps(history))
             self.assertNotIn("JBSWY3DPEHPK3PXP", json.dumps(history))
             self.assertEqual(AccountCredentialStore(store.path).history(key), history)
             self.assertEqual(client.put(admin_path, json={"listed": False}).status_code, 200)
             self.use_session(client, self.user_token)
             self.assertEqual(client.put(edit_path, json={"revision": edited.json()["item"]["revision"], "login": "blocked"}).status_code, 404)
+
+    def test_admin_restores_only_selected_gpt_fields_and_rejects_stale_events(self):
+        with self.account_client() as (client, store):
+            key = "email:user@example.com"
+            path = f"/api/admin/gpt/accounts/{key}"
+            history = path + "/changes"
+            store.set("user@example.com", "password", "original-secret-value")
+            self.module.ensure_gpt_pool()
+            store.save_account(key, {"subscription_started_on": "2026-01-31"}, {})
+            initial = client.put(path, json={"login": "new@example.com", "password": "wrong-password",
+                                             "secret": "JBSWY3DPEHPK3PXP", "subscription_expires_on": "2027-01-05"})
+            event = client.get(history).json()["items"][0]
+            self.assertEqual({item["field"] for item in event["restorable_fields"]}, {"login", "password", "secret", "subscription"})
+            self.assertNotIn("original-secret-value", store.path.read_text())
+            self.assertNotIn("original-secret-value", json.dumps(event))
+            self.assertNotIn("wrong-password", json.dumps(event))
+            self.assertNotIn("JBSWY3DPEHPK3PXP", json.dumps(event))
+            self.assertEqual(store.restore_key_path.stat().st_mode & 0o777, 0o600)
+
+            restore = f"{history}/{event['id']}/restore"
+            self.use_session(client, self.user_token)
+            self.assertEqual(client.post(restore, json={"field": "password"}).status_code, 403)
+            self.use_session(client, self.admin_token)
+            self.assertEqual(client.post(restore + "?preview=1", json={"field": "password"}).status_code, 403)
+            self.assertEqual(client.post(restore, json={"field": "mailbox_ids"}).status_code, 400)
+            self.assertEqual(client.post(restore, json={"field": "password"}).status_code, 200)
+            self.assertEqual(client.post(restore, json={"field": "password"}).status_code, 409)
+            self.assertEqual(store.get("new@example.com", "password"), "original-secret-value")
+            self.assertEqual(store.account_by_key(key)["subscription_expires_on"], "2027-01-05")
+            self.assertEqual(client.put(path, json={"revision": initial.json()["item"]["revision"], "password": "stale"}).status_code, 409)
+
+            for field in ("secret", "subscription", "login"):
+                self.assertEqual(client.post(restore, json={"field": field}).status_code, 200)
+            reopened = AccountCredentialStore(store.path)
+            account = reopened.account_by_key(key)
+            self.assertEqual(account["login"], "user@example.com")
+            self.assertEqual(account["subscription_ends_on"], "2026-02-28")
+            self.assertEqual(account["mailbox_ids"], ["account-1"])
+            self.assertFalse(account["has_totp_secret"])
+            results = client.get(history, params={"source": "restore"}).json()
+            self.assertEqual(results["total"], 4)
+            self.assertEqual({item["restore_of"] for item in results["items"]}, {event["id"]})
+            self.assertEqual(reopened.history(key, source="restore"), results)
 
     def test_member_codex_import_requires_signed_matching_tokens_and_tracks_expiry(self):
         module = self.module
@@ -253,6 +297,61 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 record = module.CODEX_ACCOUNTS["account-id::ws=workspace-id"]
             module.record_codex_changes(record, record)
             self.assertEqual(store.history(key)["total"], 4)
+            # Background rotation preserves the explicit authorization version.
+            rotated = {**record, "token": {**record["token"], "refresh_token": "background-rotated"}}
+            module.CODEX_ACCOUNTS[record["id"]] = rotated
+            self.use_session(client, self.admin_token)
+            change = events[1]
+            field = change["restorable_fields"][0]["field"]
+            url = f"/api/admin/gpt/accounts/{key}/changes/{change['id']}/restore"
+            with patch.object(store, "record_codex_change", side_effect=OSError("simulated storage failure")):
+                with self.assertRaises(OSError):
+                    module.restore_codex_authorization(key, change["id"], field,
+                                                      {"source": "admin", "id": "admin-fixture", "name": "admin"})
+            self.assertIs(module.CODEX_ACCOUNTS[record["id"]], rotated)
+            self.assertEqual(store.history(key)["total"], 4)
+            self.assertEqual(client.post(url, json={"field": field}).status_code, 200)
+            restored = module.CODEX_ACCOUNTS[record["id"]]
+            self.assertEqual(restored["token"]["refresh_token"], "hidden-refresh")
+            self.assertNotEqual(restored["token"]["id_token"], record["token"]["id_token"])
+            self.assertEqual(client.post(url, json={"field": field}).status_code, 409)
+            restored_events = store.history(key, source="restore")["items"]
+            self.assertEqual(len(restored_events), 1)
+            self.assertNotIn("background-rotated", json.dumps(restored_events))
+
+    def test_codex_restore_updates_auth_file_and_account_cache(self):
+        module = self.module
+        save_accounts = module.save_codex_accounts
+        delete_files = module.delete_codex_record_auth_files
+        with self.account_client() as (client, store), tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = root / "accounts.json"
+            auth_dir = root / "auth"
+            with patch.object(module, "CODEX_AUTH_DIR", str(auth_dir)), patch.object(module, "CODEX_ACCOUNTS_FILE", str(cache)), \
+                    patch.object(module, "save_codex_accounts", save_accounts), patch.object(module, "delete_codex_record_auth_files", delete_files):
+                module.ensure_gpt_pool()
+                original = {**module.CODEX_ACCOUNTS["codex-1"], "token": {"access_token": "original-access-fixture"}}
+                modified = {**original, "token": {"access_token": "new-access-fixture"}, "auth_revision": "replacement"}
+                module.CODEX_ACCOUNTS["codex-1"] = modified
+                module.save_codex_record_auth_file(modified)
+                module.save_codex_accounts()
+                module.record_codex_changes(original, modified, actor={"source": "user", "name": "member", "id": "fixture"})
+                key = "email:user@example.com"
+                event = store.history(key)["items"][0]
+                url = f"/api/admin/gpt/accounts/{key}/changes/{event['id']}/restore"
+                self.assertEqual(client.post(url, json={"field": "codex:codex-1"}).status_code, 200)
+                [auth_file] = auth_dir.glob("*.json")
+                self.assertEqual(json.loads(auth_file.read_text())["tokens"]["access_token"], "original-access-fixture")
+                module.load_codex_accounts()
+                self.assertEqual(module.CODEX_ACCOUNTS["codex-1"]["token"]["access_token"], "original-access-fixture")
+                self.assertNotIn("new-access-fixture", store.path.read_text())
+
+                self.assertEqual(client.delete("/api/codex/accounts/codex-1").status_code, 200)
+                self.assertFalse(auth_file.exists())
+                removed = store.history(key)["items"][0]
+                url = f"/api/admin/gpt/accounts/{key}/changes/{removed['id']}/restore"
+                self.assertEqual(client.post(url, json={"field": "codex:codex-1"}).status_code, 200)
+                self.assertTrue(auth_file.exists())
 
     def test_unified_accounts_share_credentials_without_exposing_secrets(self):
         with self.account_client() as (client, store):

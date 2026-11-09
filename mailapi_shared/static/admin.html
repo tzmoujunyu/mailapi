@@ -135,6 +135,7 @@
       .gpt-tag-user { background: #dbeafe; color: #1e40af; }
       .gpt-tag-system { background: #f1f5f9; color: #334155; }
       .gpt-tag-review { background: #dcfce7; color: #166534; }
+      .gpt-tag-restore { background: #fef3c7; color: #92400e; }
       .password-form { display: grid; gap: 14px; }
       .mail-settings { margin-top: 26px; padding-top: 22px; border-top: 1px solid #e5e7eb; }
       #mailbox-dialog { width: min(620px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
@@ -355,11 +356,12 @@
     <dialog id="gpt-changes-dialog" aria-labelledby="gpt-changes-title">
       <h2 id="gpt-changes-title">修改记录</h2>
       <p id="gpt-changes-account" class="muted"></p>
+      <p class="muted">每个字段可恢复最近一次变动。请核对记录后选择要恢复的字段。</p>
       <form id="gpt-changes-filter" class="gpt-history-filters" role="search">
         <input id="gpt-changes-query" type="search" maxlength="200" placeholder="搜索用户名、字段或日期" aria-label="搜索修改记录" />
         <select id="gpt-changes-source" aria-label="修改记录标签">
           <option value="">全部标签</option><option value="admin">管理员</option><option value="user">用户</option>
-          <option value="system">系统</option><option value="review">已审核</option>
+          <option value="system">系统</option><option value="review">已审核</option><option value="restore">恢复</option>
         </select>
         <button class="btn" type="submit">搜索</button>
       </form>
@@ -1480,7 +1482,7 @@
       const changesStatus = document.getElementById('gpt-changes-status');
       const changesPrev = document.getElementById('gpt-changes-prev');
       const changesNext = document.getElementById('gpt-changes-next');
-      const changeLabels = { admin: '管理员', user: '用户', system: '系统', review: '已审核' };
+      const changeLabels = { admin: '管理员', user: '用户', system: '系统', review: '已审核', restore: '恢复' };
       let changesKey = '', changesOffset = 0, changesRequest = 0;
 
       function changesUrl() { return `/api/admin/gpt/accounts/${encodeURIComponent(changesKey)}/changes`; }
@@ -1501,7 +1503,9 @@
             const review = item.reviewed ? '<span class="plan gpt-tag-review">已审核</span>' :
               (['user', 'system'].includes(item.source) ? `<button class="btn" type="button" data-review-change="${escapeAttr(item.id)}">标记已审核</button>` : '');
             const messages = item.descriptions.map(description => `<li>${escapeHtml(description)}</li>`).join('');
-            return `<li><div class="actions">${tag}<strong>${escapeHtml(item.actor)}</strong><time class="muted">${escapeHtml(new Date(item.at).toLocaleString('zh-CN', { hour12: false }))}</time>${review}</div><ul>${messages}</ul></li>`;
+            const restore = (item.restorable_fields || []).map(({ field, label }) =>
+              `<button class="btn" type="button" data-restore-change="${escapeAttr(item.id)}" data-restore-field="${escapeAttr(field)}" data-restore-label="${escapeAttr(label)}">恢复${escapeHtml(label)}</button>`).join('');
+            return `<li><div class="actions">${tag}<strong>${escapeHtml(item.actor)}</strong><time class="muted">${escapeHtml(new Date(item.at).toLocaleString('zh-CN', { hour12: false }))}</time>${review}</div><ul>${messages}</ul>${restore ? `<div class="actions">${restore}</div>` : ''}</li>`;
           }).join('');
           changesPrev.disabled = offset === 0;
           changesNext.disabled = offset + items.length >= total;
@@ -1527,13 +1531,28 @@
       changesPrev.addEventListener('click', () => loadGptChanges(Math.max(0, changesOffset - 50)));
       changesNext.addEventListener('click', () => loadGptChanges(changesOffset + 50));
       changesList.addEventListener('click', async event => {
-        const button = event.target.closest('[data-review-change]');
+        const restore = event.target.closest('[data-restore-change]');
+        const button = restore || event.target.closest('[data-review-change]');
         if (!button) return;
+        if (restore && !confirm(`将网站保存的「${button.dataset.restoreLabel}」恢复到这次修改前？`)) return;
         const request = changesRequest;
+        const id = button.dataset.restoreChange || button.dataset.reviewChange;
+        const options = { method: 'POST' };
+        if (restore) {
+          options.headers = { 'Content-Type': 'application/json' };
+          options.body = JSON.stringify({ field: button.dataset.restoreField });
+        }
         button.disabled = true;
         try {
-          await api(`${changesUrl()}/${encodeURIComponent(button.dataset.reviewChange)}/review`, { method: 'POST' });
-          if (request === changesRequest) await loadGptChanges(changesOffset);
+          await api(`${changesUrl()}/${encodeURIComponent(id)}/${restore ? 'restore' : 'review'}`, options);
+          if (request === changesRequest) {
+            const loading = changesRequest + 1;
+            await loadGptChanges(restore ? 0 : changesOffset);
+            if (restore && loading === changesRequest) {
+              changesStatus.textContent = `已恢复${button.dataset.restoreLabel} · ${changesStatus.textContent}`;
+            }
+          }
+          if (restore) await loadAccounts();
         } catch (error) {
           if (request === changesRequest) changesStatus.textContent = error.message;
           button.disabled = false;

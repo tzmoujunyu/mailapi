@@ -1,4 +1,4 @@
-"""Metadata for changes to a GPT account. Never keep superseded secrets."""
+"""Public metadata for changes to a GPT account."""
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -12,8 +12,16 @@ FIELD_LABELS = {
     "subscription_expires_on": "手填订阅到期日",
     "automatic_expiry": "订阅到期日",
 }
-SOURCE_LABELS = {"admin": "管理员", "user": "用户", "system": "系统", "review": "已审核"}
+SOURCE_LABELS = {"admin": "管理员", "user": "用户", "system": "系统", "review": "已审核", "restore": "恢复"}
 SECRET_FIELDS = {"password", "secret", "codex"}
+
+
+def restore_label(field):
+    if field.startswith("codex:"):
+        return FIELD_LABELS["codex"]
+    if field == "subscription":
+        return FIELD_LABELS["subscription_expires_on"]
+    return FIELD_LABELS[field]
 
 
 def describe_change(field, before, after):
@@ -36,20 +44,24 @@ def describe_change(field, before, after):
     return f"将{label}由 {before} 修改为 {after}"
 
 
-def event(actor, descriptions, *, review_of=None):
+def event(actor, descriptions, *, review_of=None, restore_of=None):
     return {
         "id": uuid4().hex,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source": "review" if review_of else actor["source"],
+        "source": "review" if review_of else "restore" if restore_of else actor["source"],
         "actor": actor["name"],
         "actor_id": actor["id"],
         "descriptions": descriptions,
         **({"review_of": review_of} if review_of else {}),
+        **({"restore_of": restore_of} if restore_of else {}),
     }
 
 
-def history_page(entries, query, source, offset, limit):
+def history_page(entries, query, source, offset, limit, restore_points):
     reviewed = {item.get("review_of") for item in entries if item["source"] == "review"}
+    fields_by_event = {}
+    for field, point in restore_points.items():
+        fields_by_event.setdefault(point["event_id"], []).append({"field": field, "label": restore_label(field)})
     terms = query.casefold().split()
     matches = []
     total = 0
@@ -60,6 +72,7 @@ def history_page(entries, query, source, offset, limit):
                                *item["descriptions"], item["at"])).casefold()
         if all(term in searchable for term in terms):
             if offset <= total < offset + limit:
-                matches.append({**item, "reviewed": item["id"] in reviewed})
+                matches.append({**item, "reviewed": item["id"] in reviewed,
+                                "restorable_fields": fields_by_event.get(item["id"], [])})
             total += 1
     return {"items": matches, "total": total}

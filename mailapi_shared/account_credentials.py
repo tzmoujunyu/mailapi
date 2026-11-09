@@ -10,16 +10,24 @@ from calendar import monthrange
 from datetime import date
 from pathlib import Path
 
+from cryptography.fernet import Fernet, InvalidToken
+
 from .account_passwords import AccountPasswordError, MAX_PASSWORD_LENGTH, normalize_totp_secret
-from .gpt_history import describe_change, event, history_page
+from .gpt_history import describe_change, event, history_page, restore_label
 
 
 ACCOUNT_FIELDS = {"login", "password", "secret", "subscription_started_on", "subscription_expires_on"}
+SUBSCRIPTION_FIELDS = ("subscription_started_on", "subscription_expires_on")
+
+
+class AccountRestoreError(AccountPasswordError):
+    pass
 
 
 class AccountCredentialStore:
-    def __init__(self, path):
+    def __init__(self, path, *, fresh_restore_points=False):
         self.path = Path(path)
+        self.restore_key_path = self.path.with_suffix(".restore.key")
         self._lock = threading.RLock()
         self._data = {"version": 1, "migrated": False, "items": {}}
         if self.path.exists():
@@ -27,6 +35,8 @@ class AccountCredentialStore:
             if self._data.get("version") != 1 or not isinstance(self._data.get("items"), dict):
                 raise AccountPasswordError("账号登录信息存储格式无效")
             os.chmod(self.path, 0o600)
+        if fresh_restore_points:
+            self._data.pop("restore_points", None)
 
     @staticmethod
     def email_key(email):
@@ -47,12 +57,52 @@ class AccountCredentialStore:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def _save_change(self, data, key, actor, descriptions):
+    def _restore_cipher(self, *, create=False):
+        if create and not self.restore_key_path.exists():
+            if self._data.get("restore_points"):
+                raise AccountRestoreError("缺少恢复密钥，请还原服务端密钥后再修改")
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(dir=self.path.parent)
+            try:
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(Fernet.generate_key())
+                    output.flush()
+                    os.fsync(output.fileno())
+                try:
+                    os.link(temporary, self.restore_key_path)
+                except FileExistsError:
+                    pass
+            finally:
+                os.unlink(temporary)
+        try:
+            with self.restore_key_path.open("rb") as source:
+                os.fchmod(source.fileno(), 0o600)
+                return Fernet(source.read())
+        except (OSError, ValueError):
+            raise AccountRestoreError("无法读取账号恢复密钥") from None
+
+    def _save_change(self, data, key, actor, descriptions, *, snapshots=None, restore_of=None):
         descriptions = [description for description in descriptions if description]
+        entry = None
         if key and actor and descriptions:
             history = data.get("history", {})
-            entries = [*history.get(key, []), event(actor, descriptions)]
+            entry = event(actor, descriptions, restore_of=restore_of)
+            entries = [*history.get(key, []), entry]
             data = {**data, "history": {**history, key: entries}}
+        if key and snapshots and (entry or key in data.get("restore_points", {})):
+            all_points = dict(data.get("restore_points", {}))
+            points = dict(all_points.get(key, {}))
+            cipher = self._restore_cipher(create=True) if entry else None
+            for field, snapshot in snapshots.items():
+                points.pop(field, None)
+                if entry:
+                    envelope = json.dumps([key, field, entry["id"], snapshot]).encode()
+                    points[field] = {"event_id": entry["id"], "sealed": cipher.encrypt(envelope).decode("ascii")}
+            if points:
+                all_points[key] = points
+            else:
+                all_points.pop(key, None)
+            data = {**data, "restore_points": all_points}
         self._save(data)
 
     def record_change(self, key, actor, *descriptions):
@@ -63,7 +113,25 @@ class AccountCredentialStore:
     def history(self, key, query="", source="", offset=0, limit=50):
         with self._lock:
             entries = self._data.get("history", {}).get(key, [])
-        return history_page(entries, query, source, offset, limit)
+            points = self._data.get("restore_points", {}).get(key, {}) if self.restore_key_path.is_file() else {}
+        return history_page(entries, query, source, offset, limit, points)
+
+    def restore_snapshot(self, key, event_id, field):
+        with self._lock:
+            point = self._data.get("restore_points", {}).get(key, {}).get(field)
+            if not point or point["event_id"] != event_id:
+                raise AccountRestoreError("该字段已有后续修改，或这条记录没有可恢复的旧值")
+            try:
+                account, slot, revision, snapshot = json.loads(self._restore_cipher().decrypt(point["sealed"]))
+                if (account, slot, revision) != (key, field, event_id):
+                    raise InvalidToken
+                return snapshot
+            except (InvalidToken, ValueError):
+                raise AccountRestoreError("无法解密该字段的恢复数据") from None
+
+    def record_codex_change(self, key, actor, field, snapshot, description, *, restore_of=None):
+        with self._lock:
+            self._save_change(self._data, key, actor, [description], snapshots={field: snapshot}, restore_of=restore_of)
 
     def edit_lock(self):
         return self._lock
@@ -105,7 +173,7 @@ class AccountCredentialStore:
             "subscription_started_on": start,
             "subscription_expires_on": record.get("subscription_expires_on", ""),
             "subscription_ends_on": AccountCredentialStore.subscription_end(start) if start else "",
-            "revision": next((item["id"] for item in reversed(entries) if item["source"] in {"admin", "user"}), ""),
+            "revision": next((item["id"] for item in reversed(entries) if item["source"] in {"admin", "user", "restore"}), ""),
         }
 
     @property
@@ -164,6 +232,43 @@ class AccountCredentialStore:
                     if mailbox["name"] in record["mailbox_ids"]
                 })
             self._save({**self._data, "items": items, "pool_migrated": True})
+
+    def _save_account_change(self, old_identity, previous, record, actor, *, restore_of=None, field=None):
+        identity = self.email_key(record.get("login", old_identity))
+        items = dict(self._data["items"])
+        if identity != old_identity:
+            if identity in items:
+                raise AccountRestoreError("GPT 登录账号已被其他账号使用")
+            items = {identity if name == old_identity else name: value for name, value in items.items()}
+        items[identity] = record
+        changed = [name for name in ("login", "password", "secret", *SUBSCRIPTION_FIELDS)
+                   if (previous.get(name) or "") != (record.get(name) or "")]
+        descriptions = [describe_change(name, previous.get(name) or "", record.get(name) or "") for name in changed]
+        snapshots = {name: {name: previous.get(name)} for name in ("login", "password", "secret")
+                     if name in changed and (name != "login" or previous.get("login"))}
+        if set(changed).intersection(SUBSCRIPTION_FIELDS):
+            snapshots["subscription"] = {name: previous.get(name) for name in SUBSCRIPTION_FIELDS}
+        if restore_of:
+            descriptions.insert(0, f"恢复了{restore_label(field)}到修改前")
+        self._save_change({**self._data, "items": items}, record.get("key"), actor, descriptions,
+                          snapshots=snapshots, restore_of=restore_of)
+        return self._public(identity, record) if record.get("key") else None
+
+    def restore_account_field(self, key, event_id, field, actor):
+        with self._lock:
+            account = self.account_by_key(key)
+            if not account:
+                raise AccountRestoreError("未找到 GPT 账号")
+            snapshot = self.restore_snapshot(key, event_id, field)
+            identity = self.email_key(account["login"])
+            previous = self._data["items"][identity]
+            record = dict(previous)
+            for name, value in snapshot.items():
+                if value is None:
+                    record.pop(name, None)
+                else:
+                    record[name] = value
+            self._save_account_change(identity, previous, record, actor, restore_of=event_id, field=field)
 
     def save_account(self, key, payload, valid_mailboxes, *, actor=None):
         if not isinstance(payload, dict) or set(payload) - (ACCOUNT_FIELDS | {"listed", "mailbox_ids"}):
@@ -225,14 +330,7 @@ class AccountCredentialStore:
                     record[field] = normalize_totp_secret(value) if field == "secret" else value
             if current and record == previous:
                 return current
-            items = dict(self._data["items"])
-            if current and identity != old_identity:
-                items = {identity if name == old_identity else name: value for name, value in items.items()}
-            items[identity] = record
-            changes = [describe_change(field, previous.get(field) or "", record.get(field) or "")
-                       for field in ("login", "password", "secret", "subscription_started_on", "subscription_expires_on")]
-            self._save_change({**self._data, "items": items}, record["key"], actor, changes)
-            return self._public(identity, record)
+            return self._save_account_change(old_identity, previous, record, actor)
 
     def ensure_account(self, login, *, actor=None):
         with self._lock:
@@ -293,9 +391,12 @@ class AccountCredentialStore:
                 raise AccountPasswordError("请先添加 GPT 账号")
             data = {**self._data, "items": {**self._data["items"]}}
             previous = data["items"].get(email, {})
-            data["items"][email] = {**previous, field: value}
-            changes = [describe_change(field, previous.get(field), value)] if field in ACCOUNT_FIELDS else []
-            self._save_change(data, previous.get("key"), actor, changes)
+            record = {**previous, field: value}
+            if record.get("key"):
+                self._save_account_change(email, previous, record, actor)
+            else:
+                data["items"][email] = record
+                self._save(data)
 
     def delete(self, email, field=None, *, actor=None):
         email = self.email_key(email)
@@ -307,12 +408,17 @@ class AccountCredentialStore:
                 record.clear()
             else:
                 record.pop(field, None)
+                if record.get("key"):
+                    self._save_account_change(email, previous, record, actor)
+                    return
             if record:
                 data["items"][email] = record
             else:
                 data["items"].pop(email, None)
-            fields = (field,) if field in ACCOUNT_FIELDS else ("login",) if field is None else ()
-            changes = [describe_change(name, previous.get(name), None) for name in fields if previous.get(name)]
+            if field is None and "restore_points" in data:
+                data["restore_points"] = {key: points for key, points in data["restore_points"].items()
+                                          if key != previous.get("key")}
+            changes = [describe_change("login", previous.get("login"), None)] if field is None and previous.get("login") else []
             self._save_change(data, previous.get("key"), actor, changes)
 
     def migrate(self, accounts, passwords, totp, environment):

@@ -178,9 +178,15 @@ ID Token 的 `exp` 不是会员截止时间，也不阻止历史授权日期展�
 登录账号、密码、2FA 和手填到期日一起保存。Codex `auth.json` 单独上传，校验 OpenAI 签名和目标身份，
 已有 Codex 关联时核对对应工作区。接码绑定和上架状态由控制台管理。
 
-账号控制台的「修改记录」按稳定的 GPT 账号标识查询，支持关键词和管理员、用户、系统、已审核标签。
+账号控制台的「修改记录」按稳定的 GPT 账号标识查询，支持关键词和管理员、用户、系统、已审核、恢复标签。
 记录长期存放在 `account_credentials.json` 的 `history` 字段，仅记录操作人、时间、日期或字段变化摘要。
-密码、2FA 密钥和授权内容仅保留在现行配置里。订阅自动到期日发生实际变化时记一次，管理员复核追加独立事件。
+订阅自动到期日发生实际变化时记一次，管理员复核和恢复分别追加独立事件。
+
+管理员可逐个恢复登录账号、密码、2FA、手填到期日或单个工作区的 Codex 授权。每个字段只保留最近一次变动前的恢复点。
+旧版记录、自动订阅日期与邮箱接码设置没有恢复点。恢复 Codex 授权只替换本地文件和运行记录，已失效的授权仍需重新授权。
+恢复点加密存放在 `account_credentials.json` 的 `restore_points`，API 只返回可恢复的字段名称。
+首次写入恢复点时创建同目录 `account_credentials.restore.key`（权限 `0600`）。迁移或备份运行数据时应受限保管该密钥，
+并与 `account_credentials.json` 配套恢复。测试版的默认临时快照排除正式版恢复密钥，测试修改会生成独立的恢复点。
 
 ### Coding Plan 配置资料
 
@@ -224,6 +230,7 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 | `PUT /api/admin/resource-groups` | 批量设置一个资源的分组：`resource_key`、`group_ids`；空列表取消该资源的全部分配 |
 | `POST /api/admin/gpt/accounts` | 创建独立 GPT 账号，`login` 必填，`password`、`secret`、`listed`、`mailbox_ids` 可选 |
 | `PUT /api/admin/gpt/accounts/{key}` | 编辑 GPT 账号；密码和 2FA 留空保留原值，清除使用原有删除接口 |
+| `POST /api/admin/gpt/accounts/{key}/changes/{event_id}/restore` | 管理员恢复该条记录的指定 `field`，字段已有更新时返回 `409` |
 | `GET /api/admin/gpt/accounts/{key}/mailboxes` | 邮箱选项、推荐、选中及占用状态，仅管理员可读 |
 
 GPT 资源 key 来自 `/api/admin/resources`，不应根据当前登录名自行构造。旧记录保留 `gpt:email:...`，
