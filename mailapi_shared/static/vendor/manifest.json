@@ -1,61 +1,5 @@
 [
   {
-    "package": "@editorjs/editorjs",
-    "version": "2.31.7",
-    "license": "Apache-2.0",
-    "source": "https://registry.npmjs.org/@editorjs/editorjs/-/editorjs-2.31.7.tgz",
-    "integrity": "sha512-te4wI1heK3B8s0pz1asyRPEmOglfkb9ex5nvvCN5OUVDLSnohTszI+yyLI73qOIuUWxenIvJYkOuGHzh/a47Hw==",
-    "sha256": {
-      "editorjs.js": "2eb726ea7fd85055be6c9b236b1276631867dab8c55bf16459ea2595d9be47db",
-      "vendor.LICENSE.txt": "5036145ccfecb0e36f330f6a4858223545571b8e2cf068ca2881c25a67e74f59",
-      "LICENSE": "b946f387bbb7de6843c0db34f87a8956f229d220b3bf81b16b8425788cacf3ed"
-    }
-  },
-  {
-    "package": "@editorjs/header",
-    "version": "2.8.9",
-    "license": "MIT",
-    "source": "https://registry.npmjs.org/@editorjs/header/-/header-2.8.9.tgz",
-    "integrity": "sha512-eBL9/PLDKiE9ADZycmgps3PLz9Lw8w6rPFXr0mfHuhHQI/ynP/q1vLpyruBrRCflTLD2Dlj5nYPoJjL5mP/MFw==",
-    "sha256": {
-      "header.js": "4a41c871c64dee885fe3eedd26654a759aac772cc974e4e9cded8cc944a35c57",
-      "LICENSE": "99f040592bf043fe713fc7fce61132cb74cb7c6cfc81be0ccb2d5be93282a098"
-    }
-  },
-  {
-    "package": "@editorjs/list",
-    "version": "2.0.9",
-    "license": "MIT",
-    "source": "https://registry.npmjs.org/@editorjs/list/-/list-2.0.9.tgz",
-    "integrity": "sha512-rUTgDSt5wygD3Dp24bNyp6vvye/Xf4UWju0ZuvWeP13Z4cu2z1Jb5JFSTEhCou72XUGuf4xVhtsd8cm/bwUS1g==",
-    "sha256": {
-      "list.js": "debc67131a021fc794652fabe1cab901eec73abfdc8859be51d612a3e709886e",
-      "LICENSE": "03a89e2de7e6e09b1ae79da098cdd5663168fddf174bfd7c1e9c15cc8dc66901"
-    }
-  },
-  {
-    "package": "@editorjs/code",
-    "version": "2.9.4",
-    "license": "MIT",
-    "source": "https://registry.npmjs.org/@editorjs/code/-/code-2.9.4.tgz",
-    "integrity": "sha512-c0zyWodNqjL/0WI67sZvACIOFU9IAHG0UeeIpjss8pZGGNBum+UWkh7nKULK0SYvaOrdPdlWWqjuFU1TFA5jUA==",
-    "sha256": {
-      "code.js": "ea43829cdc5b3e8a73bb9dd36892ed25c97589de5995420438f46803bbb0534b",
-      "LICENSE": "99f040592bf043fe713fc7fce61132cb74cb7c6cfc81be0ccb2d5be93282a098"
-    }
-  },
-  {
-    "package": "@editorjs/image",
-    "version": "2.10.3",
-    "license": "MIT",
-    "source": "https://registry.npmjs.org/@editorjs/image/-/image-2.10.3.tgz",
-    "integrity": "sha512-ekCsGICZOIdghF/U2T34H7CItqaWAoJDXbkRD+x8l/LIo/7Ozf7KovYm21qz+CluArgV4RurVFHqwlz+O0vfJA==",
-    "sha256": {
-      "image.js": "9949d167637d945c5e18583528e3783c0e30716990d217f1ef46f0c08fc6e214",
-      "LICENSE": "192e89e70522876f3612c57278a461da176663133432a563e415118ead685402"
-    }
-  },
-  {
     "package": "photoswipe",
     "version": "5.4.4",
     "license": "MIT",
@@ -65,6 +9,17 @@
       "photoswipe.js": "ba86fd2dadb31acd8e488540fedb5037c598bf86c63a2a804d5025271af6a323",
       "photoswipe.css": "b0eaaae0b9de064d25e2f18517b9011a526d9b2142376e1c0febd096cebab9f3",
       "LICENSE": "2c223af0b21d32240087ee189eb70fd315907b6ade8b561e24265baccd6a98e7"
+    }
+  },
+  {
+    "package": "tiptap",
+    "version": "3.33.1",
+    "license": "MIT",
+    "source": "frontend/vendor-tiptap.mjs",
+    "sha256": {
+      "tiptap.js": "31c4314fa5f9b6857821259c9ef6e4893d8fd004527b5c9c56189e3e1821ed1a",
+      "dependencies.json": "cacf004d4ff45dc8001dbb7adc62be3bdfdb75fef23053c90b8943179ebda20b",
+      "LICENSES.txt": "a2292abb8ae863c73242d0778a705b58bcc66edd986674dc3cf40cd346557ee0"
     }
   }
 ]

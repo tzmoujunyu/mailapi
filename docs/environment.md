@@ -13,7 +13,7 @@
 | Node.js | 前端测试 | 24.14.0，仅测试需要 |
 | npm | Node 工具检查 | 11.9.0，仅测试需要 |
 
-服务运行不依赖 Node.js。只有运行 `tests/test_account_ui.cjs` 时才需要 Node.js。
+服务运行不依赖 Node.js。Node.js 用于前端测试，以及 `frontend/` 中的编辑器静态包构建和 DOM 测试。
 
 ## Python 依赖
 
@@ -22,7 +22,9 @@
 `requirements.txt` 当前包含 FastAPI、Uvicorn、Google API/OAuth、MSAL、Proton API client、python-multipart、pyotp、Pillow 和 pillow-heif。`requirements-dev.txt` 当前额外包含 httpx，用于 FastAPI `TestClient`。
 
 Codex 图文提示需要 Pillow 的 WebP/AVIF 支持及 pillow-heif 的 HEIC 解码支持。本次验证版本为 Pillow 13.0.0、pillow-heif 1.8.1，
-macOS arm64 和 Linux x86_64 均使用预编译 wheel，无需另建 Node.js 运行服务。Editor.js 和 PhotoSwipe 静态文件已包含在仓库中。
+macOS arm64 和 Linux x86_64 均使用预编译 wheel，无需另建 Node.js 运行服务。Tiptap 和 PhotoSwipe 静态文件已包含在仓库中。
+构建编辑器依赖及运行其 DOM 测试时，在本地执行 `npm --prefix frontend ci --ignore-scripts`，再运行
+`npm --prefix frontend run build` 和 `npm --prefix frontend test`。依赖已锁定；本次验证的 Node.js 为 24.14.0。
 
 本地使用 `uv` 时：
 

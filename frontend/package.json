@@ -1,0 +1,19 @@
+{
+  "name": "mailapi-editor-tools",
+  "private": true,
+  "scripts": {
+    "build": "node build-tiptap.mjs",
+    "test": "node --test test/*.test.cjs"
+  },
+  "dependencies": {
+    "@tiptap/core": "3.33.1",
+    "@tiptap/pm": "3.33.1",
+    "@tiptap/starter-kit": "3.33.1",
+    "@tiptap/extension-list": "3.33.1",
+    "@tiptap/extension-file-handler": "3.33.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "jsdom": "29.1.1"
+  }
+}

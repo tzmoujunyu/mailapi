@@ -61,3 +61,16 @@ class CodexTipContentTests(unittest.TestCase):
                             [{'type': 'list', 'data': {'style': 'ordered', 'items': [None]}}]):
                 with self.subTest(invalid=invalid), self.assertRaises(SiteAccountError):
                     validate_blocks(invalid, root)
+
+    def test_list_numbering_and_mixed_nesting_survive_validation(self):
+        blocks = [{'type': 'list', 'data': {'style': 'ordered', 'meta': {'start': 3, 'type': 'A'},
+                   'items': [{'content': '步骤', 'meta': {}, 'style': 'unordered',
+                              'items': [{'content': '子项', 'meta': {}, 'items': []}]}]}}]
+        with tempfile.TemporaryDirectory() as directory:
+            result, text = validate_blocks(blocks, Path(directory))
+            self.assertEqual(result, blocks)
+            self.assertEqual(text, '步骤\n子项')
+            for bad in ({'start': True}, {'start': -1}, {'type': '<script>'}, []):
+                blocks[0]['data']['meta'] = bad
+                with self.assertRaises(SiteAccountError):
+                    validate_blocks(blocks, Path(directory))

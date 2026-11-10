@@ -362,8 +362,24 @@
       <form id="codex-tip-form" class="password-form">
         <h2 id="codex-tip-edit-heading">新增提示</h2>
         <label>标题<input id="codex-tip-title" maxlength="120" required /></label>
-        <div><label id="codex-tip-body-label">正文</label><div id="codex-tip-body" aria-labelledby="codex-tip-body-label"></div></div>
-        <p class="muted">选中文字可加粗、斜体或添加链接。点击 ＋ 插入小标题、列表、代码和图片，也可直接粘贴图片。单张最多 8 MB，动态图保存首帧。</p>
+        <div class="codex-tip-editor-field">
+          <label id="codex-tip-body-label">正文</label>
+          <div class="codex-tip-editor-shell">
+            <div id="codex-tip-toolbar" class="codex-tip-toolbar" role="toolbar" aria-label="正文格式">
+              <select aria-label="段落格式"><option value="paragraph">正文</option><option value="h2">小标题</option><option value="h3">次级标题</option></select>
+              <span class="tip-toolbar-group"><button type="button" data-tip-action="bold" aria-label="加粗" title="加粗" aria-pressed="false"><b>B</b></button><button type="button" data-tip-action="italic" aria-label="斜体" title="斜体" aria-pressed="false"><i>I</i></button><button type="button" data-tip-action="link" aria-pressed="false">链接</button></span>
+              <span class="tip-toolbar-group"><button type="button" data-tip-action="bulletList" aria-pressed="false" title="无序列表">• 列表</button><button type="button" data-tip-action="orderedList" aria-pressed="false" title="有序列表">1. 列表</button><button type="button" data-tip-action="codeBlock" aria-pressed="false">代码块</button></span>
+              <span class="tip-toolbar-group"><button type="button" data-tip-action="image">＋ 图片</button><button type="button" data-tip-action="undo" aria-label="撤销" title="撤销">↶</button><button type="button" data-tip-action="redo" aria-label="重做" title="重做">↷</button></span>
+            </div>
+            <div id="codex-tip-link-panel" class="codex-tip-link-panel" hidden>
+              <label>链接地址<input id="codex-tip-link-url" type="text" inputmode="url" autocomplete="off" placeholder="https://…" /></label>
+              <button class="btn" type="button" data-link-action="save">应用</button><button class="btn" type="button" data-link-action="remove">移除链接</button><button class="btn" type="button" data-link-action="cancel">取消</button>
+            </div>
+            <div id="codex-tip-body" aria-labelledby="codex-tip-body-label"></div>
+          </div>
+          <input id="codex-tip-image-file" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,image/avif" multiple hidden />
+        </div>
+        <p class="muted">使用上方工具栏设置文字格式，也可上传或直接粘贴图片。图片按独立段落插入，可在图下填写说明。单张最多 8 MB，动态图保存首帧。</p>
         <p id="codex-tip-upload-status" class="muted" role="status"></p>
         <p id="codex-tip-error" class="bad" role="alert"></p>
         <div class="dialog-actions"><button id="codex-tip-cancel" class="btn" type="button">取消</button><button id="codex-tip-save" class="btn btn-primary" type="submit">保存</button></div>
@@ -606,12 +622,9 @@
     <script src="/static/coding-plan-quota.js"></script>
     <script src="/static/coding-plan-config.js"></script>
     <script src="/static/account-subscription.js"></script>
-    <script src="/static/vendor/editorjs/editorjs.js"></script>
-    <script src="/static/vendor/header/header.js"></script>
-    <script src="/static/vendor/list/list.js"></script>
-    <script src="/static/vendor/code/code.js"></script>
-    <script src="/static/vendor/image/image.js"></script>
+    <script src="/static/vendor/tiptap/tiptap.js"></script>
     <script src="/static/codex-tip-content.js"></script>
+    <script src="/static/codex-tip-format.js"></script>
     <script src="/static/codex-tip-editor.js"></script>
     <script>
       const accountRows = document.getElementById('account-rows');

@@ -24,23 +24,6 @@ input::placeholder, textarea::placeholder { color: var(--theme-muted, #6b7280); 
 body.login-page { display: flex; flex-direction: column; }
 .login-theme-header { display: flex; justify-content: flex-end; width: 100%; padding: 16px 24px; }
 .login-main { flex: 1; display: grid; place-items: center; width: 100%; padding: 0 0 48px; }
-#codex-tip-body .ce-popover, #codex-tip-body .ce-inline-toolbar {
-  --color-background: var(--theme-surface, #fff);
-  --color-text-primary: var(--theme-text, #1f2937);
-  --color-text-secondary: var(--theme-muted, #6b7280);
-  --color-border: var(--theme-border, #dfe3e8);
-  --color-background-item-hover: var(--theme-hover, #f3f5f7);
-  --color-background-item-focus: var(--theme-info-bg, #eff6ff);
-  --color-background-icon-active: var(--theme-info-bg, #eff6ff);
-  --color-text-icon-active: var(--theme-link, #1d4ed8);
-}
-#codex-tip-body .ce-toolbar__plus, #codex-tip-body .ce-toolbar__settings-btn, #codex-tip-body .ce-inline-tool { color: var(--theme-text, #1f2937); }
-#codex-tip-body .ce-toolbar__plus:hover, #codex-tip-body .ce-toolbar__settings-btn:hover, #codex-tip-body .ce-inline-tool:hover { background: var(--theme-hover, #f3f5f7); }
-#codex-tip-body .ce-block--selected .ce-block__content { background: var(--theme-info-bg, #eff6ff); }
-#codex-tip-body .cdx-input, #codex-tip-body .ce-code__textarea, #codex-tip-body .cdx-search-field {
-  color: var(--theme-text, #1f2937); background: var(--theme-surface-muted, #f8fafc); border-color: var(--theme-border, #dfe3e8);
-}
-#codex-tip-body .cdx-input { box-shadow: inset 0 0 0 1px var(--theme-border, #dfe3e8); }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --theme-page-bg: #0b1220;

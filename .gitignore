@@ -6,3 +6,4 @@ runtime/
 .env.test
 credentials.json
 Codex-Manager/
+frontend/node_modules/

@@ -37,12 +37,14 @@
 
   function render(tip, root) {
     root.replaceChildren();
-    function renderList(items, ordered) {
+    function renderList(items, ordered, meta = {}) {
       const list = document.createElement(ordered ? 'ol' : 'ul');
+      if (ordered && Number.isInteger(meta.start)) list.start = meta.start;
+      if (ordered && ['1', 'a', 'A', 'i', 'I'].includes(meta.type)) list.type = meta.type;
       for (const item of items) {
         const li = document.createElement('li');
         inline(li, item.content);
-        if (item.items?.length) li.append(renderList(item.items, ordered));
+        if (item.items?.length) li.append(renderList(item.items, item.style ? item.style === 'ordered' : ordered, item.meta));
         list.append(li);
       }
       return list;
@@ -58,7 +60,7 @@
         const code = document.createElement('code');
         code.textContent = data.code || '';
         node.append(code);
-      } else if (block.type === 'list') node = renderList(data.items || [], data.style === 'ordered');
+      } else if (block.type === 'list') node = renderList(data.items || [], data.style === 'ordered', data.meta);
       else if (block.type === 'image' && imagePath.test(data.file?.url)) {
         node = document.createElement('figure');
         const link = document.createElement('a');

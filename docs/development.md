@@ -40,6 +40,7 @@ test_app/static -> ../mailapi_shared/static
 *.py、mail_providers/        正式版兼容入口，实际实现来自 mailapi_shared/
 test_app/services/           测试版历史导入路径，实际实现来自 mailapi_shared/
 scripts/                    运维、授权与旧中继脚本
+frontend/                   Tiptap 静态包构建、锁定依赖和真实编辑器 DOM 测试
 tests/                      Python 与前端回归测试
 docs/                       开发流程
 runtime/                    正式运行数据（不提交）
@@ -213,10 +214,15 @@ ID Token 的 `exp` 不是会员截止时间，也不阻止历史授权日期展�
 管理员和普通管理员可在控制台的「Codex 使用提示」页签新增、修改和删除。新增提示排在最前，修改保留位置。
 提示保存在当前运行模式的数据目录 `codex_tips.json`。文件尚未创建时显示原有设备数量提示，删除全部条目后显示空列表。
 
-编辑器使用 Editor.js，支持段落、加粗、斜体、链接、小标题、有序／无序列表、代码块和图片说明。
+编辑器使用 Tiptap 3，顶部常驻工具栏支持段落、加粗、斜体、链接、小标题、有序／无序列表、代码块、图片和撤销／重做。
+正文独立滚动，窄屏时工具栏换行。图片说明直接在图下编辑，回车进入图片后的正文，格式操作不会把图片替换成代码块或标题。
+阅读详情继续由 PhotoSwipe 放大图片。
 旧 `body` 仍按纯文本转成段落读取，不在加载时改写原文件；保存新内容时写入经过白名单校验的 `blocks`，
 并保留纯文本 `body` 用于列表摘要和搜索。正文文字上限仍为 8000 字，最多 100 个内容块。
+`codex-tip-format.js` 负责 Tiptap 文档和现有块格式互转，不保存另一份编辑器数据。列表保留可选的 `meta.start/type` 编号，
+嵌套列表通过条目的可选 `style` 保存不同类型，旧条目缺省时沿用上层类型。
 图片可从文件选择器上传或粘贴图片文件；不代取外部图片 URL，不接受任意 HTML。
+上传期间可继续编辑文字，插入位置随文档变动同步；上传结束前禁止保存或关闭编辑窗口，失败时保留原正文并显示错误。
 
 图片处理集中在 `mailapi_shared/codex_tip_content.py`：单张最多 8 MB、2400 万像素，接受 JPEG、PNG、WebP、GIF、HEIC/HEIF、AVIF，
 校正方向、移除元数据后转为 WebP。正文图限制在 2560 × 12000 像素内，另生成 480 × 1200 内的缩略图，保持原比例。
@@ -226,6 +232,16 @@ PNG/GIF 使用无损 WebP，其他格式质量设为 85；动态图只保留首�
 备份时需将 `codex_tips.json` 和 `codex_tip_images/` 一起保存。
 
 浏览器依赖固定在 `mailapi_shared/static/vendor/`，不请求外部 CDN；版本、来源、完整性校验值及许可证见 `vendor/manifest.json`。
+Tiptap 在 `frontend/package-lock.json` 锁定，构建包的全部运行依赖及许可证保存在 `vendor/tiptap/`。
+日常修改界面只需修改 `static/codex-tip-editor.js`、`codex-tip-format.js` 和 CSS；升级 Tiptap 或重新生成包时执行：
+
+```bash
+npm --prefix frontend ci --ignore-scripts
+npm --prefix frontend run build
+npm --prefix frontend test
+```
+
+`frontend/test/` 使用真实 Tiptap 和 PhotoSwipe 的 jsdom 测试，不需要浏览器或正式数据。生成的静态包随代码提交并同步，服务器无需安装 npm 依赖。
 
 ### Coding Plan 配置资料
 

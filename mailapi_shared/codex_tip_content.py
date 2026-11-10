@@ -1,4 +1,4 @@
-"""Validated Editor.js content and private WebP images for usage tips."""
+"""Validated structured content and private WebP images for usage tips."""
 import html
 import io
 import os
@@ -111,6 +111,20 @@ def validate_blocks(blocks, directory):
         plain.append(text)
         return cleaned
 
+    def list_meta(value):
+        if not isinstance(value, dict):
+            raise SiteAccountError("列表编号格式无效")
+        result = {}
+        if "start" in value:
+            if type(value["start"]) is not int or not 0 <= value["start"] <= 1_000_000:
+                raise SiteAccountError("列表起始编号无效")
+            result["start"] = value["start"]
+        if "type" in value:
+            if value["type"] not in ("1", "a", "A", "i", "I"):
+                raise SiteAccountError("列表编号样式无效")
+            result["type"] = value["type"]
+        return result
+
     def list_items(items, depth=0):
         if not isinstance(items, list) or not items or depth > 3 or len(items) > 100:
             raise SiteAccountError("列表格式无效或层级过深")
@@ -118,8 +132,13 @@ def validate_blocks(blocks, directory):
         for item in items:
             if not isinstance(item, dict) or "content" not in item:
                 raise SiteAccountError("列表项格式无效")
-            result.append({"content": inline(item["content"]), "meta": {},
-                           "items": list_items(item["items"], depth + 1) if item.get("items") else []})
+            entry = {"content": inline(item["content"]), "meta": list_meta(item.get("meta", {})),
+                     "items": list_items(item["items"], depth + 1) if item.get("items") else []}
+            if "style" in item:
+                if item["style"] not in ("ordered", "unordered"):
+                    raise SiteAccountError("嵌套列表样式无效")
+                entry["style"] = item["style"]
+            result.append(entry)
         return result
 
     for block in blocks:
@@ -131,7 +150,7 @@ def validate_blocks(blocks, directory):
         elif kind == "header" and data.get("level") in (2, 3):
             content = {"text": inline(data.get("text", "")), "level": data["level"]}
         elif kind == "list" and data.get("style") in ("ordered", "unordered"):
-            content = {"style": data["style"], "meta": {}, "items": list_items(data.get("items"))}
+            content = {"style": data["style"], "meta": list_meta(data.get("meta", {})), "items": list_items(data.get("items"))}
         elif kind == "code" and isinstance(data.get("code"), str):
             content = {"code": data["code"]}
             plain.append(data["code"])
