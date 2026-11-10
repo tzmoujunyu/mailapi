@@ -61,6 +61,19 @@ Gmail、Outlook 的 token 和 Proton 会话文件使用测试目录内的路径�
 该路径是否与正式数据目录重叠，并拒绝目录内指向外部的符号链接。此检查只从正式 `.env`
 读取 `MAILAPI_DATA_DIR` 设置用于比较路径。
 
+## 网页外观
+
+主页、控制台和账户与分组页顶部的会话栏提供「外观」选择，不固定在视口。
+支持浅色、深色、跟随系统，现有账户和新账户均默认跟随系统。
+`GET/PUT /api/auth/preferences` 只读取或修改当前登录账户的 `theme`，保存到 `site_accounts.json` 的对应用户记录，
+不修改分组、资源或会话。刷新、重新登录和换设备后读取同一账户偏好；管理员预览其他账户时仍沿用管理员本人的外观。
+登录页也可切换，但未登录时只影响当前页面，登录后以账户偏好为准。
+
+页面响应直接带上已保存的 `data-theme`，避免等待账户请求后才换色。共用 `static/theme.css/js` 管理主题，
+原有浅色值作为 CSS 变量的回退值保留，深色集中定义颜色。选择跟随系统时由 `prefers-color-scheme: dark` 实时响应系统变化，
+明确选择浅色或深色时不随系统变化；未声明偏好时使用浅色。`color-scheme` 同步浏览器表单控件和滚动条。
+只公开两份主题静态文件供登录页使用，账户偏好接口仍要求登录并检查同源写入。
+
 ## 共用帮助提示
 
 页面引入 `/static/help-hints.css` 和 `/static/help-hints.js` 后，可以复用以下结构。
@@ -315,4 +328,5 @@ python -m unittest discover -s tests -q
 node --test tests/test_account_ui.cjs
 MAILAPI_UI_ROOT=mailapi_shared/static node --test tests/test_account_ui.cjs
 MAILAPI_UI_ROOT=mailapi_shared/static node --test tests/test_access_ui.cjs
+MAILAPI_UI_ROOT=mailapi_shared/static node --test tests/test_theme_ui.cjs
 ```

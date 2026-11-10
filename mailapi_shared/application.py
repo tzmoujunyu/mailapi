@@ -98,7 +98,7 @@ from .account_passwords import (
 from .coding_plan_quota import CodingPlanQuotaCache
 from .resource_accounts import ResourceStore, ResourceStoreError
 from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
-from .accounts import SESSION_COOKIE, create_account_router, read_payload
+from .accounts import SESSION_COOKIE, create_account_router, read_payload, themed_page
 from .codex_tip_content import MAX_IMAGE_BYTES, image_directory, image_file, legacy_blocks, save_image, validate_blocks
 from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
 
@@ -2557,7 +2557,7 @@ async def access_guard(request: FastAPIRequest, call_next):
             origin is not None and not same_origin(origin, request.url.scheme, request.headers.get("host", ""))
         ):
             return JSONResponse({"detail": "不允许跨站请求"}, status_code=403)
-    public = callback or path in {"/login", "/api/auth/login"}
+    public = callback or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
     role = request_access_role(request)
     if not public and (role is None or (requires_admin_access(request) and role != "admin")):
         if path.startswith("/api/"):
@@ -3456,7 +3456,7 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
     preview_script = ("<script>window.__USER_PREVIEW__ = true;window.__PREVIEW_USER_ID__ = "
                       + json.dumps(subject_id) + ";</script>") if preview else ""
     return HTMLResponse(
-        page
+        themed_page(page, request)
         .replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if role == "admin" and not preview else "")
         .replace("<!-- PREVIEW_BANNER -->", preview_banner)
         .replace("<!-- PREVIEW_SCRIPT -->", preview_script),
@@ -3465,9 +3465,9 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
 
 
 @app.get("/admin")
-def admin_page():
-    return FileResponse(
-        STATIC_DIR / "admin.html",
+def admin_page(request: FastAPIRequest):
+    return HTMLResponse(
+        themed_page((STATIC_DIR / "admin.html").read_text(encoding="utf-8"), request),
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 

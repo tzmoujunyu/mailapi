@@ -175,6 +175,24 @@ class SiteAccountStore:
             user = self._data["users"].get(user_id)
             return self._public(user) if user else None
 
+    def preferences(self, user_id):
+        with self._lock:
+            user = self._data["users"].get(user_id)
+            if not user:
+                raise SiteAccountError("请先登录", 401)
+            theme = user.get("theme", "system")
+            return {"theme": theme if theme in ("system", "light", "dark") else "system"}
+
+    def set_theme(self, user_id, theme):
+        if not isinstance(theme, str) or theme not in {"system", "light", "dark"}:
+            raise SiteAccountError("外观须为浅色、深色或跟随系统")
+        with self._edit() as data:
+            user = data["users"].get(user_id)
+            if not user:
+                raise SiteAccountError("请先登录", 401)
+            user["theme"] = theme
+        return {"theme": theme}
+
     def create_user(self, actor_id, username, password, role="user", *, note=""):
         return self.create_users(actor_id, [username], password, role, note=note)[0]
 

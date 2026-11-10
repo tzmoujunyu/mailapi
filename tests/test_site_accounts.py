@@ -232,6 +232,49 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.store.assign_resource_groups(self.identities["alice"]["id"], self.keys[0], [], set(self.keys))
         self.assertEqual(self.store.path.read_bytes(), before)
 
+    def test_theme_preference_is_private_persistent_and_validated(self):
+        route = '/api/auth/preferences'
+        alice_id = self.identities['alice']['id']
+        self.assertEqual(self.alice.get(route).json(), {'theme': 'system'})
+        before = json.loads(self.store.path.read_text())
+        self.assertEqual(self.alice.put(route, json={'theme': 'dark'}).json(), {'theme': 'dark'})
+        reopened = SiteAccountStore(self.store.path)
+        self.assertEqual(reopened.preferences(alice_id), {'theme': 'dark'})
+        self.assertEqual(self.bob.get(route).json(), {'theme': 'system'})
+        after = json.loads(self.store.path.read_text())
+        expected = json.loads(json.dumps(before))
+        expected['users'][alice_id]['theme'] = 'dark'
+        self.assertEqual(after, expected)
+        saved = self.store.path.read_bytes()
+        for payload in ({}, {'theme': []}, {'theme': 'auto'}, {'theme': None}, {'theme': '<script>x</script>'},
+                        {'theme': 'light', 'user_id': self.identities['bob']['id']}):
+            self.assertEqual(self.alice.put(route, json=payload).status_code, 400)
+            self.assertEqual(self.store.path.read_bytes(), saved)
+        self.assertEqual(self.alice.put(route, json={'theme': 'light'}, headers={'Origin': 'https://other.example'}).status_code, 403)
+        for theme in ('light', 'system'):
+            self.assertEqual(self.alice.put(route, json={'theme': theme}).json(), {'theme': theme})
+        anonymous = TestClient(self.module.app, follow_redirects=False)
+        self.addCleanup(anonymous.close)
+        self.assertEqual(anonymous.get(route).status_code, 401)
+        self.assertEqual(anonymous.put(route, json={'theme': 'dark'}).status_code, 401)
+
+    def test_pages_render_account_theme_before_loading_scripts(self):
+        self.admin.put('/api/auth/preferences', json={'theme': 'dark'})
+        self.alice.put('/api/auth/preferences', json={'theme': 'light'})
+        for route in ('/', '/admin', '/admin/access', '/preview?user_id=' + self.identities['alice']['id']):
+            page = self.admin.get(route)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn('data-theme="dark" data-theme-account="signed-in"', page.text.split('<head>')[0])
+            self.assertIn('/static/theme.css', page.text)
+            self.assertIn('/static/theme.js', page.text)
+        self.assertIn('data-theme="light"', self.alice.get('/').text.split('<head>')[0])
+        anonymous = TestClient(self.module.app, follow_redirects=False)
+        self.addCleanup(anonymous.close)
+        self.assertIn('data-theme="system" data-theme-account=""', anonymous.get('/login').text)
+        for route in ('/static/theme.css', '/static/theme.js'):
+            self.assertEqual(anonymous.get(route).status_code, 200)
+        self.assertEqual(anonymous.get('/api/admin/users').status_code, 401)
+
     def test_login_uses_new_credentials_and_http_only_cookie(self):
         client = TestClient(self.module.app, follow_redirects=False)
         self.addCleanup(client.close)

@@ -3,7 +3,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from .site_accounts import SESSION_SECONDS, SiteAccountError
@@ -11,6 +11,14 @@ from .web_security import LoginThrottle
 
 
 SESSION_COOKIE = "mailapi_session"
+
+
+def themed_page(page, request):
+    user = getattr(request.state, "site_user", None)
+    theme = request.app.state.site_accounts.preferences(user["id"])["theme"] if user else "system"
+    return page.replace('data-theme="system"', f'data-theme="{theme}"', 1).replace(
+        'data-theme-account=""', 'data-theme-account="signed-in"' if user else 'data-theme-account=""', 1,
+    )
 
 
 async def read_payload(request, fields):
@@ -39,19 +47,19 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
             raise SiteAccountError("请先使用网站账户登录", 401)
         return user["id"]
 
-    def login_error(browser, message, status, headers=None):
+    def login_error(request, browser, message, status, headers=None):
         if browser:
             page = (static_dir / "login.html").read_text(encoding="utf-8")
-            return HTMLResponse(page.replace("<!-- LOGIN_ERROR -->", message), status_code=status, headers=headers)
+            return HTMLResponse(themed_page(page.replace("<!-- LOGIN_ERROR -->", message), request), status_code=status, headers=headers)
         return JSONResponse({"detail": message}, status_code=status, headers=headers)
 
     def login_response(request, username, password, totp_code, *, browser=False):
         retry_after = throttle.check(request.client.host if request.client else "", username)
         if retry_after:
-            return login_error(browser, "登录尝试过多，请稍后再试", 429, {"Retry-After": str(retry_after)})
+            return login_error(request, browser, "登录尝试过多，请稍后再试", 429, {"Retry-After": str(retry_after)})
         result = store(request).login(username, password, totp_code, on_admin_failure=on_admin_failure)
         if result is None:
-            return login_error(browser, "用户名、密码或动态验证码错误", 401)
+            return login_error(request, browser, "用户名、密码或动态验证码错误", 401)
         token, user = result
         response = RedirectResponse("/", status_code=303) if browser else JSONResponse({"user": user})
         response.set_cookie(SESSION_COOKIE, token, httponly=True, max_age=SESSION_SECONDS,
@@ -63,7 +71,7 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
         if request.state.site_user:
             return RedirectResponse("/", status_code=303)
         page = (static_dir / "login.html").read_text(encoding="utf-8")
-        return HTMLResponse(page.replace("<!-- LOGIN_ERROR -->", ""))
+        return HTMLResponse(themed_page(page.replace("<!-- LOGIN_ERROR -->", ""), request))
 
     @router.post("/login")
     def login_form(
@@ -97,6 +105,15 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     def me(request: Request):
         return {"user": request.state.site_user, "groups": store(request).user_groups(user_id(request))}
 
+    @router.get("/api/auth/preferences")
+    def preferences(request: Request):
+        return store(request).preferences(user_id(request))
+
+    @router.put("/api/auth/preferences")
+    async def update_preferences(request: Request):
+        payload = await read_payload(request, {"theme"})
+        return await run_in_threadpool(store(request).set_theme, user_id(request), payload.get("theme"))
+
     @router.post("/api/auth/password")
     async def change_password(request: Request):
         payload = await read_payload(request, {"current_password", "new_password"})
@@ -106,8 +123,8 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
         return response
 
     @router.get("/admin/access")
-    def access_page():
-        return FileResponse(static_dir / "access.html")
+    def access_page(request: Request):
+        return HTMLResponse(themed_page((static_dir / "access.html").read_text(encoding="utf-8"), request))
 
     @router.get("/api/admin/users")
     def list_users(request: Request):
