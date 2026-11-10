@@ -138,7 +138,6 @@
       .gpt-tag-restore { background: #fef3c7; color: #92400e; }
       .password-form { display: grid; gap: 14px; }
       #codex-tip-edit-dialog { width: min(620px, calc(100vw - 24px)); max-height: 86dvh; }
-      #codex-tip-body { box-sizing: border-box; width: 100%; min-height: 160px; padding: 8px 9px; border: 1px solid #c7ced6; border-radius: 6px; font: inherit; resize: vertical; }
       #codex-tips-panel table { min-width: 0; }
       #codex-tips-panel th:last-child { width: 138px; }
       .mail-settings { margin-top: 26px; padding-top: 22px; border-top: 1px solid #e5e7eb; }
@@ -213,6 +212,7 @@
     <link rel="stylesheet" href="/static/quota.css">
     <link rel="stylesheet" href="/static/coding-plan-config.css">
     <link rel="stylesheet" href="/static/account-subscription.css">
+    <link rel="stylesheet" href="/static/codex-tips.css">
     <script src="/static/session.js" defer></script>
     <script src="/static/management-tabs.js" defer></script>
     <script src="/static/management-search.js" defer></script>
@@ -360,7 +360,9 @@
       <form id="codex-tip-form" class="password-form">
         <h2 id="codex-tip-edit-heading">新增提示</h2>
         <label>标题<input id="codex-tip-title" maxlength="120" required /></label>
-        <label>正文<textarea id="codex-tip-body" rows="7" maxlength="8000" required></textarea></label>
+        <div><label id="codex-tip-body-label">正文</label><div id="codex-tip-body" aria-labelledby="codex-tip-body-label"></div></div>
+        <p class="muted">选中文字可加粗、斜体或添加链接。点击 ＋ 插入小标题、列表、代码和图片，也可直接粘贴图片。单张最多 8 MB，动态图保存首帧。</p>
+        <p id="codex-tip-upload-status" class="muted" role="status"></p>
         <p id="codex-tip-error" class="bad" role="alert"></p>
         <div class="dialog-actions"><button id="codex-tip-cancel" class="btn" type="button">取消</button><button id="codex-tip-save" class="btn btn-primary" type="submit">保存</button></div>
       </form>
@@ -602,6 +604,13 @@
     <script src="/static/coding-plan-quota.js"></script>
     <script src="/static/coding-plan-config.js"></script>
     <script src="/static/account-subscription.js"></script>
+    <script src="/static/vendor/editorjs/editorjs.js"></script>
+    <script src="/static/vendor/header/header.js"></script>
+    <script src="/static/vendor/list/list.js"></script>
+    <script src="/static/vendor/code/code.js"></script>
+    <script src="/static/vendor/image/image.js"></script>
+    <script src="/static/codex-tip-content.js"></script>
+    <script src="/static/codex-tip-editor.js"></script>
     <script>
       const accountRows = document.getElementById('account-rows');
       let accountsLoading = false;
@@ -1669,7 +1678,6 @@
       const codexTipEditor = document.getElementById('codex-tip-edit-dialog');
       const codexTipForm = document.getElementById('codex-tip-form');
       const codexTipTitle = document.getElementById('codex-tip-title');
-      const codexTipBody = document.getElementById('codex-tip-body');
       const codexTipError = document.getElementById('codex-tip-error');
       const codexTipSave = document.getElementById('codex-tip-save');
       const codexTipCancel = document.getElementById('codex-tip-cancel');
@@ -1687,19 +1695,27 @@
         } catch (error) { setMessage(codexTipMessage, error.message, true); }
       }
 
-      function openCodexTip(tip) {
+      async function openCodexTip(tip) {
+        if (codexTipSave.disabled || window.CodexTipEditor.busy()) return;
         editingCodexTip = tip?.id || '';
         document.getElementById('codex-tip-edit-heading').textContent = tip ? '修改提示' : '新增提示';
         codexTipTitle.value = tip?.title || '';
-        codexTipBody.value = tip?.body || '';
         codexTipError.textContent = '';
         codexTipEditor.showModal();
-        codexTipTitle.focus();
+        codexTipSave.disabled = true;
+        try {
+          await window.CodexTipEditor.open(tip);
+          codexTipTitle.focus();
+          codexTipSave.disabled = false;
+        } catch (error) { codexTipError.textContent = '编辑器加载失败，请刷新页面重试。'; }
       }
 
       addCodexTip.addEventListener('click', () => openCodexTip());
-      codexTipCancel.addEventListener('click', () => codexTipEditor.close());
-      codexTipEditor.addEventListener('cancel', event => { if (codexTipSave.disabled) event.preventDefault(); });
+      codexTipCancel.addEventListener('click', () => {
+        if (window.CodexTipEditor.busy()) { codexTipError.textContent = '请等待图片上传完成'; return; }
+        codexTipEditor.close();
+      });
+      codexTipEditor.addEventListener('cancel', event => { if (codexTipSave.disabled || window.CodexTipEditor.busy()) event.preventDefault(); });
       codexTipRows.addEventListener('click', async event => {
         const edit = event.target.closest('[data-edit-codex-tip]');
         if (edit) {
@@ -1727,9 +1743,10 @@
         codexTipSave.disabled = codexTipCancel.disabled = true;
         codexTipError.textContent = '';
         try {
+          const blocks = await window.CodexTipEditor.save();
           const { item } = await api(id ? `/api/admin/codex-tips/${encodeURIComponent(id)}` : '/api/admin/codex-tips', {
             method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: codexTipTitle.value, body: codexTipBody.value }),
+            body: JSON.stringify({ title: codexTipTitle.value, blocks }),
           });
           codexTips = id ? codexTips.map(tip => tip.id === id ? item : tip) : [item, ...codexTips];
           renderCodexTips();

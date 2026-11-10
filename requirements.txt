@@ -6,6 +6,8 @@ msal>=1.31
 protonmail-api-client>=2.4.3
 python-multipart>=0.0.33
 pyotp>=2.9
+Pillow>=12.0.0
+pillow-heif>=1.1.0
 uvicorn
 
 # Security floors for web, HTTP and OAuth dependencies.

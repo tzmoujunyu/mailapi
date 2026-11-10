@@ -44,6 +44,15 @@ function page(file, preview = false, previewUserId = '') {
     confirm: () => true,
     fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.split('?')[0] === '/api/codex-tips' ? tipFixture : url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : url.includes('/api/mailboxes') || url.includes('/api/admin/mail/accounts') ? mailboxFixture() : fixture(), password: 'password-value', code: '081804' }) }; },
   });
+  context.window.CodexTipContent = {
+    render(tip, root) { root.textContent = tip.body; root.renderedBlocks = tip.blocks; },
+    imageGallery() {},
+  };
+  context.window.CodexTipEditor = {
+    async open(tip) { document.getElementById('codex-tip-body').value = tip?.body || ''; },
+    async save() { return [{ type: 'paragraph', data: { text: nodes.get('codex-tip-body').value } }]; },
+    busy: () => false,
+  };
   const sourceFile = process.env.MAILAPI_UI_ROOT ? file.replace(/^static\//, `${process.env.MAILAPI_UI_ROOT}/`) : file;
   const quotaScript = sourceFile.replace(/[^/]+$/, 'coding-plan-quota.js');
   vm.runInContext(fs.readFileSync(quotaScript, 'utf8'), context);
@@ -96,7 +105,8 @@ test('console creates, edits and deletes Codex tips through admin routes', async
   const app = page('static/admin.html'); await flush();
   app.context.fetch = async (url, options) => {
     app.calls.push([url, options]);
-    const item = options?.body ? { id: 'created-tip', ...JSON.parse(options.body) } : undefined;
+    const payload = options?.body ? JSON.parse(options.body) : {};
+    const item = options?.body ? { id: 'created-tip', ...payload, body: payload.blocks[0].data.text } : undefined;
     return { ok: true, json: async () => ({ item }) };
   };
   await app.click('add-codex-tip');

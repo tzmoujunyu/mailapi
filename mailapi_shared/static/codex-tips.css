@@ -1,0 +1,21 @@
+.codex-tip-article { line-height: 1.75; overflow-wrap: anywhere; }
+.codex-tip-article > :first-child { margin-top: 0; }
+.codex-tip-article p { white-space: pre-wrap; }
+.codex-tip-article p, .codex-tip-article figure, .codex-tip-article pre, .codex-tip-article ul, .codex-tip-article ol { margin: 14px 0; }
+.codex-tip-article h2 { margin: 24px 0 10px; font-size: 20px; }
+.codex-tip-article h3 { margin: 20px 0 8px; font-size: 17px; }
+.codex-tip-article a { color: #2563eb; }
+.codex-tip-article figure img { display: block; max-width: 100%; height: auto; margin: auto; border-radius: 8px; cursor: zoom-in; }
+.codex-tip-article figcaption { margin-top: 7px; color: #64748b; font-size: 12px; text-align: center; }
+.codex-tip-article pre { overflow-x: auto; padding: 12px; border-radius: 8px; background: #f1f5f9; white-space: pre; }
+.codex-tip-article :not(pre) > code { padding: 2px 4px; background: #f1f5f9; border-radius: 4px; }
+.codex-tip-thumbnail { width: 56px; height: 44px; object-fit: cover; border-radius: 5px; flex: 0 0 auto; }
+.codex-tip-label { flex: 1; min-width: 0; }
+#codex-tip-edit-dialog { width: min(780px, calc(100vw - 24px)); }
+#codex-tip-body { border: 1px solid #c7ced6; border-radius: 8px; padding: 14px 42px; min-height: 200px; }
+#codex-tip-body .ce-block__content, #codex-tip-body .ce-toolbar__content { max-width: 100%; }
+#codex-tip-body .image-tool__caption { font-weight: 400; }
+#codex-tip-body .ce-code__textarea { font-family: ui-monospace, monospace; }
+#codex-tip-body .cdx-input { font-weight: 400; }
+#codex-tip-detail { width: min(780px, calc(100vw - 24px)); }
+@media (max-width: 600px) { #codex-tip-body { padding: 12px 30px; } }

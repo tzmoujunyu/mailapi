@@ -19,7 +19,10 @@
 
 生产和测试服务都安装 `requirements.txt`，开发和测试环境再安装 `requirements-dev.txt`。
 
-`requirements.txt` 当前包含 FastAPI、Uvicorn、Google API/OAuth、MSAL、Proton API client、python-multipart 和 pyotp。`requirements-dev.txt` 当前额外包含 httpx，用于 FastAPI `TestClient`。
+`requirements.txt` 当前包含 FastAPI、Uvicorn、Google API/OAuth、MSAL、Proton API client、python-multipart、pyotp、Pillow 和 pillow-heif。`requirements-dev.txt` 当前额外包含 httpx，用于 FastAPI `TestClient`。
+
+Codex 图文提示需要 Pillow 的 WebP/AVIF 支持及 pillow-heif 的 HEIC 解码支持。本次验证版本为 Pillow 13.0.0、pillow-heif 1.8.1，
+macOS arm64 和 Linux x86_64 均使用预编译 wheel，无需另建 Node.js 运行服务。Editor.js 和 PhotoSwipe 静态文件已包含在仓库中。
 
 本地使用 `uv` 时：
 
@@ -109,6 +112,7 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 | `runtime/gmail_tokens/` | Gmail OAuth token | 目录 700，文件 600 |
 | `runtime/outlook_tokens/` | Outlook OAuth token | 目录 700，文件 600 |
 | `runtime/codex_auth/` | Codex 授权文件 | 目录 700，文件 600 |
+| `runtime/codex_tips.json`、`runtime/codex_tip_images/` | Codex 图文提示及其 WebP 图片，必须配套备份 | 目录 700，文件 600 |
 | `runtime/mail_relay_secret` | 邮件中继共享密钥 | 600 |
 | Proton 配置和 session 文件 | Proton 登录和会话 | 仅复制到需要 Proton 的机器 |
 

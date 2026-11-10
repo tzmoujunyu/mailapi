@@ -28,7 +28,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from fastapi import FastAPI, Query, Request as FastAPIRequest
+from fastapi import FastAPI, Query, Request as FastAPIRequest, UploadFile, File
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -99,6 +99,7 @@ from .coding_plan_quota import CodingPlanQuotaCache
 from .resource_accounts import ResourceStore, ResourceStoreError
 from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
 from .accounts import SESSION_COOKIE, create_account_router, read_payload
+from .codex_tip_content import MAX_IMAGE_BYTES, image_directory, image_file, legacy_blocks, save_image, validate_blocks
 from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
 
 
@@ -4395,26 +4396,36 @@ DEFAULT_CODEX_TIP = {
 def read_codex_tips():
     try:
         with open(CODEX_TIPS_FILE, encoding="utf-8") as source:
-            return json.load(source)["items"]
+            items = json.load(source)["items"]
     except FileNotFoundError:
-        return [DEFAULT_CODEX_TIP]
+        items = [DEFAULT_CODEX_TIP]
+    return [{**item, "blocks": item.get("blocks", legacy_blocks(item.get("body", "")))} for item in items]
 
 
 async def read_codex_tip_payload(request):
-    payload = await read_payload(request, {"title", "body"})
-    item = {}
-    for field, label, limit in (("title", "标题", 120), ("body", "正文", 8000)):
-        raw = payload.get(field)
-        value = raw.strip() if isinstance(raw, str) else ""
-        if not value or len(value) > limit:
-            raise SiteAccountError(f"{label}须为 1–{limit} 个字符")
-        if field == "title" and len(value.splitlines()) != 1:
-            raise SiteAccountError("标题须为单行文本")
+    payload = await read_payload(request, {"title", "body", "blocks"})
+    raw_title = payload.get("title")
+    title = raw_title.strip() if isinstance(raw_title, str) else ""
+    if not title or len(title) > 120 or len(title.splitlines()) != 1:
+        raise SiteAccountError("标题须为 1–120 个字符的单行文本")
+    try:
+        title.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SiteAccountError("标题包含无效字符") from None
+    item = {"title": title}
+    if "blocks" in payload:
+        item["blocks"], item["body"] = await run_in_threadpool(
+            validate_blocks, payload["blocks"], image_directory(CODEX_TIPS_FILE),
+        )
+    else:
+        body = payload.get("body")
+        if not isinstance(body, str) or not body.strip() or len(body) > 8000:
+            raise SiteAccountError("正文须为 1–8000 个字符")
         try:
-            value.encode("utf-8")
+            body.encode("utf-8")
         except UnicodeEncodeError:
-            raise SiteAccountError(f"{label}包含无效字符") from None
-        item[field] = value
+            raise SiteAccountError("正文包含无效字符") from None
+        item["blocks"], item["body"] = legacy_blocks(body.strip()), body.strip()
     return item
 
 
@@ -4457,6 +4468,22 @@ async def update_codex_tip(tip_id: str, request: FastAPIRequest):
 def delete_codex_tip(tip_id: str):
     change_codex_tip(tip_id, None)
     return {"ok": True}
+
+
+@app.post("/api/admin/codex-tip-images", status_code=201)
+async def upload_codex_tip_image(image: UploadFile = File(...)):
+    try:
+        raw = await image.read(MAX_IMAGE_BYTES + 1)
+        result = await run_in_threadpool(save_image, raw, image_directory(CODEX_TIPS_FILE))
+        return {"success": 1, "file": result}
+    finally:
+        await image.close()
+
+
+@app.get("/api/codex-tip-images/{filename}")
+def get_codex_tip_image(filename: str):
+    path = image_file(image_directory(CODEX_TIPS_FILE), filename)
+    return FileResponse(path, media_type="image/webp")
 
 
 async def save_gpt_account(request: FastAPIRequest, account_key: Optional[str] = None):

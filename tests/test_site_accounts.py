@@ -560,6 +560,35 @@ class SiteAccountHTTPTests(unittest.TestCase):
             self.assertEqual(self.alice.get(public).json()["items"], [])
             self.assertEqual(json.loads(path.read_text()), {"items": []})
 
+    def test_codex_tip_images_require_login_and_can_be_used_in_rich_tips(self):
+        import io
+        from PIL import Image
+
+        buffer = io.BytesIO()
+        Image.new('RGB', (30, 20), 'white').save(buffer, 'PNG')
+        image = buffer.getvalue()
+        tip_path = Path(self.directory.name) / 'codex_tips.json'
+        with patch.object(self.module, 'CODEX_TIPS_FILE', str(tip_path)):
+            upload = '/api/admin/codex-tip-images'
+            files = {'image': ('picture.png', image, 'image/png')}
+            self.assertEqual(self.alice.post(upload, files=files).status_code, 403)
+            self.assertEqual(self.admin.post(upload, files={'image': ('wrong.png', b'not an image', 'image/png')}).status_code, 400)
+            response = self.manager.post(upload, files=files)
+            self.assertEqual(response.status_code, 201, response.text)
+            file = response.json()['file']
+            downloaded = self.alice.get(file['url'])
+            self.assertEqual(downloaded.status_code, 200)
+            self.assertEqual(downloaded.headers['content-type'], 'image/webp')
+            anonymous = TestClient(self.module.app)
+            self.addCleanup(anonymous.close)
+            self.assertEqual(anonymous.get(file['url']).status_code, 401)
+            blocks = [{'type': 'paragraph', 'data': {'text': '<b>加粗</b><i>斜体</i>'}},
+                      {'type': 'image', 'data': {'file': file, 'caption': '截图'}}]
+            created = self.admin.post('/api/admin/codex-tips', json={'title': '图文', 'blocks': blocks})
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertEqual(created.json()['item']['body'], '加粗斜体\n截图')
+            self.assertEqual(created.json()['item']['blocks'], blocks)
+
     def test_mailbox_listing_persists_without_enabling_watchers_and_requires_a_group(self):
         self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])
         catalog = self.admin.get("/api/admin/resources").json()["items"]
