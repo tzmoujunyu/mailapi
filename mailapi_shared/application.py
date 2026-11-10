@@ -4956,8 +4956,13 @@ def clear_history(account_name: str):
 
 
 def resource_catalog() -> List[Dict[str, Any]]:
-    items = [{"key": "gpt:" + item["key"], "kind": "gpt", "name": item["email"], "listed": item["listed"]}
-             for item in account_groups()]
+    items = []
+    for item in account_groups():
+        automatic = next((account["subscription"]["expires_at"] for account in item["codex"]
+                          if account["subscription"]["available"]), None)
+        items.append({"key": "gpt:" + item["key"], "kind": "gpt", "name": item["email"], "listed": item["listed"],
+                      "subscription_expires_at": automatic,
+                      "subscription_expires_on": item["subscription_expires_on"] or item["subscription_ends_on"]})
     with MAIL_ACCOUNTS_LOCK:
         items.extend({"key": mailbox_resource_key(cfg), "kind": "mailbox", "name": cfg["email"],
                       "listed": cfg.get("listed") is True} for cfg in ACCOUNTS)

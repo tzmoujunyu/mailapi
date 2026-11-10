@@ -27,6 +27,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .group-overview .matrix-edit { display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 9px; width: 100%; min-height: 108px; padding: 18px 24px; border: 0; border-radius: 0; background: white; }
 .matrix-members { display: flex; justify-content: center; flex-wrap: wrap; gap: 5px; }
 .matrix-account { display: block; color: #475569; font-size: 12px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
+.matrix-expiry { border-radius: 4px; padding: 2px 5px; align-self: center; max-width: 100%; }
 .group-overview .matrix-data:hover .matrix-edit, .group-overview .matrix-edit:focus-visible { background: #f0f6ff; }
 .group-overview .matrix-edit:focus-visible, .group-overview .matrix-add:focus-visible { outline: 2px solid #2563eb; outline-offset: -3px; }
 .group-overview .tag { max-width: 100%; margin: 0; }
@@ -66,6 +67,8 @@ dialog::backdrop { background: #11182770; }
 .resource-kind .option { padding: 7px 8px; border-radius: 5px; }
 .resource-kind .option:hover { background: #f7f8fb; }
 .resource-option-name { display: block; }
+.expiry-tag { display: inline-block; border-radius: 4px; padding: 1px 5px; background: #eef2f7; color: #475569; font-size: 11px; white-space: nowrap; }
+.expiry-due { color: #b91c1c; background: #fef2f2; font-weight: 700; }
 .resource-sharing { display: block; color: #61738c; font-size: 12px; }
 .batch-resource-config .option { padding: 8px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
 .batch-resource-config .option:hover { background: #f7f8fb; }

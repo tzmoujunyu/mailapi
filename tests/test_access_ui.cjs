@@ -69,6 +69,7 @@ async function page() {
       return { ok: true, json: async () => responses[url] };
     }, confirm: () => app.confirm });
   const root = process.env.MAILAPI_UI_ROOT || 'static';
+  vm.runInContext(fs.readFileSync(path.join(root, 'account-subscription.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(root, 'access.js'), 'utf8'), context);
   await new Promise(resolve => setImmediate(resolve));
   return { ...app, context, state: app };
@@ -77,13 +78,36 @@ async function page() {
 test('overview shows a complete first GPT account and indicates additional accounts', async () => {
   const app = await page();
   const html = app.nodes.get('group-overview').innerHTML;
-  const summaries = [...html.matchAll(/<span class="matrix-account">([\s\S]*?)<\/span>\s*<\/button>/g)].map(match => match[1]);
+  const summaries = [...html.matchAll(/<span class="matrix-account">([^\n]*)<\/span>/g)].map(match => match[1]);
   assert.equal(summaries.length, 3);
   assert.match(summaries[0], /complete\.account\.name@example\.com.*等多个账号/);
   assert.match(summaries[1], /complete\.account\.name@example\.com/);
   assert.doesNotMatch(summaries[1], /等多个账号/);
   assert.match(summaries[2], /暂无 GPT 账号/);
   assert.match(html, /data-search-text="[^"]*second@example\.com/);
+});
+
+test('overview uses the earliest known GPT expiry and editor warns at five days and after expiry', async () => {
+  const app = await page();
+  vm.runInContext(`
+    const RealDate = Date;
+    Date = class extends RealDate {
+      constructor(...args) { super(...(args.length ? args : [2026, 10, 9, 12])); }
+    };
+    resources[0].subscription_expires_on = '2026-11-15';
+    resources[1].subscription_expires_at = new Date(2026, 10, 14, 12).getTime() / 1000;
+    resources[1].subscription_expires_on = '2026-12-31';
+    resources[2].subscription_expires_on = '2026-11-08';
+    render(); openGroup(groups[0]);
+  `, app.context);
+  const overview = app.nodes.get('group-overview').innerHTML;
+  assert.match(overview, /matrix-expiry expiry-due">订阅到期 · second@example\.com · 26\.11\.14/);
+  assert.match(overview, /matrix-expiry">订阅到期 · complete\.account\.name@example\.com · 26\.11\.15/);
+  assert.doesNotMatch(overview, /26\.12\.31|26\.11\.08/);
+  const options = app.nodes.get('resource-options').innerHTML;
+  assert.match(options, /class="expiry-tag"[^>]*>\(6 Day left\)/);
+  assert.match(options, /class="expiry-tag expiry-due"[^>]*>\(5 Day left\)/);
+  assert.match(options, /class="expiry-tag expiry-due"[^>]*>\(已到期\)/);
 });
 
 test('group resource sections retain selections and count saved group assignments', async () => {

@@ -1,3 +1,15 @@
+function subscriptionExpiry(expiresAt, expiresOn, now = new Date()) {
+  const automatic = Number.isFinite(expiresAt);
+  const end = new Date(automatic ? expiresAt * 1000 : `${expiresOn}T00:00:00`);
+  if (!Number.isFinite(end.getTime())) return null;
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = automatic ? Math.ceil((end.getTime() - now.getTime()) / 86400000)
+    : Math.round((Date.parse(expiresOn + 'T00:00:00Z') - today) / 86400000);
+  const date = automatic ? [String(end.getFullYear()).slice(-2), String(end.getMonth() + 1).padStart(2, '0'), String(end.getDate()).padStart(2, '0')].join('.')
+    : expiresOn.slice(2).replaceAll('-', '.');
+  return { end, date, remaining: days <= 0 ? '已到期' : `${days} Day left`, due: days <= 5 };
+}
+
 function renderAccountSubscription(item, escapeHtml, now = new Date()) {
   const start = item.subscription_started_on;
   const manualEnd = item.subscription_expires_on || item.subscription_ends_on;
@@ -18,24 +30,20 @@ function renderAccountSubscription(item, escapeHtml, now = new Date()) {
     note = `；${reasons[reason] || '授权日期不可用'}，${manual ? '已回退手填' : '请管理员补充'}`;
   }
   const metadata = `<div class="subscription-meta">授权上次核对：${escapeHtml(checkedText + note)}</div>`;
-  let displayDate, days, source, title, label;
+  const expiry = subscriptionExpiry(automatic?.expires_at, manualEnd, now);
+  if (!expiry) return `<div class="subscription-time muted"><div>订阅到期：未设置</div>${metadata}</div>`;
+  let displayDate = expiry.date;
+  let source, title, label;
   if (automatic) {
-    const end = new Date(automatic.expires_at * 1000);
-    displayDate = [String(end.getFullYear()).slice(-2), String(end.getMonth() + 1).padStart(2, '0'), String(end.getDate()).padStart(2, '0')].join('.');
-    days = Math.ceil((end.getTime() - now.getTime()) / 86400000);
     source = '授权文件 ID Token（到期日）';
     label = '订阅到期';
-    title = `${source}：${end.toLocaleString()}；上次核对：${checkedText}`;
+    title = `${source}：${expiry.end.toLocaleString()}；上次核对：${checkedText}`;
   } else {
-    if (!manual) return `<div class="subscription-time muted"><div>订阅到期：未设置</div>${metadata}</div>`;
-    const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-    days = Math.round((Date.parse(manualEnd + 'T00:00:00Z') - today) / 86400000);
     const direct = Boolean(item.subscription_expires_on);
-    displayDate = (direct ? manualEnd : start).slice(2).replaceAll('-', '.');
+    if (!direct) displayDate = start.slice(2).replaceAll('-', '.');
     source = direct ? '手填到期日' : '手填开通日';
     label = direct ? '订阅到期' : '订阅开通';
     title = `${source}计算到期：${manualEnd}`;
   }
-  const remaining = days <= 0 ? '已到期' : `${days} Day left`;
-  return `<div class="subscription-time${days <= 5 ? ' subscription-due' : ''}" title="${escapeHtml(title)}"><div>${label}：${escapeHtml(displayDate)} (${remaining}) <span class="subscription-source">${escapeHtml(source)}</span></div>${metadata}</div>`;
+  return `<div class="subscription-time${expiry.due ? ' subscription-due' : ''}" title="${escapeHtml(title)}"><div>${label}：${escapeHtml(displayDate)} (${expiry.remaining}) <span class="subscription-source">${escapeHtml(source)}</span></div>${metadata}</div>`;
 }

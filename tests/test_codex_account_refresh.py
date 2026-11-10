@@ -367,6 +367,27 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertNotIn("private-value", response.text)
             self.assertEqual(group["mail"][0]["email"], "User@Example.com")
 
+    def test_group_catalog_exposes_only_subscription_expiry_fields(self):
+        with self.account_client() as (client, store):
+            module = self.module
+            checked = int(time.time()) - 3600
+            token = self.subscription_token(checked)
+            record = module.build_codex_account_record({"access_token": "synthetic-secret-token", "id_token": token})
+            module.CODEX_ACCOUNTS["codex-1"] = record
+            module.ensure_gpt_pool()
+            store.save_account("email:user@example.com", {"subscription_expires_on": "2027-02-15"}, {})
+            store.save_account("email:only@example.com", {"subscription_started_on": "2026-01-31"}, {})
+            response = client.get("/api/admin/resources")
+            by_key = {item["key"]: item for item in response.json()["items"]}
+            first = by_key["gpt:email:user@example.com"]
+            self.assertEqual(first["subscription_expires_at"], checked + 29 * 86400)
+            self.assertEqual(first["subscription_expires_on"], "2027-02-15")
+            second = by_key["gpt:email:only@example.com"]
+            self.assertIsNone(second["subscription_expires_at"])
+            self.assertEqual(second["subscription_expires_on"], "2026-02-28")
+            self.assertNotIn(token, response.text)
+            self.assertNotIn("synthetic-secret-token", response.text)
+
     def test_relay_accounts_require_url_and_keep_it_when_updating_other_fields(self):
         from resource_accounts import ResourceStore
 

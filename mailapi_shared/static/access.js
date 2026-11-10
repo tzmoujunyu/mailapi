@@ -49,6 +49,10 @@ function addGroupButton(category, number, label, showLabel = false) {
 
 function renderGroupOverview(memberTags, resourceNames) {
   const resourceByKey = new Map(resources.map(item => [item.key, item]));
+  const now = new Date();
+  const expiryByKey = new Map(resources.filter(item => item.kind === 'gpt').map(item => [item.key,
+    subscriptionExpiry(item.subscription_expires_at, item.subscription_expires_on, now),
+  ]));
   const categories = new Map();
   const numbers = new Set();
   let unnumbered = false;
@@ -77,12 +81,20 @@ function renderGroupOverview(memberTags, resourceNames) {
       const cellContents = matches.map(group => {
         const accounts = group.resource_keys.map(key => resourceByKey.get(key)).filter(item => item?.kind === 'gpt');
         const summary = accounts.length ? `${escapeHtml(accounts[0].name)}${accounts.length > 1 ? ' <span class="muted">等多个账号</span>' : ''}` : '<span class="muted">暂无 GPT 账号</span>';
+        let nearest;
+        for (const account of accounts) {
+          const expiry = expiryByKey.get(account.key);
+          if (expiry && (!nearest || expiry.end < nearest.expiry.end)) nearest = { account, expiry };
+        }
+        const expiryLine = nearest ? `<span class="matrix-account matrix-expiry${nearest.expiry.due ? ' expiry-due' : ''}">订阅到期 · ${escapeHtml(nearest.account.name)} · ${nearest.expiry.date}${nearest.expiry.remaining === '已到期' ? '（已到期）' : ''}</span>` :
+          accounts.length ? '<span class="matrix-account muted">订阅到期 · 未设置</span>' : '';
         const searchText = [group.name, number ? `组${number}` : '未编号', ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
         return `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}" data-search-text="${escapeHtml(searchText)}">
         <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
           title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组、成员与资源 · ${escapeHtml(group.name)}">
           <span class="matrix-members">${group.member_ids.length ? memberTags(group) : '<span class="muted">暂无成员</span>'}</span>
           <span class="matrix-account">${summary}</span>
+          ${expiryLine}
         </button>
         <button type="button" class="matrix-delete" data-delete-group="${escapeHtml(group.id)}"
           title="删除 ${escapeHtml(group.name)}" aria-label="删除分组 · ${escapeHtml(group.name)}">
@@ -178,12 +190,15 @@ function openGroup(group = null, { fromOverview = false, category = '', number =
   byId('group-category-options').innerHTML = [...new Set(groups.map(item => groupPosition(item.name).category))]
     .map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
   byId('member-options').innerHTML = users.map(user => `<label class="option"><input type="checkbox" value="${escapeHtml(user.id)}" ${group?.member_ids.includes(user.id) ? 'checked' : ''}><span>${escapeHtml(user.username)} <small>${roleNames[user.role]}</small></span></label>`).join('');
+  const now = new Date();
   byId('resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
     const candidates = resources.filter(item => item.kind === kind);
     if (!candidates.length) return '';
     return `<div class="resource-kind" data-resource-kind="${kind}"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => {
       const shared = kind === 'gpt' ? groups.filter(candidate => candidate.resource_keys.includes(item.key)).length : 0;
-      return `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="resource-option-name">${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span>${kind === 'gpt' ? `<small class="resource-sharing" title="已分配至 ${shared} 个分组">${shared} Group shared</small>` : ''}</span></label>`;
+      const expiry = kind === 'gpt' ? subscriptionExpiry(item.subscription_expires_at, item.subscription_expires_on, now) : null;
+      const expiryTag = expiry ? ` <span class="expiry-tag${expiry.due ? ' expiry-due' : ''}" title="订阅到期 ${expiry.date}">(${expiry.remaining})</span>` : '';
+      return `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="resource-option-name">${escapeHtml(item.name)}${expiryTag}${item.listed === false ? ' <small>已下架</small>' : ''}</span>${kind === 'gpt' ? `<small class="resource-sharing" title="已分配至 ${shared} 个分组">${shared} Group shared</small>` : ''}</span></label>`;
     }).join('')}</div>`;
   }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
   byId('group-error').textContent = '';
