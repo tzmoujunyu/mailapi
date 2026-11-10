@@ -75,14 +75,13 @@ async function page() {
   return { ...app, context, state: app };
 }
 
-test('overview shows a complete first GPT account and indicates additional accounts', async () => {
+test('overview shows the first complete GPT account when expiry is unavailable', async () => {
   const app = await page();
   const html = app.nodes.get('group-overview').innerHTML;
   const summaries = [...html.matchAll(/<span class="matrix-account">([^\n]*)<\/span>/g)].map(match => match[1]);
   assert.equal(summaries.length, 3);
-  assert.match(summaries[0], /complete\.account\.name@example\.com.*等多个账号/);
-  assert.match(summaries[1], /complete\.account\.name@example\.com/);
-  assert.doesNotMatch(summaries[1], /等多个账号/);
+  assert.equal(summaries[0], 'complete.account.name@example.com');
+  assert.equal(summaries[1], 'complete.account.name@example.com');
   assert.match(summaries[2], /暂无 GPT 账号/);
   assert.match(html, /data-search-text="[^"]*second@example\.com/);
 });
@@ -101,13 +100,15 @@ test('overview uses the earliest known GPT expiry and editor warns at five days 
     render(); openGroup(groups[0]);
   `, app.context);
   const overview = app.nodes.get('group-overview').innerHTML;
-  assert.match(overview, /matrix-expiry expiry-due">订阅到期 · second@example\.com · 26\.11\.14/);
-  assert.match(overview, /matrix-expiry">订阅到期 · complete\.account\.name@example\.com · 26\.11\.15/);
-  assert.doesNotMatch(overview, /26\.12\.31|26\.11\.08/);
+  assert.match(overview, /class="matrix-account">second@example\.com <span class="expiry-tag expiry-due">\(5 Day left\)<\/span><\/span>/);
+  assert.match(overview, /class="matrix-account">complete\.account\.name@example\.com <span class="expiry-tag">\(6 Day left\)<\/span><\/span>/);
+  assert.doesNotMatch(overview, /matrix-expiry|订阅到期|26\.11\.14|等多个账号/);
   const options = app.nodes.get('resource-options').innerHTML;
   assert.match(options, /class="expiry-tag"[^>]*>\(6 Day left\)/);
   assert.match(options, /class="expiry-tag expiry-due"[^>]*>\(5 Day left\)/);
   assert.match(options, /class="expiry-tag expiry-due"[^>]*>\(已到期\)/);
+  vm.runInContext('groups[0].resource_keys.push("gpt:unused"); render()', app.context);
+  assert.match(app.nodes.get('group-overview').innerHTML, /class="matrix-account">&lt;img [^\n]* <span class="expiry-tag expiry-due">\(已到期\)/);
 });
 
 test('group resource sections retain selections and count saved group assignments', async () => {

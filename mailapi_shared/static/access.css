@@ -27,7 +27,6 @@ tbody tr:last-child td { border-bottom: 0; }
 .group-overview .matrix-edit { display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 9px; width: 100%; min-height: 108px; padding: 18px 24px; border: 0; border-radius: 0; background: white; }
 .matrix-members { display: flex; justify-content: center; flex-wrap: wrap; gap: 5px; }
 .matrix-account { display: block; color: #475569; font-size: 12px; font-weight: 400; line-height: 1.6; overflow-wrap: anywhere; }
-.matrix-expiry { border-radius: 4px; padding: 2px 5px; align-self: center; max-width: 100%; }
 .group-overview .matrix-data:hover .matrix-edit, .group-overview .matrix-edit:focus-visible { background: #f0f6ff; }
 .group-overview .matrix-edit:focus-visible, .group-overview .matrix-add:focus-visible { outline: 2px solid #2563eb; outline-offset: -3px; }
 .group-overview .tag { max-width: 100%; margin: 0; }

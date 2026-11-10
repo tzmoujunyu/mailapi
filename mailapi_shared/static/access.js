@@ -80,21 +80,20 @@ function renderGroupOverview(memberTags, resourceNames) {
       }
       const cellContents = matches.map(group => {
         const accounts = group.resource_keys.map(key => resourceByKey.get(key)).filter(item => item?.kind === 'gpt');
-        const summary = accounts.length ? `${escapeHtml(accounts[0].name)}${accounts.length > 1 ? ' <span class="muted">等多个账号</span>' : ''}` : '<span class="muted">暂无 GPT 账号</span>';
         let nearest;
         for (const account of accounts) {
           const expiry = expiryByKey.get(account.key);
           if (expiry && (!nearest || expiry.end < nearest.expiry.end)) nearest = { account, expiry };
         }
-        const expiryLine = nearest ? `<span class="matrix-account matrix-expiry${nearest.expiry.due ? ' expiry-due' : ''}">订阅到期 · ${escapeHtml(nearest.account.name)} · ${nearest.expiry.date}${nearest.expiry.remaining === '已到期' ? '（已到期）' : ''}</span>` :
-          accounts.length ? '<span class="matrix-account muted">订阅到期 · 未设置</span>' : '';
+        const account = nearest?.account || accounts[0];
+        const expiryTag = nearest ? ` <span class="expiry-tag${nearest.expiry.due ? ' expiry-due' : ''}">(${nearest.expiry.remaining})</span>` : '';
+        const summary = account ? `${escapeHtml(account.name)}${expiryTag}` : '<span class="muted">暂无 GPT 账号</span>';
         const searchText = [group.name, number ? `组${number}` : '未编号', ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
         return `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}" data-search-text="${escapeHtml(searchText)}">
         <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
           title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组、成员与资源 · ${escapeHtml(group.name)}">
           <span class="matrix-members">${group.member_ids.length ? memberTags(group) : '<span class="muted">暂无成员</span>'}</span>
           <span class="matrix-account">${summary}</span>
-          ${expiryLine}
         </button>
         <button type="button" class="matrix-delete" data-delete-group="${escapeHtml(group.id)}"
           title="删除 ${escapeHtml(group.name)}" aria-label="删除分组 · ${escapeHtml(group.name)}">
