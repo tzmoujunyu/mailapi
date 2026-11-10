@@ -77,7 +77,7 @@ test('subscription display warns at five days and expires without assuming renew
 test('homepage lists Codex tip titles and opens plain-text details from directory 02', async () => {
   const root = process.env.MAILAPI_UI_ROOT || 'static';
   const source = fs.readFileSync(`${root}/index.html`, 'utf8');
-  for (const [id, index] of [['codex-tips', '02'], ['mailbox-codes', '03'], ['coding-plans', '04'], ['relay-accounts', '05']]) {
+  for (const [id, index] of [['codex-tips', '02'], ['coding-plans', '03'], ['relay-accounts', '04']]) {
     assert.ok(source.includes(`href="#${id}"><span class="directory-index">${index}</span>`));
   }
   assert.match(source, /id="account-help"[^>]*>订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。<\/span>/);
@@ -157,18 +157,11 @@ test('console history escapes content, searches by tag and sends the selected re
   assert.deepEqual(JSON.parse(restore.body), { field: 'secret' });
 });
 
-test('standalone mailbox resources use full-history scope independently of GPT details', async () => {
+test('homepage omits standalone mailbox resources and their polling', async () => {
   const app = page('static/index.html', true, 'reader'); await flush();
-  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /321321|SiliconFlow/);
-  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /claude\.ai\/login#mail-only/);
-  await app.click('mailbox-resource-rows', '[data-mailbox-history]', { mailboxHistory: 'account-1' });
-  assert.ok(app.calls.some(([url]) => url === '/api/history/account-1?scope=mailbox&preview=1&user_id=reader'));
-  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /654321/);
-  assert.doesNotMatch(app.nodes.get('rows').innerHTML, /654321/);
-  app.context.fetch = async url => ({ ok: true, json: async () => ({items: []}) });
-  await [...app.timers.values()].at(-1)(); await flush();
-  assert.doesNotMatch(app.nodes.get('mailbox-resource-rows').innerHTML, /654321|claude\.ai/);
-  assert.match(app.nodes.get('mailbox-resource-rows').innerHTML, /暂无可用邮箱/);
+  const root = process.env.MAILAPI_UI_ROOT || 'static';
+  assert.doesNotMatch(fs.readFileSync(`${root}/index.html`, 'utf8'), /mailbox-codes|mailbox-resource-rows/);
+  assert.ok(!app.calls.some(([url]) => url.startsWith('/api/mailboxes')));
 });
 
 test('console changes mailbox listing without toggling its listener', async () => {
@@ -181,13 +174,9 @@ test('console changes mailbox listing without toggling its listener', async () =
 });
 
 test('mailbox notes render as text and can be edited independently of listing and listeners', async () => {
-  for (const file of ['static/index.html', 'static/admin.html']) {
-    const app = page(file); await flush();
-    const html = app.nodes.get(file === 'static/index.html' ? 'mailbox-resource-rows' : 'mailbox-rows').innerHTML;
-    assert.match(html, /硅基流动登录码 &lt;img src=x onerror=alert\(1\)&gt;/);
-    assert.doesNotMatch(html, /<img src=x/);
-  }
   const app = page('static/admin.html'); await flush();
+  assert.match(app.nodes.get('mailbox-rows').innerHTML, /硅基流动登录码 &lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.doesNotMatch(app.nodes.get('mailbox-rows').innerHTML, /<img src=x/);
   await app.click('mailbox-rows', '[data-mail-note]', { name: 'account-1' });
   assert.equal(app.nodes.get('mail-note-input').value, mailboxFixture()[0].note);
   app.nodes.get('mail-note-input').value = '硅基流动、Kimi 验证码';
@@ -274,7 +263,7 @@ test('homepage expands immediately, places history below email row, and collapse
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /654321/);
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /GPT密码/);
-  assert.equal(app.timers.size, 3);
+  assert.equal(app.timers.size, 2);
 });
 
 test('website account console exposes the admin-only batch user form', () => {

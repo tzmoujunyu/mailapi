@@ -27,7 +27,6 @@
       .account-table th:nth-child(4) { width: 25%; }
       tbody tr:last-child td { border-bottom: 0; }
       .muted { color: #6b7280; }
-      .mailbox-note { margin-top: 6px; white-space: pre-line; }
       .status { font-weight: 700; }
       .status-good { color: #15803d; }
       .status-warn { color: #b45309; }
@@ -130,9 +129,8 @@
         <div class="home-directory-links">
           <a href="#chatgpt-accounts" aria-current="location"><span class="directory-index">01</span>GPT 账号</a>
           <a href="#codex-tips"><span class="directory-index">02</span>Codex 使用提示</a>
-          <a href="#mailbox-codes"><span class="directory-index">03</span>邮箱接码</a>
-          <a href="#coding-plans"><span class="directory-index">04</span>Coding Plan</a>
-          <a href="#relay-accounts"><span class="directory-index">05</span>中转站账号</a>
+          <a href="#coding-plans"><span class="directory-index">03</span>Coding Plan</a>
+          <a href="#relay-accounts"><span class="directory-index">04</span>中转站账号</a>
         </div>
       </div>
     </nav>
@@ -164,15 +162,6 @@
         <div class="resource-head"><h2 id="codex-tips-title">Codex 使用提示</h2></div>
         <p id="codex-tips-status" class="muted" role="status">加载中...</p>
         <ul id="codex-tip-list" class="codex-tip-list"></ul>
-      </section>
-      <section id="mailbox-codes" class="resource-section" aria-labelledby="mailbox-title">
-        <div class="resource-head"><h2 id="mailbox-title">邮箱接码</h2></div>
-        <p class="muted">展示分组分配且已上架的邮箱，包含所有已设置收件规则捕获的验证码、登录链接及历史。管理员可查看全部邮箱。</p>
-        <div id="mailbox-error" class="status-bad" role="status"></div>
-        <div class="table-wrap"><table class="mailbox-table">
-          <thead><tr><th>邮箱</th><th>最新接收</th><th>主题 / 规则</th><th>监听状态</th><th>历史记录</th></tr></thead>
-          <tbody id="mailbox-resource-rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
-        </table></div>
       </section>
       <section id="coding-plans" class="resource-section" aria-labelledby="coding-plan-title">
         <div class="resource-head"><h2 id="coding-plan-title">国产模型Coding Plan</h2></div>
