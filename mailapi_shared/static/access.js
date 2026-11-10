@@ -47,7 +47,7 @@ function addGroupButton(category, number, label, showLabel = false) {
     ${showLabel ? `<span class="matrix-add-label">${escapeHtml(label)}</span>` : ''}</button>`;
 }
 
-function renderGroupOverview(memberTags, resourceNames) {
+function renderGroupOverview(groupMembers, resourceNames) {
   const resourceByKey = new Map(resources.map(item => [item.key, item]));
   const now = new Date();
   const expiryByKey = new Map(resources.filter(item => item.kind === 'gpt').map(item => [item.key,
@@ -79,6 +79,7 @@ function renderGroupOverview(memberTags, resourceNames) {
         return `<td class="matrix-data matrix-vacant">${addGroupButton(name, number, `创建 ${name} ${number ? '组' + number : '未编号小组'}`)}</td>`;
       }
       const cellContents = matches.map(group => {
+        const members = groupMembers(group);
         const accounts = group.resource_keys.map(key => resourceByKey.get(key)).filter(item => item?.kind === 'gpt');
         let nearest;
         for (const account of accounts) {
@@ -88,11 +89,11 @@ function renderGroupOverview(memberTags, resourceNames) {
         const account = nearest?.account || accounts[0];
         const expiryTag = nearest ? ` <span class="expiry-tag${nearest.expiry.due ? ' expiry-due' : ''}">(${nearest.expiry.remaining})</span>` : '';
         const summary = account ? `${escapeHtml(account.name)}${expiryTag}` : '<span class="muted">暂无 GPT 账号</span>';
-        const searchText = [group.name, number ? `组${number}` : '未编号', ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
+        const searchText = [group.name, number ? `组${number}` : '未编号', ...members.map(user => user.username), ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
         return `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}" data-search-text="${escapeHtml(searchText)}">
         <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
           title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组、成员与资源 · ${escapeHtml(group.name)}">
-          <span class="matrix-members">${group.member_ids.length ? memberTags(group) : '<span class="muted">暂无成员</span>'}</span>
+          <span class="matrix-members">${members.length ? tags(members.map(user => user.note || user.username)) : '<span class="muted">暂无成员</span>'}</span>
           <span class="matrix-account">${summary}</span>
         </button>
         <button type="button" class="matrix-delete" data-delete-group="${escapeHtml(group.id)}"
@@ -119,20 +120,21 @@ function renderGroupOverview(memberTags, resourceNames) {
 
 function render() {
   byId('users').innerHTML = users.map(user => {
-    const actions = [`<a href="/preview?user_id=${encodeURIComponent(user.id)}">按此账号预览</a>`];
-    if (user.role !== 'admin' && (currentUser.role === 'admin' || user.role === 'user')) actions.push(`<button type="button" data-edit-user="${escapeHtml(user.id)}">${currentUser.role === 'admin' ? '编辑' : '重置密码'}</button>`);
+    const actions = [`<a href="/preview?user_id=${encodeURIComponent(user.id)}">按此账户预览</a>`];
+    if (currentUser.role === 'admin' || user.role === 'user') actions.push(`<button type="button" data-edit-user="${escapeHtml(user.id)}">${user.role === 'admin' ? '编辑备注' : '编辑'}</button>`);
     if (currentUser.role === 'admin' && user.role !== 'admin') actions.push(`<button type="button" class="danger" data-delete-user="${escapeHtml(user.id)}">删除</button>`);
-    return `<tr><td>${escapeHtml(user.username)}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
+    const displayName = user.note ? `${user.username}（${user.note}）` : user.username;
+    return `<tr><td>${escapeHtml(displayName)}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
   }).join('');
-  const userNames = new Map(users.map(user => [user.id, user.username]));
-  const memberTags = group => tags(group.member_ids.map(id => userNames.get(id) || '已删除账号'));
+  const usersById = new Map(users.map(user => [user.id, user]));
+  const groupMembers = group => group.member_ids.map(id => usersById.get(id) || { username: '已删除账户' });
   const resourceNames = new Map(resources.map(item => [item.key, `${kindNames[item.kind]} · ${item.name}${item.listed === false ? '（已下架）' : ''}`]));
   byId('groups').innerHTML = groups.length ? groups.map(group => `<tr>
-    <td>${escapeHtml(group.name)}</td><td>${memberTags(group)}</td>
+    <td>${escapeHtml(group.name)}</td><td>${tags(groupMembers(group).map(user => user.username))}</td>
     <td>${tags(group.resource_keys.map(key => resourceNames.get(key) || '已移除资源'))}</td>
     <td>${groupActions(group, '编辑成员与资源')}</td>
   </tr>`).join('') : '<tr><td colspan="4" class="muted">暂无分组，创建后即可分配成员和资源。</td></tr>';
-  renderGroupOverview(memberTags, resourceNames);
+  renderGroupOverview(groupMembers, resourceNames);
 }
 
 async function load() {
@@ -162,13 +164,17 @@ async function load() {
 function openUser(user = null) {
   editingUser = user;
   byId('user-form').reset();
-  byId('user-title').textContent = user ? `编辑账号 · ${user.username}` : '创建账号';
+  const reserved = user?.role === 'admin';
+  byId('user-title').textContent = user ? `编辑账户 · ${user.username}` : '创建账户';
   byId('username').value = user?.username || '';
   byId('username').disabled = Boolean(user);
+  byId('user-note').value = user?.note || '';
   byId('user-role').value = user?.role || 'user';
-  byId('user-role').disabled = Boolean(user) && currentUser.role !== 'admin';
+  byId('user-role-field').hidden = reserved;
+  byId('user-role').disabled = reserved || (Boolean(user) && currentUser.role !== 'admin');
+  byId('user-password-field').hidden = byId('user-password').disabled = reserved;
   byId('user-password').required = !user;
-  byId('password-help').textContent = user ? '至少 8 个字符，留空保留当前密码。重置后该账号需重新登录。' : '密码至少 8 个字符。';
+  byId('password-help').textContent = user ? '至少 8 个字符，留空保留当前密码。重置后该账户需重新登录。' : '密码至少 8 个字符。';
   byId('user-error').textContent = '';
   byId('user-dialog').showModal();
 }
@@ -331,12 +337,14 @@ async function submitForm(event, errorId, action) {
 byId('user-form').addEventListener('submit', event => submitForm(event, 'user-error', async () => {
   const payload = {};
   if (!byId('user-role').disabled) payload.role = byId('user-role').value;
-  if (byId('user-password').value) payload.password = byId('user-password').value;
+  if (!byId('user-password').disabled && byId('user-password').value) payload.password = byId('user-password').value;
   if (!editingUser) payload.username = byId('username').value;
+  const note = byId('user-note').value.trim();
+  if (!editingUser || note !== (editingUser.note || '')) payload.note = note;
   await api(editingUser ? `/api/admin/users/${encodeURIComponent(editingUser.id)}` : '/api/admin/users', jsonRequest(editingUser ? 'PUT' : 'POST', payload));
   byId('user-dialog').close();
   byId('message').className = '';
-  byId('message').textContent = editingUser ? '账号已更新' : '账号已创建';
+  byId('message').textContent = editingUser ? '账户已更新' : '账户已创建';
 }));
 
 byId('group-form').addEventListener('submit', event => submitForm(event, 'group-error', async () => {
@@ -366,7 +374,7 @@ byId('batch-user-form').addEventListener('submit', event => submitForm(event, 'b
   }));
   byId('batch-user-dialog').close();
   byId('message').className = '';
-  byId('message').textContent = `已添加 ${usernames.length} 个账号`;
+  byId('message').textContent = `已添加 ${usernames.length} 个账户`;
 }));
 
 async function remove(button, url, description) {
@@ -387,7 +395,7 @@ byId('users').addEventListener('click', event => {
   const button = event.target.closest('[data-delete-user]');
   if (button) {
     const user = users.find(user => user.id === button.dataset.deleteUser);
-    remove(button, `/api/admin/users/${encodeURIComponent(user.id)}`, `删除网站账号“${user.username}”？其登录会话和分组成员身份将一并移除。`);
+    remove(button, `/api/admin/users/${encodeURIComponent(user.id)}`, `删除网站账户“${user.username}”？其登录会话和分组成员身份将一并移除。`);
   }
 });
 function handleGroupAction(event) {

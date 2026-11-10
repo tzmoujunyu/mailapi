@@ -86,6 +86,30 @@ test('overview shows the first complete GPT account when expiry is unavailable',
   assert.match(html, /data-search-text="[^"]*second@example\.com/);
 });
 
+test('account notes replace member usernames in the overview and accompany names in management', async () => {
+  const app = await page();
+  assert.match(app.nodes.get('group-overview').innerHTML, /class="tag">alice<\/span>/);
+  vm.runInContext('users[1].note = "研发 <成员>"; render(); openUser(users[1]);', app.context);
+  const overview = app.nodes.get('group-overview').innerHTML;
+  assert.match(overview, /class="tag">研发 &lt;成员&gt;<\/span>/);
+  assert.doesNotMatch(overview, /class="tag">alice<\/span>/);
+  assert.match(overview, /data-search-text="[^"]*alice/);
+  assert.match(app.nodes.get('users').innerHTML, /<td>alice（研发 &lt;成员&gt;）<\/td>/);
+  assert.equal(app.nodes.get('user-note').value, '研发 <成员>');
+  app.nodes.get('user-note').value = '';
+  await app.nodes.get('user-form').listeners.submit({ preventDefault() {}, target: app.nodes.get('user-form') });
+  const update = app.requests.find(request => request.url === '/api/admin/users/alice');
+  assert.equal(update.options.method, 'PUT');
+  assert.equal(JSON.parse(update.options.body).note, '');
+
+  vm.runInContext('openUser(users[0])', app.context);
+  assert.equal(app.nodes.get('user-password-field').hidden, true);
+  app.nodes.get('user-note').value = '站长';
+  await app.nodes.get('user-form').listeners.submit({ preventDefault() {}, target: app.nodes.get('user-form') });
+  const reserved = app.requests.find(request => request.url === '/api/admin/users/admin');
+  assert.deepEqual(JSON.parse(reserved.options.body), { note: '站长' });
+});
+
 test('overview uses the earliest known GPT expiry and editor warns at five days and after expiry', async () => {
   const app = await page();
   vm.runInContext(`

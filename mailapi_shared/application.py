@@ -3435,7 +3435,7 @@ def index(request: FastAPIRequest):
 def preview_page(request: FastAPIRequest):
     target_id = request.query_params.get("user_id")
     if target_id and not request.app.state.site_accounts.get_user(target_id):
-        return JSONResponse({"detail": "未找到预览账号"}, status_code=404)
+        return JSONResponse({"detail": "未找到预览账户"}, status_code=404)
     return render_index_page(request, preview=True)
 
 
@@ -3444,7 +3444,7 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
     role = request_access_role(request)
     admin_link = '<a class="small-btn" href="/admin">账号控制台</a>'
     preview_banner = (
-        '<div class="preview-banner" role="status">用户账号主页预览：仅显示所选账号分组中已分配且上架的资源；请在网站账号页面选择预览对象。'
+        '<div class="preview-banner" role="status">用户账户主页预览：仅显示所选账户分组中已分配且上架的资源。请在账户管理中选择预览对象。'
         '<a href="/admin">返回账号控制台</a></div>'
         if preview
         else ""

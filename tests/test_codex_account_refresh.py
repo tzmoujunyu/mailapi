@@ -459,7 +459,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             store.set('user@example.com', 'listed', False)
             response = client.get('/preview?user_id=' + self.user_id)
             self.assertEqual(response.status_code, 200)
-            self.assertIn('用户账号主页预览', response.text)
+            self.assertIn('用户账户主页预览', response.text)
             self.assertIn('href="/admin"', response.text)
             self.assertNotIn('href="/admin">账号控制台', response.text)
             admin_items = client.get('/api/accounts').json()['items']

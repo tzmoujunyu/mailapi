@@ -36,7 +36,7 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     def user_id(request):
         user = request.state.site_user
         if not user:
-            raise SiteAccountError("请先使用网站账号登录", 401)
+            raise SiteAccountError("请先使用网站账户登录", 401)
         return user["id"]
 
     def login_error(browser, message, status, headers=None):
@@ -115,8 +115,11 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
 
     @router.post("/api/admin/users", status_code=201)
     async def create_user(request: Request):
-        payload = await read_payload(request, {"username", "password", "role"})
-        return {"item": store(request).create_user(user_id(request), payload.get("username"), payload.get("password"), payload.get("role", "user"))}
+        payload = await read_payload(request, {"username", "password", "role", "note"})
+        return {"item": store(request).create_user(
+            user_id(request), payload.get("username"), payload.get("password"), payload.get("role", "user"),
+            note=payload.get("note", ""),
+        )}
 
     @router.post("/api/admin/users/batch", status_code=201)
     async def create_users_batch(request: Request):
@@ -133,7 +136,7 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
 
     @router.put("/api/admin/users/{target_id}")
     async def update_user(target_id: str, request: Request):
-        payload = await read_payload(request, {"role", "password"})
+        payload = await read_payload(request, {"role", "password", "note"})
         return {"item": store(request).update_user(user_id(request), target_id, payload)}
 
     @router.delete("/api/admin/users/{target_id}")

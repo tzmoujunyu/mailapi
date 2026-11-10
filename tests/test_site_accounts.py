@@ -455,6 +455,34 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.alice.get("/api/auth/me").status_code, 200)
 
+    def test_website_account_note_persists_without_changing_login_or_membership(self):
+        users_url = "/api/admin/users"
+        alice_url = users_url + "/" + self.identities["alice"]["id"]
+        admin_url = users_url + "/" + self.identities["admin"]["id"]
+        manager_url = users_url + "/" + self.identities["manager"]["id"]
+        self.assertTrue(all(user["note"] == "" for user in self.admin.get(users_url).json()["items"]))
+        self.assertEqual(self.alice.put(alice_url, json={"note": "无权限"}).status_code, 403)
+        self.assertEqual(self.manager.put(manager_url, json={"note": "无权限"}).status_code, 403)
+        self.assertEqual(self.admin.put(admin_url, json={"note": "站长", "role": "user"}).status_code, 403)
+        self.assertEqual(self.admin.put(admin_url, json={"note": "站长"}).json()["item"]["note"], "站长")
+        for invalid in (None, "第一行\n第二行", "a" * 81):
+            self.assertEqual(self.admin.put(alice_url, json={"note": invalid}).status_code, 400)
+
+        result = self.manager.put(alice_url, json={"note": "  研发成员  "})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["item"]["note"], "研发成员")
+        me = self.alice.get("/api/auth/me").json()
+        self.assertEqual(me["user"]["username"], "alice")
+        self.assertNotIn("note", me["user"])
+        self.assertEqual(me["groups"], [{"id": self.group["id"], "name": self.group["name"]}])
+        reopened = SiteAccountStore(self.store.path)
+        by_name = {user["username"]: user for user in reopened.list_users(self.identities["admin"]["id"])}
+        self.assertEqual(by_name["alice"]["note"], "研发成员")
+        self.assertEqual(self.admin.put(alice_url, json={"note": ""}).json()["item"]["note"], "")
+        created = self.admin.post(users_url, json={"username": "new-noted-user", "password": "test-password", "note": "新人"})
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["item"]["note"], "新人")
+
     def test_self_password_change_requires_current_password_and_revokes_sessions(self):
         self.assertEqual(self.alice.post("/api/auth/password", json={"current_password": "wrong", "new_password": "replacement-password"}).status_code, 403)
         self.assertEqual(self.alice.get("/api/auth/me").status_code, 200)

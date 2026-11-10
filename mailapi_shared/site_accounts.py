@@ -19,6 +19,7 @@ SESSION_SECONDS = 86400
 PASSWORD_ITERATIONS = 600_000
 ADMIN_ROLES = {"manager", "admin"}
 MAX_BATCH_USERS = 100
+MAX_USER_NOTE_LENGTH = 80
 USERNAME_PATTERN = re.compile(r"[a-z0-9_.-]{3,64}")
 TOTP_PATTERN = re.compile(r"[0-9]{6}")
 
@@ -55,6 +56,19 @@ def password_matches(password, encoded):
     return hmac.compare_digest(actual.hex(), digest)
 
 
+def normalize_user_note(note):
+    if not isinstance(note, str):
+        raise SiteAccountError("账户备注须为文本")
+    note = note.strip()
+    if len(note) > MAX_USER_NOTE_LENGTH or len(note.splitlines()) > 1:
+        raise SiteAccountError(f"账户备注须为单行文本，最多 {MAX_USER_NOTE_LENGTH} 个字符")
+    try:
+        note.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SiteAccountError("账户备注包含无效字符") from None
+    return note
+
+
 class SiteAccountStore:
     def __init__(self, path, *, require_admin_mfa=False):
         self.path = Path(path)
@@ -66,10 +80,10 @@ class SiteAccountStore:
             if self._data.get("version") != 1 or any(
                 not isinstance(self._data.get(key), dict) for key in ("users", "groups", "sessions")
             ):
-                raise SiteAccountError("网站账号存储格式无效")
+                raise SiteAccountError("网站账户存储格式无效")
             admins = [user for user in self._data["users"].values() if user["role"] == "admin"]
             if len(admins) != 1 or admins[0]["username"] != "admin":
-                raise SiteAccountError("网站账号存储必须包含唯一的 admin")
+                raise SiteAccountError("网站账户存储必须包含唯一的 admin")
             os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -92,8 +106,11 @@ class SiteAccountStore:
                     os.unlink(temporary)
 
     @staticmethod
-    def _public(user):
-        return {key: user[key] for key in ("id", "username", "role", "created_at")}
+    def _public(user, *, include_note=False):
+        result = {key: user[key] for key in ("id", "username", "role", "created_at")}
+        if include_note:
+            result["note"] = user.get("note", "")
+        return result
 
     @staticmethod
     def _administrator(data, actor_id, *, admin_only=False):
@@ -133,7 +150,7 @@ class SiteAccountStore:
                 }
             user = next((user for user in data["users"].values() if user["username"] == username), None)
             if not user or user["role"] not in ADMIN_ROLES:
-                raise SiteAccountError("未找到管理员账号")
+                raise SiteAccountError("未找到管理员账户")
             user["password_hash"] = password_hash(password)
             user["totp_secret"] = totp_secret
             user.pop("totp_last_step", None)
@@ -151,23 +168,24 @@ class SiteAccountStore:
     def list_users(self, actor_id):
         with self._lock:
             self._administrator(self._data, actor_id)
-            return [self._public(user) for user in self._data["users"].values()]
+            return [self._public(user, include_note=True) for user in self._data["users"].values()]
 
     def get_user(self, user_id):
         with self._lock:
             user = self._data["users"].get(user_id)
             return self._public(user) if user else None
 
-    def create_user(self, actor_id, username, password, role="user"):
-        return self.create_users(actor_id, [username], password, role)[0]
+    def create_user(self, actor_id, username, password, role="user", *, note=""):
+        return self.create_users(actor_id, [username], password, role, note=note)[0]
 
-    def create_users(self, actor_id, usernames, password, role="user", *, admin_only=False):
+    def create_users(self, actor_id, usernames, password, role="user", *, admin_only=False, note=""):
         if not isinstance(usernames, list) or not usernames:
             raise SiteAccountError("至少需要一个用户名")
         if len(usernames) > MAX_BATCH_USERS:
-            raise SiteAccountError(f"一次最多创建 {MAX_BATCH_USERS} 个账号")
+            raise SiteAccountError(f"一次最多创建 {MAX_BATCH_USERS} 个账户")
         if not isinstance(role, str) or role not in {"user", "manager"}:
-            raise SiteAccountError("admin 为唯一保留账号，新增角色只能是用户或普通管理员")
+            raise SiteAccountError("admin 为唯一保留账户，新增角色只能是用户或普通管理员")
+        note = normalize_user_note(note)
         normalized = []
         seen = set()
         for value in usernames:
@@ -175,7 +193,7 @@ class SiteAccountStore:
             if not USERNAME_PATTERN.fullmatch(username):
                 raise SiteAccountError("用户名须为 3–64 位字母、数字、下划线、点或短横线")
             if username == "admin":
-                raise SiteAccountError("admin 为唯一保留账号，不能批量创建")
+                raise SiteAccountError("admin 为唯一保留账户，不能批量创建")
             if username in seen:
                 raise SiteAccountError(f"批量用户名重复：{username}", 409)
             seen.add(username)
@@ -194,8 +212,10 @@ class SiteAccountStore:
                     "id": user_id, "username": username, "role": role,
                     "password_hash": password_hash(password), "created_at": created_at,
                 }
+                if note:
+                    user["note"] = note
                 data["users"][user_id] = user
-                created.append(self._public(user))
+                created.append(self._public(user, include_note=True))
         return created
 
     @staticmethod
@@ -209,9 +229,9 @@ class SiteAccountStore:
             actor = self._administrator(data, actor_id)
             user = data["users"].get(user_id)
             if not user:
-                raise SiteAccountError("未找到网站账号", 404)
-            if user["role"] == "admin":
-                raise SiteAccountError("admin 账号固定；请通过修改本人密码更新其密码", 403)
+                raise SiteAccountError("未找到网站账户", 404)
+            if user["role"] == "admin" and (actor["role"] != "admin" or set(payload) - {"note"}):
+                raise SiteAccountError("admin 账户固定。密码可通过修改本人密码更新", 403)
             if "role" in payload:
                 self._administrator(data, actor_id, admin_only=True)
                 if not isinstance(payload["role"], str) or payload["role"] not in {"user", "manager"}:
@@ -224,7 +244,15 @@ class SiteAccountStore:
                     raise SiteAccountError("普通管理员只能重置用户的密码", 403)
                 user["password_hash"] = password_hash(payload["password"])
                 self._revoke_user_sessions(data, user_id)
-        return self._public(user)
+            if "note" in payload:
+                if actor["role"] != "admin" and user["role"] != "user":
+                    raise SiteAccountError("普通管理员只能修改用户的备注", 403)
+                note = normalize_user_note(payload["note"])
+                if note:
+                    user["note"] = note
+                else:
+                    user.pop("note", None)
+        return self._public(user, include_note=True)
 
     def change_password(self, user_id, current_password, new_password):
         with self._edit() as data:
@@ -241,9 +269,9 @@ class SiteAccountStore:
             self._administrator(data, actor_id, admin_only=True)
             user = data["users"].get(user_id)
             if not user:
-                raise SiteAccountError("未找到网站账号", 404)
+                raise SiteAccountError("未找到网站账户", 404)
             if user["role"] == "admin":
-                raise SiteAccountError("不能删除唯一的 admin 账号", 403)
+                raise SiteAccountError("不能删除唯一的 admin 账户", 403)
             del data["users"][user_id]
             self._revoke_user_sessions(data, user_id)
             for group in data["groups"].values():
