@@ -1,5 +1,6 @@
 """Permission-boundary regression tests through the test-version HTTP API."""
 import importlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -500,6 +501,36 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.alice.get("/api/auth/me").json()["groups"], [{"id": self.group["id"], "name": "Team A"}])
         response = self.alice.get("/api/accounts")
         self.assertEqual(response.headers["cache-control"], "no-store, private")
+
+    def test_codex_tips_seed_crud_and_admin_permissions(self):
+        path = Path(self.directory.name) / "codex_tips.json"
+        public = "/api/codex-tips"
+        admin = "/api/admin/codex-tips"
+        payload = {"title": "新提示", "body": "第一行\n第二行 <example>"}
+        anonymous = TestClient(self.module.app)
+        self.addCleanup(anonymous.close)
+        with patch.object(self.module, "CODEX_TIPS_FILE", str(path)):
+            self.assertEqual(anonymous.get(public).status_code, 401)
+            original = self.alice.get(public).json()["items"][0]
+            self.assertIn("设备数量已达上限", original["body"])
+            self.assertFalse(path.exists())
+            self.assertEqual(self.alice.post(admin, json=payload).status_code, 403)
+            self.assertEqual(self.alice.put(f"{admin}/{original['id']}", json=payload).status_code, 403)
+            self.assertEqual(self.alice.delete(f"{admin}/{original['id']}").status_code, 403)
+            self.assertEqual(self.admin.post(admin, json={**payload, "body": " "}).status_code, 400)
+            self.assertEqual(self.admin.post(admin, json={**payload, "title": "两行\n标题"}).status_code, 400)
+            created = self.manager.post(admin, json=payload)
+            self.assertEqual(created.status_code, 201)
+            item = created.json()["item"]
+            self.assertEqual(self.alice.get(public).json()["items"], [item, original])
+            updated = self.admin.put(f"{admin}/{item['id']}", json={**payload, "title": "更新提示"}).json()["item"]
+            self.assertEqual(updated, {**item, "title": "更新提示"})
+            self.assertEqual(self.alice.get(public).json()["items"], [updated, original])
+            for tip in (item, original):
+                self.assertEqual(self.admin.delete(f"{admin}/{tip['id']}").status_code, 200)
+            self.assertEqual(self.admin.delete(f"{admin}/{original['id']}").status_code, 404)
+            self.assertEqual(self.alice.get(public).json()["items"], [])
+            self.assertEqual(json.loads(path.read_text()), {"items": []})
 
     def test_mailbox_listing_persists_without_enabling_watchers_and_requires_a_group(self):
         self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])

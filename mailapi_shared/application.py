@@ -263,6 +263,7 @@ PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
 MAIL_FILTERS_FILE = os.path.join(DATA_DIR, "mail_filters.json")
 CODING_PLANS_FILE = os.path.join(DATA_DIR, "coding_plans.json")
 RELAY_ACCOUNTS_FILE = os.path.join(DATA_DIR, "relay_accounts.json")
+CODEX_TIPS_FILE = os.path.join(DATA_DIR, "codex_tips.json")
 PROTON_CONFIG_FILE = os.path.expanduser(
     _setting(
         "PROTON_CONFIG_FILE",
@@ -4381,6 +4382,81 @@ def get_accounts(request: FastAPIRequest):
     items = account_groups()
     items = [item for item in items if can_access_account(request, item["email"])]
     return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
+
+
+CODEX_TIPS_LOCK = threading.Lock()
+DEFAULT_CODEX_TIP = {
+    "id": "device-limit",
+    "title": "遇到“设备数量已达上限”怎么办？",
+    "body": "如遇到“设备数量已达上限”报错，请用指纹浏览器或浏览器无痕模式打开登陆链接登陆使用。",
+}
+
+
+def read_codex_tips():
+    try:
+        with open(CODEX_TIPS_FILE, encoding="utf-8") as source:
+            return json.load(source)["items"]
+    except FileNotFoundError:
+        return [DEFAULT_CODEX_TIP]
+
+
+async def read_codex_tip_payload(request):
+    payload = await read_payload(request, {"title", "body"})
+    item = {}
+    for field, label, limit in (("title", "标题", 120), ("body", "正文", 8000)):
+        raw = payload.get(field)
+        value = raw.strip() if isinstance(raw, str) else ""
+        if not value or len(value) > limit:
+            raise SiteAccountError(f"{label}须为 1–{limit} 个字符")
+        if field == "title" and len(value.splitlines()) != 1:
+            raise SiteAccountError("标题须为单行文本")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise SiteAccountError(f"{label}包含无效字符") from None
+        item[field] = value
+    return item
+
+
+def change_codex_tip(tip_id, content):
+    with CODEX_TIPS_LOCK:
+        items = {item["id"]: item for item in read_codex_tips()}
+        if tip_id is None:
+            item = {"id": secrets.token_hex(16), **content}
+            items = {item["id"]: item, **items}
+        elif tip_id not in items:
+            raise SiteAccountError("未找到 Codex 使用提示", 404)
+        elif content is None:
+            del items[tip_id]
+            item = None
+        else:
+            item = {"id": tip_id, **content}
+            items[tip_id] = item
+        write_json_atomic(CODEX_TIPS_FILE, {"items": list(items.values())})
+        return item
+
+
+@app.get("/api/codex-tips")
+def get_codex_tips():
+    return {"items": read_codex_tips()}
+
+
+@app.post("/api/admin/codex-tips", status_code=201)
+async def create_codex_tip(request: FastAPIRequest):
+    payload = await read_codex_tip_payload(request)
+    return {"item": await run_in_threadpool(change_codex_tip, None, payload)}
+
+
+@app.put("/api/admin/codex-tips/{tip_id}")
+async def update_codex_tip(tip_id: str, request: FastAPIRequest):
+    payload = await read_codex_tip_payload(request)
+    return {"item": await run_in_threadpool(change_codex_tip, tip_id, payload)}
+
+
+@app.delete("/api/admin/codex-tips/{tip_id}")
+def delete_codex_tip(tip_id: str):
+    change_codex_tip(tip_id, None)
+    return {"ok": True}
 
 
 async def save_gpt_account(request: FastAPIRequest, account_key: Optional[str] = None):

@@ -16,6 +16,7 @@ const fixture = () => [{
   codex: [{ id: 'codex-2', email: 'only@example.com', usage_status: 'unavailable', status_reason: 'usage_missing_weekly' }], mail: [],
 }];
 const flush = () => new Promise(resolve => setImmediate(resolve));
+const tipFixture = [{ id: 'device-limit', title: '设备上限 <img src=x>', body: '第一行\n<script>示例</script>' }];
 const mailboxFixture = () => [{ name: 'account-1', resource_key: 'mailbox:one', email: 'user@example.com', provider: 'gmail', listed: true,
   note: '硅基流动登录码 <img src=x onerror=alert(1)>',
   enabled: true, result_type: 'code', result_value: '321321', rule_name: 'SiliconFlow', subject: 'All-rule code' },
@@ -41,7 +42,7 @@ function page(file, preview = false, previewUserId = '') {
     setTimeout(callback) { return ++counter; },
     navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true, __USER_PREVIEW__: preview, __PREVIEW_USER_ID__: previewUserId },
     confirm: () => true,
-    fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : url.includes('/api/mailboxes') || url.includes('/api/admin/mail/accounts') ? mailboxFixture() : fixture(), password: 'password-value', code: '081804' }) }; },
+    fetch: async (url, options) => { calls.push([url, options]); return { ok: true, json: async () => ({ items: url.split('?')[0] === '/api/codex-tips' ? tipFixture : url.includes('history') ? [{ code: '654321', subject: 'Historical code' }] : url.includes('/api/mailboxes') || url.includes('/api/admin/mail/accounts') ? mailboxFixture() : fixture(), password: 'password-value', code: '081804' }) }; },
   });
   const sourceFile = process.env.MAILAPI_UI_ROOT ? file.replace(/^static\//, `${process.env.MAILAPI_UI_ROOT}/`) : file;
   const quotaScript = sourceFile.replace(/[^/]+$/, 'coding-plan-quota.js');
@@ -71,6 +72,49 @@ test('subscription display warns at five days and expires without assuming renew
   assert.match(render(23), /5 Day left/);
   assert.match(render(28), /已到期/);
   assert.match(vm.runInContext('renderAccountSubscription({},escapeHtml)', app.context), /未设置/);
+});
+
+test('homepage lists Codex tip titles and opens plain-text details from directory 02', async () => {
+  const root = process.env.MAILAPI_UI_ROOT || 'static';
+  const source = fs.readFileSync(`${root}/index.html`, 'utf8');
+  for (const [id, index] of [['codex-tips', '02'], ['mailbox-codes', '03'], ['coding-plans', '04'], ['relay-accounts', '05']]) {
+    assert.ok(source.includes(`href="#${id}"><span class="directory-index">${index}</span>`));
+  }
+  assert.match(source, /id="account-help"[^>]*>订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。<\/span>/);
+  const app = page('static/index.html'); await flush();
+  const list = app.nodes.get('codex-tip-list').innerHTML;
+  assert.match(list, /设备上限 &lt;img src=x&gt;/);
+  assert.doesNotMatch(list, /第一行|<img/);
+  await app.click('codex-tip-list', '[data-codex-tip]', { codexTip: 'device-limit' });
+  assert.equal(app.nodes.get('codex-tip-detail').open, true);
+  assert.equal(app.nodes.get('codex-tip-detail-title').textContent, tipFixture[0].title);
+  assert.equal(app.nodes.get('codex-tip-detail-body').textContent, tipFixture[0].body);
+  assert.equal(app.nodes.get('codex-tip-detail-body').innerHTML, '');
+});
+
+test('console creates, edits and deletes Codex tips through admin routes', async () => {
+  const app = page('static/admin.html'); await flush();
+  app.context.fetch = async (url, options) => {
+    app.calls.push([url, options]);
+    const item = options?.body ? { id: 'created-tip', ...JSON.parse(options.body) } : undefined;
+    return { ok: true, json: async () => ({ item }) };
+  };
+  await app.click('add-codex-tip');
+  assert.equal(app.nodes.get('codex-tip-edit-dialog').open, true);
+  app.nodes.get('codex-tip-title').value = '新提示';
+  app.nodes.get('codex-tip-body').value = '正文\n第二行';
+  await app.nodes.get('codex-tip-form').listeners.submit[0]({ preventDefault() {} });
+  assert.match(app.nodes.get('codex-tip-rows').innerHTML, /新提示/);
+  await app.click('codex-tip-rows', '[data-edit-codex-tip]', { editCodexTip: 'created-tip' });
+  assert.equal(app.nodes.get('codex-tip-body').value, '正文\n第二行');
+  app.nodes.get('codex-tip-title').value = '修改提示';
+  await app.nodes.get('codex-tip-form').listeners.submit[0]({ preventDefault() {} });
+  assert.match(app.nodes.get('codex-tip-rows').innerHTML, /修改提示/);
+  await app.click('codex-tip-rows', '[data-delete-codex-tip]', { deleteCodexTip: 'created-tip' });
+  assert.doesNotMatch(app.nodes.get('codex-tip-rows').innerHTML, /created-tip/);
+  assert.deepEqual(app.calls.filter(([url]) => url.startsWith('/api/admin/codex-tips')).map(([url, options]) => [url, options.method]), [
+    ['/api/admin/codex-tips', 'POST'], ['/api/admin/codex-tips/created-tip', 'PUT'], ['/api/admin/codex-tips/created-tip', 'DELETE'],
+  ]);
 });
 
 test('homepage member edits shared fields without sending blank secrets or a mailbox change', async () => {

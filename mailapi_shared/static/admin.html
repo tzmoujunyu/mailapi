@@ -137,6 +137,10 @@
       .gpt-tag-review { background: #dcfce7; color: #166534; }
       .gpt-tag-restore { background: #fef3c7; color: #92400e; }
       .password-form { display: grid; gap: 14px; }
+      #codex-tip-edit-dialog { width: min(620px, calc(100vw - 24px)); max-height: 86dvh; }
+      #codex-tip-body { box-sizing: border-box; width: 100%; min-height: 160px; padding: 8px 9px; border: 1px solid #c7ced6; border-radius: 6px; font: inherit; resize: vertical; }
+      #codex-tips-panel table { min-width: 0; }
+      #codex-tips-panel th:last-child { width: 138px; }
       .mail-settings { margin-top: 26px; padding-top: 22px; border-top: 1px solid #e5e7eb; }
       #mailbox-dialog { width: min(620px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
       #mailbox-options { display: grid; gap: 8px; max-height: 360px; overflow-y: auto; }
@@ -228,6 +232,7 @@
         <div class="management-tabs" role="tablist" aria-label="资源管理" data-viewport="console-viewport">
           <span class="management-tab-indicator" aria-hidden="true"></span>
           <button id="gpt-pool-tab" type="button" role="tab" aria-selected="true" aria-controls="gpt-pool-panel" tabindex="0">GPT账号池</button>
+          <button id="codex-tips-tab" type="button" role="tab" aria-selected="false" aria-controls="codex-tips-panel" tabindex="-1">Codex 使用提示</button>
           <button id="mail-pool-tab" type="button" role="tab" aria-selected="false" aria-controls="mail-pool-panel" tabindex="-1">邮箱池</button>
           <button id="coding-pool-tab" type="button" role="tab" aria-selected="false" aria-controls="coding-pool-panel" tabindex="-1">国产模型 Coding Plan</button>
           <button id="relay-pool-tab" type="button" role="tab" aria-selected="false" aria-controls="relay-pool-panel" tabindex="-1">中转站</button>
@@ -261,6 +266,18 @@
             <table class="account-table">
               <thead><tr><th>账号</th><th>周额度</th><th>登录信息</th><th>状态</th><th>管理</th></tr></thead>
               <tbody id="account-rows" data-search-scope="GPT账号池" data-search-tab="gpt-pool-tab"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+        <section id="codex-tips-panel" class="section management-panel" role="tabpanel" aria-labelledby="codex-tips-tab" aria-hidden="true" inert>
+          <div class="section-head">
+            <div><h2>Codex 使用提示</h2><p class="muted">提示会显示在账号主页目录 02。</p></div>
+            <button id="add-codex-tip" class="btn btn-primary" type="button" disabled>新增提示</button>
+          </div>
+          <div id="codex-tip-message" class="message muted" role="status"></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>标题</th><th>管理</th></tr></thead>
+              <tbody id="codex-tip-rows" data-search-scope="Codex 使用提示" data-search-tab="codex-tips-tab"><tr><td colspan="2" class="muted">加载中...</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -339,6 +356,15 @@
       </main>
     </div>
 
+    <dialog id="codex-tip-edit-dialog" aria-labelledby="codex-tip-edit-heading">
+      <form id="codex-tip-form" class="password-form">
+        <h2 id="codex-tip-edit-heading">新增提示</h2>
+        <label>标题<input id="codex-tip-title" maxlength="120" required /></label>
+        <label>正文<textarea id="codex-tip-body" rows="7" maxlength="8000" required></textarea></label>
+        <p id="codex-tip-error" class="bad" role="alert"></p>
+        <div class="dialog-actions"><button id="codex-tip-cancel" class="btn" type="button">取消</button><button id="codex-tip-save" class="btn btn-primary" type="submit">保存</button></div>
+      </form>
+    </dialog>
     <dialog id="gpt-account-dialog">
       <form id="gpt-account-form" class="password-form">
         <h2 id="gpt-account-title">添加 GPT 账号</h2>
@@ -1637,6 +1663,83 @@
         finally { save.disabled = false; }
       });
 
+      const codexTipRows = document.getElementById('codex-tip-rows');
+      const codexTipMessage = document.getElementById('codex-tip-message');
+      const addCodexTip = document.getElementById('add-codex-tip');
+      const codexTipEditor = document.getElementById('codex-tip-edit-dialog');
+      const codexTipForm = document.getElementById('codex-tip-form');
+      const codexTipTitle = document.getElementById('codex-tip-title');
+      const codexTipBody = document.getElementById('codex-tip-body');
+      const codexTipError = document.getElementById('codex-tip-error');
+      const codexTipSave = document.getElementById('codex-tip-save');
+      const codexTipCancel = document.getElementById('codex-tip-cancel');
+      let codexTips = [], editingCodexTip = '';
+
+      function renderCodexTips() {
+        codexTipRows.innerHTML = codexTips.map(tip => `<tr data-search-text="${escapeAttr(tip.body)}"><td>${escapeHtml(tip.title)}</td><td><div class="actions"><button class="btn" type="button" data-edit-codex-tip="${escapeAttr(tip.id)}">修改</button><button class="btn btn-danger" type="button" data-delete-codex-tip="${escapeAttr(tip.id)}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="2" class="muted">暂无使用提示。</td></tr>';
+      }
+
+      async function loadCodexTips() {
+        try {
+          codexTips = (await api('/api/codex-tips')).items;
+          renderCodexTips();
+          addCodexTip.disabled = false;
+        } catch (error) { setMessage(codexTipMessage, error.message, true); }
+      }
+
+      function openCodexTip(tip) {
+        editingCodexTip = tip?.id || '';
+        document.getElementById('codex-tip-edit-heading').textContent = tip ? '修改提示' : '新增提示';
+        codexTipTitle.value = tip?.title || '';
+        codexTipBody.value = tip?.body || '';
+        codexTipError.textContent = '';
+        codexTipEditor.showModal();
+        codexTipTitle.focus();
+      }
+
+      addCodexTip.addEventListener('click', () => openCodexTip());
+      codexTipCancel.addEventListener('click', () => codexTipEditor.close());
+      codexTipEditor.addEventListener('cancel', event => { if (codexTipSave.disabled) event.preventDefault(); });
+      codexTipRows.addEventListener('click', async event => {
+        const edit = event.target.closest('[data-edit-codex-tip]');
+        if (edit) {
+          const tip = codexTips.find(item => item.id === edit.dataset.editCodexTip);
+          if (tip) openCodexTip(tip);
+          return;
+        }
+        const remove = event.target.closest('[data-delete-codex-tip]');
+        if (!remove) return;
+        const tip = codexTips.find(item => item.id === remove.dataset.deleteCodexTip);
+        if (!tip || !confirm(`删除提示「${tip.title}」？`)) return;
+        remove.disabled = true;
+        try {
+          await api(`/api/admin/codex-tips/${encodeURIComponent(tip.id)}`, { method: 'DELETE' });
+          codexTips = codexTips.filter(item => item.id !== tip.id);
+          renderCodexTips();
+          setMessage(codexTipMessage, '提示已删除。');
+        } catch (error) { setMessage(codexTipMessage, error.message, true); }
+        finally { remove.disabled = false; }
+      });
+      codexTipForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (codexTipSave.disabled) return;
+        const id = editingCodexTip;
+        codexTipSave.disabled = codexTipCancel.disabled = true;
+        codexTipError.textContent = '';
+        try {
+          const { item } = await api(id ? `/api/admin/codex-tips/${encodeURIComponent(id)}` : '/api/admin/codex-tips', {
+            method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: codexTipTitle.value, body: codexTipBody.value }),
+          });
+          codexTips = id ? codexTips.map(tip => tip.id === id ? item : tip) : [item, ...codexTips];
+          renderCodexTips();
+          codexTipEditor.close();
+          setMessage(codexTipMessage, '提示已保存。');
+        } catch (error) { codexTipError.textContent = error.message; }
+        finally { codexTipSave.disabled = codexTipCancel.disabled = false; }
+      });
+
+      loadCodexTips();
       loadAccounts();
       loadMailboxes();
       loadCodingPlans();

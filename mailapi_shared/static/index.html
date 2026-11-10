@@ -69,6 +69,19 @@
       .email-detail > div { min-width: 0; }
       .resource-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid #e5e7eb; }
       .resource-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+      .codex-tip-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+      .codex-tip-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 14px; border: 1px solid #dfe3e8; border-radius: 8px; background: #f8fafc; color: #1f2937; text-align: left; font: inherit; cursor: pointer; }
+      .codex-tip-item:hover, .codex-tip-item:focus-visible { background: #eff6ff; border-color: #93c5fd; }
+      .codex-tip-item > span:first-child { overflow-wrap: anywhere; }
+      .codex-tip-arrow { color: #2563eb; font-size: 20px; line-height: 1; }
+      #codex-tip-detail { width: min(620px, calc(100vw - 24px)); max-height: 86dvh; padding: clamp(14px, 4vw, 24px); border: 1px solid #dfe3e8; border-radius: 14px; color: #1f2937; }
+      #codex-tip-detail::backdrop { background: #11182770; }
+      #codex-tip-detail[open] { animation: codex-tip-enter 160ms ease-out; }
+      #codex-tip-detail-title, #codex-tip-detail-body { overflow-wrap: anywhere; }
+      #codex-tip-detail .small-btn { flex: 0 0 auto; }
+      #codex-tip-detail-body { margin: 0; line-height: 1.7; white-space: pre-wrap; }
+      @keyframes codex-tip-enter { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { #codex-tip-detail[open] { animation: none; } }
       .resource-table { min-width: 620px; }
       .resource-table th:nth-child(1) { width: 32%; }
       .resource-table th:nth-child(2) { width: 42%; }
@@ -116,9 +129,10 @@
         <span class="home-directory-label">目录</span>
         <div class="home-directory-links">
           <a href="#chatgpt-accounts" aria-current="location"><span class="directory-index">01</span>GPT 账号</a>
-          <a href="#mailbox-codes"><span class="directory-index">02</span>邮箱接码</a>
-          <a href="#coding-plans"><span class="directory-index">03</span>Coding Plan</a>
-          <a href="#relay-accounts"><span class="directory-index">04</span>中转站账号</a>
+          <a href="#codex-tips"><span class="directory-index">02</span>Codex 使用提示</a>
+          <a href="#mailbox-codes"><span class="directory-index">03</span>邮箱接码</a>
+          <a href="#coding-plans"><span class="directory-index">04</span>Coding Plan</a>
+          <a href="#relay-accounts"><span class="directory-index">05</span>中转站账号</a>
         </div>
       </div>
     </nav>
@@ -129,8 +143,8 @@
             <div class="page-heading">
               <h1 id="chatgpt-title">GPT账号</h1>
               <span class="help-hint">
-                <button type="button" class="help-hint-trigger" aria-label="GPT 账号使用说明" aria-expanded="false" aria-pressed="false" aria-controls="account-help" aria-describedby="account-help">?</button>
-                <span id="account-help" class="help-hint-content" role="tooltip" popover="manual" hidden>订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。<br>Codex 使用提示：如遇到“设备数量已达上限”报错，请用指纹浏览器或浏览器无痕模式打开登陆链接登陆使用。</span>
+                <button type="button" class="help-hint-trigger" aria-label="订阅标识说明" aria-expanded="false" aria-pressed="false" aria-controls="account-help" aria-describedby="account-help">?</button>
+                <span id="account-help" class="help-hint-content" role="tooltip" popover="manual" hidden>订阅标识：PRO = 200 Pro，PROLITE = 100 Pro。</span>
               </span>
             </div>
             <div class="page-subtitle"><a href="https://codexradar.com/#intelligence-efficiency" target="_blank" rel="noopener noreferrer">Codex雷达</a>：查看智能与效率分析</div>
@@ -145,6 +159,11 @@
             <tbody id="rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
           </table>
         </div>
+      </section>
+      <section id="codex-tips" class="resource-section" aria-labelledby="codex-tips-title">
+        <div class="resource-head"><h2 id="codex-tips-title">Codex 使用提示</h2></div>
+        <p id="codex-tips-status" class="muted" role="status">加载中...</p>
+        <ul id="codex-tip-list" class="codex-tip-list"></ul>
       </section>
       <section id="mailbox-codes" class="resource-section" aria-labelledby="mailbox-title">
         <div class="resource-head"><h2 id="mailbox-title">邮箱接码</h2></div>
@@ -177,6 +196,13 @@
         </div>
       </section>
     </div>
+    <dialog id="codex-tip-detail" aria-labelledby="codex-tip-detail-title">
+      <div class="relay-mail-header">
+        <h2 id="codex-tip-detail-title"></h2>
+        <form method="dialog"><button class="small-btn" type="submit" autofocus>关闭</button></form>
+      </div>
+      <p id="codex-tip-detail-body"></p>
+    </dialog>
     <dialog id="relay-mail-dialog" aria-labelledby="relay-mail-title">
       <div class="relay-mail-header">
         <h2 id="relay-mail-title">邮箱验证码</h2>
@@ -557,6 +583,32 @@
         if (copy) return copyResourceSecret(copy);
       });
       relayAccountRows.addEventListener('click', event => { const copy = event.target.closest('[data-resource-copy]'); if (copy) copyResourceSecret(copy); });
+      const codexTipList = document.getElementById('codex-tip-list');
+      const codexTipStatus = document.getElementById('codex-tips-status');
+      const codexTipDetail = document.getElementById('codex-tip-detail');
+      let codexTips = [];
+
+      async function loadCodexTips() {
+        try {
+          const response = await fetch(previewUrl('/api/codex-tips'), { cache: 'no-store' });
+          if (!response.ok) throw new Error();
+          codexTips = (await response.json()).items;
+          codexTipList.innerHTML = codexTips.map(tip => `<li><button type="button" class="codex-tip-item" data-codex-tip="${escapeAttr(tip.id)}" aria-haspopup="dialog"><span>${escapeHtml(tip.title)}</span><span class="codex-tip-arrow" aria-hidden="true">›</span></button></li>`).join('');
+          codexTipStatus.hidden = codexTips.length > 0;
+          codexTipStatus.textContent = '暂无使用提示。';
+        } catch (error) { codexTipStatus.textContent = '提示加载失败，请刷新页面重试。'; }
+      }
+
+      codexTipList.addEventListener('click', event => {
+        const button = event.target.closest('[data-codex-tip]');
+        const tip = button && codexTips.find(item => item.id === button.dataset.codexTip);
+        if (!tip) return;
+        document.getElementById('codex-tip-detail-title').textContent = tip.title;
+        document.getElementById('codex-tip-detail-body').textContent = tip.body;
+        codexTipDetail.showModal();
+        codexTipDetail.scrollTop = 0;
+      });
+      loadCodexTips();
       refreshAccounts();
       refreshResources();
       setInterval(() => { refreshAccounts(); refreshResources(); }, 3000);
