@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import pyotp
 from fastapi import FastAPI, Request
@@ -21,7 +21,8 @@ class WebSecurityTests(unittest.TestCase):
         self.password = "test-admin-password"
         self.app = FastAPI()
         self.app.state.site_accounts = self.store
-        self.app.include_router(create_account_router(root, lambda: []))
+        self.login_failure = Mock()
+        self.app.include_router(create_account_router(root, lambda: [], on_admin_failure=self.login_failure))
         self.app.add_middleware(BodyLimitMiddleware)
         self.app.add_middleware(SecurityHeadersMiddleware)
 
@@ -57,6 +58,25 @@ class WebSecurityTests(unittest.TestCase):
         secure = SiteAccountStore(self.store.path, require_admin_mfa=True)
         self.assertIsNone(secure.session_user(token))
         self.assertIsNone(secure.login("manager", "manager-password", self.totp.now()))
+
+    def test_admin_login_failure_reports_only_reason_and_keeps_the_public_response(self):
+        self.store.provision_admin("admin", self.password, self.totp.secret)
+        now = 1111111109
+        valid_code = self.totp.at(now)
+        valid_window = {self.totp.at(now + offset) for offset in (-30, 0, 30)}
+        wrong_code = next(f"{i:06d}" for i in range(4) if f"{i:06d}" not in valid_window)
+        good = {"username": "admin", "password": self.password, "totp_code": valid_code}
+        with TestClient(self.app) as client, patch("mailapi_shared.site_accounts.time.time", return_value=now):
+            self.assertEqual(client.post("/api/auth/login", json={**good, "username": "unknown"}).status_code, 401)
+            for payload in ({**good, "password": "incorrect"}, {**good, "totp_code": ""},
+                            {**good, "totp_code": "abc"}, {**good, "totp_code": wrong_code}):
+                response = client.post("/login?mode=admin", data=payload, follow_redirects=False)
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.text, "用户名、密码或动态验证码错误")
+            self.assertEqual(client.post("/api/auth/login", json=good).status_code, 200)
+            self.assertEqual(client.post("/api/auth/login", json=good).status_code, 401)
+        self.assertEqual(self.login_failure.call_args_list, [call("password_mismatch"), call("totp_missing"),
+                         call("totp_bad_format"), call("totp_mismatch"), call("totp_replayed")])
 
     def test_account_and_ip_throttling_share_the_browser_and_json_limits(self):
         with patch.object(self.store, "login", return_value=None) as check:

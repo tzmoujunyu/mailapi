@@ -26,7 +26,7 @@ async def read_payload(request, fields):
     return payload
 
 
-def create_account_router(static_dir, resource_catalog):
+def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None):
     router = APIRouter()
     throttle = LoginThrottle()
 
@@ -49,7 +49,7 @@ def create_account_router(static_dir, resource_catalog):
         retry_after = throttle.check(request.client.host if request.client else "", username)
         if retry_after:
             return login_error(browser, "登录尝试过多，请稍后再试", 429, {"Retry-After": str(retry_after)})
-        result = store(request).login(username, password, totp_code)
+        result = store(request).login(username, password, totp_code, on_admin_failure=on_admin_failure)
         if result is None:
             return login_error(browser, "用户名、密码或动态验证码错误", 401)
         token, user = result

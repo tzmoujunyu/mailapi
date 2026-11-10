@@ -249,29 +249,45 @@ class SiteAccountStore:
             for group in data["groups"].values():
                 group["member_ids"] = [member for member in group["member_ids"] if member != user_id]
 
-    def login(self, username, password, totp_code=None):
+    def login(self, username, password, totp_code=None, *, on_admin_failure=None):
         username = username.strip().lower() if isinstance(username, str) else ""
         with self._lock:
             user = next((user for user in self._data["users"].values() if user["username"] == username), None)
+
+        def fail(reason):
+            if on_admin_failure and user and user["role"] in ADMIN_ROLES:
+                on_admin_failure(reason)
+
         # Do the same password derivation for unknown usernames without holding the store lock.
         encoded = user["password_hash"] if user else f"pbkdf2_sha256${PASSWORD_ITERATIONS}$" + "0" * 32 + "$" + "0" * 64
         if not password_matches(password, encoded) or not user:
+            fail("password_mismatch")
             return None
         with self._lock:
             user = self._data["users"].get(user["id"])
             if not user or user["password_hash"] != encoded:
+                fail("credentials_changed")
                 return None
             step = None
             if self._needs_mfa(user):
                 secret = user.get("totp_secret")
-                if not secret or not isinstance(totp_code, str) or not TOTP_PATTERN.fullmatch(totp_code):
+                if not secret:
+                    fail("totp_not_configured")
+                    return None
+                if totp_code is None or totp_code == "":
+                    fail("totp_missing")
+                    return None
+                if not isinstance(totp_code, str) or not TOTP_PATTERN.fullmatch(totp_code):
+                    fail("totp_bad_format")
                     return None
                 totp = pyotp.TOTP(secret)
                 current = int(time.time()) // totp.interval
                 last = user.get("totp_last_step", -1)
-                step = next((step for step in (current, current - 1, current + 1)
-                             if step > last and hmac.compare_digest(totp.generate_otp(step), totp_code)), None)
+                matches = [step for step in (current, current - 1, current + 1)
+                           if hmac.compare_digest(totp.generate_otp(step), totp_code)]
+                step = next((step for step in matches if step > last), None)
                 if step is None:
+                    fail("totp_replayed" if matches else "totp_mismatch")
                     return None
             token = secrets.token_urlsafe(32)
             with self._edit() as data:

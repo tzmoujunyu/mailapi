@@ -4966,7 +4966,11 @@ def resource_catalog() -> List[Dict[str, Any]]:
     return items
 
 
-app.include_router(create_account_router(STATIC_DIR, resource_catalog))
+def log_admin_login_failure(reason: str) -> None:
+    ERROR_LOGGER.error("admin_login_failure %s", reason)
+
+
+app.include_router(create_account_router(STATIC_DIR, resource_catalog, on_admin_failure=log_admin_login_failure))
 app.add_middleware(SecurityHeadersMiddleware)
 
 
