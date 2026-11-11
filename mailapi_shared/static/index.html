@@ -237,6 +237,7 @@
       let historyTimer = null;
       let accountRows = [];
       let refreshing = false;
+      const pendingCodexQuotas = new Set();
       let historyError = '';
       let historyRequest = 0;
       const codingPlanRows = document.getElementById('coding-plan-rows');
@@ -301,6 +302,13 @@
         const remain = Math.round(100 - Number(usage.used_percent));
         const details = [formatTsSeconds(usage.resets_at), `${resetRemain(usage.resets_at)}后刷新`];
         return renderQuotaMeter('7天', remain, details, escapeHtml) || '<span class="muted">未提供</span>';
+      }
+      function codexQuotaCell(item, accountKey) {
+        const checked = item.usage?.captured_at;
+        return `${quotaCell(item.usage)}<div class="quota-actions"><button class="small-btn" type="button"
+          data-codex-quota="${escapeAttr(item.id)}" data-gpt-key="${escapeAttr(accountKey)}"
+          aria-label="刷新 ${escapeAttr(item.workspace_id || item.email || 'Codex')} 额度">↻ 刷新额度</button>
+          ${checked ? `<span class="muted">更新于 ${escapeHtml(formatTsSeconds(checked))}</span>` : ''}</div>`;
       }
       function statusReasonText(reason) {
         const normalized = String(reason || '').trim().toLowerCase();
@@ -378,7 +386,7 @@
         const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button>` : '<span class="muted">仅账号名</span>';
         const loginActions = `<div class="resource-secret">${details}${edit}</div>`;
         const statuses = row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') + emailStatuses.map(status => statusLine(status, '邮箱')).join('');
-        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => quotaCell(item.usage)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>`;
+        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => codexQuotaCell(item, row.key)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>`;
       }
       async function loadHistory(name) {
         if (rowsNode.querySelector('[data-copy-type]:disabled')) return;
@@ -506,6 +514,29 @@
           document.getElementById('load-error').textContent = '账号刷新失败，请检查服务或重新登录。';
         } finally { refreshing = false; }
       }
+      rowsNode.addEventListener('click', async event => {
+        const button = event.target.closest('[data-codex-quota]');
+        if (!button || pendingCodexQuotas.has(button.dataset.codexQuota)) return;
+        const id = button.dataset.codexQuota;
+        pendingCodexQuotas.add(id);
+        const label = button.textContent;
+        button.disabled = true;
+        button.textContent = '刷新中…';
+        button.setAttribute('aria-busy', 'true');
+        try {
+          const path = `/api/accounts/gpt/${encodeURIComponent(button.dataset.gptKey)}/codex/${encodeURIComponent(id)}/quota`;
+          const response = await fetch(previewUrl(path), { method: 'POST', cache: 'no-store' });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || '额度刷新失败，请稍后重试');
+          await refreshAccounts();
+        } catch (error) { document.getElementById('load-error').textContent = error.message; }
+        finally {
+          pendingCodexQuotas.delete(id);
+          button.disabled = false;
+          button.textContent = label;
+          button.setAttribute('aria-busy', 'false');
+        }
+      });
       const gptEditDialog = document.getElementById('gpt-edit-dialog');
       const gptEditForm = document.getElementById('gpt-edit-form');
       const gptAuthForm = document.getElementById('gpt-edit-auth-form');

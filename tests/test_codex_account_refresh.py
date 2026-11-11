@@ -9,6 +9,8 @@ import sys
 import tempfile
 import time
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +21,7 @@ from types import SimpleNamespace
 
 from mailapi_shared.accounts import SESSION_COOKIE
 from mailapi_shared.site_accounts import SiteAccountStore
+from mailapi_shared.codex_quota_schedule import CodexQuotaSchedule
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +31,11 @@ ADMIN_TOTP = pyotp.TOTP("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
 
 
 class CodexAccountRefreshTests(unittest.TestCase):
+    def setUp(self):
+        schedule = patch.object(self.module, "CODEX_QUOTA_SCHEDULE", CodexQuotaSchedule())
+        schedule.start()
+        self.addCleanup(schedule.stop)
+
     @staticmethod
     def subscription_token(checked, account_id="account-id", workspace_id="workspace-id"):
         def iso(value):
@@ -144,6 +152,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
             module = self.module
             store = AccountCredentialStore(Path(directory) / "credentials.json")
             stack.enter_context(patch.object(module, "CREDENTIAL_STORE", store))
+            stack.enter_context(patch.object(module, "CODEX_QUOTA_SCHEDULE", CodexQuotaSchedule()))
             stack.enter_context(patch.object(module, "ACCOUNTS", [
                 {"name": "account-1", "email": "User@Example.com", "provider": "gmail", "enabled": True}
             ]))
@@ -679,7 +688,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 self.assertIn('text/html', response.headers['content-type'])
                 self.assertIn('connection failed', response.text)
 
-    def test_manual_endpoint_forces_token_refresh_without_a_subscription_request(self):
+    def test_manual_endpoint_queries_quota_without_forcing_token_refresh(self):
         record = {
             "id": "account-id",
             "email": "user@example.com",
@@ -700,7 +709,110 @@ class CodexAccountRefreshTests(unittest.TestCase):
             response = self.module.refresh_codex_account("account-id")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(calls, [True])
+        self.assertEqual(calls, [False])
+
+    def test_member_admin_and_background_share_quota_cooldown_and_real_capture_time(self):
+        module = self.module
+        path = '/api/accounts/gpt/email:user@example.com/codex/codex-1/quota'
+        with self.account_client() as (client, store), patch.object(module, 'EXTERNAL_WATCHERS', True), \
+                patch('mailapi_shared.codex_quota_schedule.time.monotonic', return_value=1000) as clock:
+            module.ensure_gpt_pool()
+            module.CODEX_ACCOUNTS.pop('codex-2')
+            def refresh(record):
+                return {**record, 'usage': {'used_percent': 25, 'captured_at': 1700000000}, 'last_refresh_at': module.now_iso()}
+            with patch.object(module, 'refresh_codex_account_record', side_effect=refresh) as fetch:
+                self.use_session(client, self.user_token)
+                first = client.post(path)
+                self.assertEqual(first.status_code, 200)
+                for _ in range(5):
+                    self.assertEqual(client.post(path).json(), first.json())
+                self.use_session(client, self.admin_token)
+                self.assertEqual(client.post('/api/codex/accounts/codex-1/refresh').status_code, 200)
+                module.refresh_all_codex_accounts_once()
+                fetch.assert_called_once()
+                self.assertEqual(first.json()['item']['usage']['captured_at'], 1700000000)
+                self.assertNotIn('token', first.json()['item'])
+                clock.return_value = 1059.999
+                self.assertEqual(client.post(path).status_code, 200)
+                fetch.assert_called_once()
+                clock.return_value = 1060
+                self.assertEqual(client.post(path).status_code, 200)
+                self.assertEqual(fetch.call_count, 2)
+
+    def test_member_quota_scope_requires_matching_account_group_listing_and_same_origin(self):
+        module = self.module
+        path = '/api/accounts/gpt/email:user@example.com/codex/codex-1/quota'
+        with self.account_client() as (client, store), patch.object(module, 'EXTERNAL_WATCHERS', True), \
+                patch.object(module, 'refresh_codex_account_record') as fetch:
+            module.ensure_gpt_pool()
+            self.use_session(client, self.user_token)
+            self.assertEqual(client.post(path.replace('codex-1', 'codex-2')).status_code, 404)
+            self.assertEqual(client.post(path.replace('email:user@example.com', 'missing')).status_code, 404)
+            self.assertEqual(client.post(path, headers={'Origin': 'https://other.example'}).status_code, 403)
+            other = store.ensure_codex_account('unassigned@example.com')
+            module.CODEX_ACCOUNTS['unassigned-codex'] = {'id': 'unassigned-codex', 'email': 'unassigned@example.com'}
+            other_path = f"/api/accounts/gpt/{other['key']}/codex/unassigned-codex/quota"
+            self.assertEqual(client.post(other_path).status_code, 404)
+            username_only = store.save_account(None, {'login': 'username-only'}, {})
+            module.CODEX_ACCOUNTS['orphan-codex'] = {'id': 'orphan-codex', 'email': ''}
+            self.use_session(client, self.admin_token)
+            self.assertEqual(client.post(f"/api/accounts/gpt/{username_only['key']}/codex/orphan-codex/quota").status_code, 404)
+            self.use_session(client, self.user_token)
+            store.save_account('email:user@example.com', {'listed': False}, {})
+            self.assertEqual(client.post(path).status_code, 404)
+            client.cookies.clear()
+            self.assertEqual(client.post(path).status_code, 401)
+            fetch.assert_not_called()
+
+    def test_inflight_quota_refresh_returns_cached_data_without_another_upstream_call(self):
+        module = self.module
+        started, complete = threading.Event(), threading.Event()
+        path = '/api/accounts/gpt/email:user@example.com/codex/codex-1/quota'
+        def refresh(record):
+            started.set()
+            self.assertTrue(complete.wait(timeout=5))
+            return {**record, 'usage': {'used_percent': 25, 'captured_at': 1700000000}}
+        with self.account_client() as (client, store), patch.object(module, 'EXTERNAL_WATCHERS', True), \
+                patch.object(module, 'refresh_codex_account_record', side_effect=refresh) as fetch, ThreadPoolExecutor() as pool:
+            module.ensure_gpt_pool()
+            running = pool.submit(module.refresh_codex_quota_once, 'codex-1', manual=True)
+            try:
+                self.assertTrue(started.wait(timeout=3))
+                self.use_session(client, self.user_token)
+                self.assertEqual(client.post(path).status_code, 200)
+                fetch.assert_called_once()
+            finally:
+                complete.set()
+            self.assertEqual(running.result(timeout=3)['usage']['used_percent'], 25)
+
+    def test_quota_failure_retains_cached_usage_and_still_applies_cooldown(self):
+        module = self.module
+        path = '/api/accounts/gpt/email:user@example.com/codex/codex-1/quota'
+        with self.account_client() as (client, store), patch.object(module, 'EXTERNAL_WATCHERS', True), \
+                patch.object(module, 'refresh_codex_account_record', side_effect=RuntimeError('upstream unavailable')) as fetch:
+            module.CODEX_ACCOUNTS['codex-1']['usage'] = {'used_percent': 25, 'captured_at': 1700000000}
+            self.use_session(client, self.user_token)
+            first = client.post(path)
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(first.json()['item']['usage']['captured_at'], 1700000000)
+            self.assertEqual(client.post(path).json(), first.json())
+            fetch.assert_called_once()
+
+    def test_member_quota_rechecks_listing_after_query_and_honors_disabled_external_watchers(self):
+        module = self.module
+        path = '/api/accounts/gpt/email:user@example.com/codex/codex-1/quota'
+        with self.account_client() as (client, store), patch.object(module, 'EXTERNAL_WATCHERS', False), \
+                patch.object(module, 'refresh_codex_account_record') as fetch:
+            self.use_session(client, self.user_token)
+            self.assertEqual(client.post(path).status_code, 409)
+            fetch.assert_not_called()
+        with self.account_client() as (client, store), patch.object(module, 'EXTERNAL_WATCHERS', True):
+            def refresh(record):
+                store.save_account('email:user@example.com', {'listed': False}, {})
+                return record
+            self.use_session(client, self.user_token)
+            with patch.object(module, 'refresh_codex_account_record', side_effect=refresh):
+                self.assertEqual(client.post(path).status_code, 404)
 
     def test_token_refresh_reloads_plan_from_new_access_token(self):
         claims = {

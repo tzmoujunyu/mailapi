@@ -96,6 +96,7 @@ from .account_passwords import (
     generate_totp_code,
 )
 from .coding_plan_quota import CodingPlanQuotaCache
+from .codex_quota_schedule import CodexQuotaSchedule
 from .resource_accounts import ResourceStore, ResourceStoreError
 from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
 from .accounts import SESSION_COOKIE, create_account_router, read_payload, themed_page
@@ -316,7 +317,6 @@ CODEX_OAUTH_TOKEN_URL = os.getenv("CODEX_OAUTH_TOKEN_URL", f"{CODEX_ISSUER}/oaut
 CODEX_REFRESH_TOKEN_URL = os.getenv("CODEX_REFRESH_TOKEN_URL", CODEX_OAUTH_TOKEN_URL).strip()
 CODEX_HTTP_TIMEOUT_SECONDS = int(os.getenv("CODEX_HTTP_TIMEOUT_SECONDS", "30"))
 CODEX_SIGNING_KEYS = jwt.PyJWKClient(f"{CODEX_ISSUER}/.well-known/jwks.json", timeout=10)
-CODEX_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_REFRESH_INTERVAL_SECONDS", "60"))
 CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS = int(os.getenv("CODEX_RESET_CREDITS_REFRESH_INTERVAL_SECONDS", "7200"))
 AUTH_REMINDER_EVERY = int(os.getenv("AUTH_REMINDER_EVERY", "10"))
 CODEX_EXHAUSTED_USED_PERCENT = 99.9
@@ -325,6 +325,7 @@ HISTORY_LOCK = threading.Lock()
 AUTH_SESSION_LOCK = threading.Lock()
 OUTLOOK_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_ACCOUNTS_LOCK = threading.RLock()
+CODEX_QUOTA_SCHEDULE = CodexQuotaSchedule()
 CODEX_AUTH_SESSION_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
@@ -2053,25 +2054,22 @@ def import_codex_auth_json(
     return imported
 
 
-def refresh_all_codex_accounts_once() -> None:
+def refresh_codex_quota_once(account_id: str, *, manual: bool = False):
     with CODEX_ACCOUNTS_LOCK:
-        records = list(CODEX_ACCOUNTS.values())
-
-    if not records:
-        return
-
-    changed = False
-    for record in records:
-        account_id = str(record.get("id") or "")
-        if not account_id:
-            continue
-        if record.get("reauth_required"):
-            continue
+        record = CODEX_ACCOUNTS.get(account_id)
+        if record is None or (record.get("reauth_required") and not manual):
+            return record
+        window = CODEX_QUOTA_SCHEDULE.begin(
+            account_id, manual=manual, last_checked_at=parse_iso_timestamp(record.get("last_refresh_at")),
+        )
+        if window is None:
+            return record
+    try:
         try:
             updated = refresh_codex_account_record(record)
         except Exception as e:  # noqa: BLE001
             log_exception(
-                f"后台刷新 Codex 账号 account={record.get('email') or account_id}",
+                f"{'手动' if manual else '后台'}刷新 Codex 账号 account={record.get('email') or account_id}",
                 e,
             )
             updated = dict(record)
@@ -2084,18 +2082,23 @@ def refresh_all_codex_accounts_once() -> None:
             updated["updated_at"] = now_iso()
 
         with CODEX_ACCOUNTS_LOCK:
-            if account_id not in CODEX_ACCOUNTS:
-                continue
-            if CODEX_ACCOUNTS[account_id] is not record:
-                continue
+            if CODEX_ACCOUNTS.get(account_id) is not record:
+                return CODEX_ACCOUNTS.get(account_id)
             if record.get("token") != updated.get("token"):
                 save_codex_record_auth_file(updated)
             CODEX_ACCOUNTS[account_id] = updated
             record_codex_changes(record, updated)
-        changed = True
-
-    if changed:
         save_codex_accounts()
+        return updated
+    finally:
+        CODEX_QUOTA_SCHEDULE.finish(account_id, window)
+
+
+def refresh_all_codex_accounts_once() -> None:
+    with CODEX_ACCOUNTS_LOCK:
+        account_ids = list(CODEX_ACCOUNTS)
+    for account_id in account_ids:
+        refresh_codex_quota_once(account_id)
 
 
 def codex_refresh_loop() -> None:
@@ -2105,7 +2108,7 @@ def codex_refresh_loop() -> None:
         except Exception as e:  # noqa: BLE001
             log_exception("Codex 后台刷新循环", e)
             print(f"Codex 账号额度刷新失败：{e}")
-        time.sleep(max(10, CODEX_REFRESH_INTERVAL_SECONDS))
+        time.sleep(5)
 
 
 def gmail_token_path(account_name: str) -> str:
@@ -4385,6 +4388,28 @@ def get_accounts(request: FastAPIRequest):
     return JSONResponse(content={"items": items, "server_time": time.time()}, headers={"Cache-Control": "no-store, private"})
 
 
+@app.post("/api/accounts/gpt/{account_key}/codex/{account_id}/quota")
+def refresh_member_codex_quota(account_key: str, account_id: str, request: FastAPIRequest):
+    def visible():
+        account = CREDENTIAL_STORE.account_by_key(account_key)
+        if not account or not can_access_account(request, account["login"]):
+            return False
+        identity = CREDENTIAL_STORE.get(account["login"], "codex_email")
+        with CODEX_ACCOUNTS_LOCK:
+            record = CODEX_ACCOUNTS.get(account_id)
+            return bool(identity and record and AccountCredentialStore.email_key(record.get("email")) == identity)
+
+    ensure_gpt_pool()
+    if not visible():
+        return JSONResponse({"detail": "未找到可用的 Codex 账号"}, status_code=404)
+    if not EXTERNAL_WATCHERS:
+        return JSONResponse({"detail": "当前环境未启用外部额度查询"}, status_code=409)
+    record = refresh_codex_quota_once(account_id, manual=True)
+    if record is None or not visible():
+        return JSONResponse({"detail": "未找到可用的 Codex 账号"}, status_code=404)
+    return JSONResponse({"item": sanitize_codex_account(record)}, headers={"Cache-Control": "no-store, private"})
+
+
 CODEX_TIPS_LOCK = threading.Lock()
 DEFAULT_CODEX_TIP = {
     "id": "device-limit",
@@ -4964,40 +4989,14 @@ def refresh_codex_account(account_id: str):
             },
             status_code=409,
         )
-    with CODEX_ACCOUNTS_LOCK:
-        record = CODEX_ACCOUNTS.get(account_id)
-    if not record:
+    record = refresh_codex_quota_once(account_id, manual=True)
+    if record is None:
         return JSONResponse(
             content={"detail": f"未找到 Codex 账号：{account_id}"},
             status_code=404,
         )
 
-    try:
-        updated = refresh_codex_account_record(
-            record,
-            force_token_refresh=True,
-        )
-    except Exception as e:  # noqa: BLE001
-        log_exception(
-            f"手动刷新 Codex 账号 account={record.get('email') or account_id}",
-            e,
-        )
-        updated = dict(record)
-        updated["status"] = "刷新失败"
-        updated["error"] = str(e)
-        updated["updated_at"] = now_iso()
-
-    with CODEX_ACCOUNTS_LOCK:
-        if account_id not in CODEX_ACCOUNTS:
-            return JSONResponse(content={"detail": "账号已删除"}, status_code=404)
-        if CODEX_ACCOUNTS[account_id] is not record:
-            return JSONResponse(content={"detail": "账号信息已更新，请重新加载"}, status_code=409)
-        if record.get("token") != updated.get("token"):
-            save_codex_record_auth_file(updated)
-        CODEX_ACCOUNTS[account_id] = updated
-        record_codex_changes(record, updated)
-    save_codex_accounts()
-    return JSONResponse(content={"item": sanitize_codex_account(updated), "updated_at": now_iso()})
+    return JSONResponse(content={"item": sanitize_codex_account(record), "updated_at": now_iso()})
 
 
 @app.delete("/api/codex/accounts/{account_id}")
@@ -5010,6 +5009,7 @@ def delete_codex_account(account_id: str, request: FastAPIRequest):
         delete_unlinked_credentials(str(existed.get("email") or ""))
         delete_codex_record_auth_files(existed)
         CODEX_ACCOUNTS.pop(account_id)
+        CODEX_QUOTA_SCHEDULE.discard(account_id)
         record_codex_changes(existed, None, actor=gpt_history_actor(request))
     save_codex_accounts()
     return JSONResponse(content={"ok": True, "account": account_id})

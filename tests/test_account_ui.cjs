@@ -68,7 +68,7 @@ function page(file, preview = false, previewUserId = '') {
   vm.runInContext(fs.readFileSync(sourceFile, 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1], context);
   if (file === 'static/index.html') vm.runInContext(fs.readFileSync(sourceFile.replace(/[^/]+$/, 'mailbox-resources.js'), 'utf8'), context);
   async function click(id, selector, dataset) {
-    const button = { dataset, textContent: '复制', disabled: false };
+    const button = { ...element(), dataset, textContent: '复制', disabled: false };
     const event = { target: { closest: query => query === selector ? button : null }, preventDefault() {} };
     for (const listener of nodes.get(id).listeners.click || []) await listener(event);
     if (id !== 'document') for (const listener of document.listeners.click || []) await listener(event);
@@ -299,6 +299,50 @@ test('homepage pauses hidden polling and separates live accounts from slower res
   for (const path of ['/api/accounts', '/api/coding-plans', '/api/relay-accounts']) {
     assert.ok(app.calls.some(([url]) => url === path));
   }
+});
+
+test('homepage quota buttons target their GPT account and preserve user-preview scope', async () => {
+  for (const preview of [false, true]) {
+    const app = page('static/index.html', preview, 'selected-user'); await flush();
+    assert.match(app.nodes.get('rows').innerHTML, /data-codex-quota="codex-1" data-gpt-key="email:user@example.com"/);
+    const button = await app.click('rows', '[data-codex-quota]', { codexQuota: 'codex-1', gptKey: 'email:user@example.com' });
+    const suffix = preview ? '?preview=1&user_id=selected-user' : '';
+    const path = '/api/accounts/gpt/email%3Auser%40example.com/codex/codex-1/quota' + suffix;
+    assert.ok(app.calls.some(([url, options]) => url === path && options.method === 'POST'));
+    assert.equal(button.disabled, false);
+    assert.equal(button.getAttribute('aria-busy'), 'false');
+    assert.doesNotMatch(app.nodes.get('rows').innerHTML, /冷却|倒计时/);
+  }
+});
+
+test('repeated clicks during an active quota request produce only one POST', async () => {
+  const app = page('static/index.html'); await flush();
+  const originalFetch = app.context.fetch;
+  let finish;
+  app.context.fetch = (url, options) => {
+    if (!url.endsWith('/quota')) return originalFetch(url, options);
+    app.calls.push([url, options]);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const data = { codexQuota: 'codex-1', gptKey: 'email:user@example.com' };
+  const running = app.click('rows', '[data-codex-quota]', data);
+  await flush();
+  await app.click('rows', '[data-codex-quota]', data);
+  assert.equal(app.calls.filter(([url]) => url.endsWith('/quota')).length, 1);
+  finish({ ok: true, json: async () => ({ item: fixture()[0].codex[0] }) });
+  await running;
+});
+
+test('quota display uses the real captured timestamp and handles permission errors without a fake refresh', async () => {
+  const app = page('static/index.html'); await flush();
+  const item = { id: 'codex-1', usage: { used_percent: 25, captured_at: 1700000000 } };
+  const before = vm.runInContext(`codexQuotaCell(${JSON.stringify(item)},'key')`, app.context);
+  assert.match(before, /更新于/);
+  app.context.fetch = async () => ({ ok: false, json: async () => ({ detail: '未找到可用的 Codex 账号' }) });
+  const button = await app.click('rows', '[data-codex-quota]', { codexQuota: 'codex-1', gptKey: 'key' });
+  assert.match(app.nodes.get('load-error').textContent, /未找到可用/);
+  assert.equal(button.disabled, false);
+  assert.equal(vm.runInContext(`codexQuotaCell(${JSON.stringify(item)},'key')`, app.context), before);
 });
 
 test('console refreshes the selected panel quickly and keeps full search data on a slower timer', async () => {

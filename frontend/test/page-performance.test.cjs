@@ -155,6 +155,32 @@ test('real homepage with 100 accounts preserves expanded rows across polls and u
   assert.equal(rows.children.length, 99);
 });
 
+test('real quota button returns to its normal state when a cached response leaves the row unchanged', async t => {
+  const { w, accounts, requests, settle } = await application(t, 'index.html');
+  accounts[0].codex = [{ id: 'codex-1', usage: { used_percent: 25, captured_at: 1700000000 } }];
+  await w.eval('refreshAccounts()');
+  const originalFetch = w.fetch;
+  let finish;
+  w.fetch = (url, options) => {
+    if (!url.endsWith('/quota')) return originalFetch(url, options);
+    requests.push(url);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const button = w.document.querySelector('[data-codex-quota]');
+  const row = button.closest('tr');
+  const text = row.textContent;
+  button.click(); button.click();
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute('aria-busy'), 'true');
+  assert.equal(requests.filter(url => url.endsWith('/quota')).length, 1);
+  finish({ ok: true, json: async () => ({ item: accounts[0].codex[0] }) });
+  await settle();
+  assert.equal(button.disabled, false);
+  assert.equal(button.getAttribute('aria-busy'), 'false');
+  assert.equal(row.textContent, text);
+  assert.equal(w.document.querySelector('[data-codex-quota]'), button);
+});
+
 test('real console switches panels, keeps filtered rows on polling and initializes the real editor on demand', async t => {
   const { w, requests, timers, settle } = await application(t, 'admin.html');
   assert.equal(w.document.getElementById('account-rows').children.length, 100);

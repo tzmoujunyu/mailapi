@@ -7,3 +7,5 @@
 .quota-fill { height: 100%; border-radius: inherit; background: #3b82f6; }
 .quota-empty .quota-track { background: var(--theme-danger-border, #fecaca); }
 .quota-empty .quota-fill { background: #ef4444; }
+.quota-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.quota-actions .muted { font-size: 11px; }
