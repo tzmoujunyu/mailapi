@@ -2262,7 +2262,7 @@ def save_mail_accounts() -> None:
         for item in ACCOUNTS:
             mailbox_resource_key(item)
         items = [dict(item) for item in ACCOUNTS]
-    write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
+        write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
 
 
 def find_mail_account(name: str) -> Optional[AccountConfig]:
@@ -2290,7 +2290,7 @@ def next_account_name() -> str:
 
 
 def next_gmail_account_config() -> AccountConfig:
-    name = next_account_name()
+    name = f"account-{secrets.token_hex(16)}"
     return {
         "name": name,
         "email": "等待授权",
@@ -2302,7 +2302,7 @@ def next_gmail_account_config() -> AccountConfig:
 
 
 def next_outlook_account_config() -> AccountConfig:
-    name = next_account_name()
+    name = f"account-{secrets.token_hex(16)}"
     return {
         "name": name,
         "email": "等待授权",
@@ -2551,7 +2551,7 @@ async def access_guard(request: FastAPIRequest, call_next):
     callback = (
         path in {"/auth/callback", "/api/admin/outlook/auth/callback", "/api/internal/mail-relay"}
         or path.startswith("/oauth2callback/")
-        or (path == "/" and request.query_params.get("code") and request.query_params.get("state"))
+        or (path == "/" and request.query_params.get("state") and (request.query_params.get("code") or request.query_params.get("error")))
     )
     # Microsoft form_post callbacks use the saved one-time state and MSAL flow validation.
     outlook_form_post = request.method == "POST" and path == "/api/admin/outlook/auth/callback"
@@ -3225,6 +3225,10 @@ def stop_mail_watcher(name: str, cancel_auth: bool = True) -> None:
             session = AUTH_SESSIONS.get(name)
             if session:
                 session["error"] = "账号监听已停止"
+                session["cancelled"] = True
+                for key in (name, str(session.get("state") or "")):
+                    if AUTH_SESSIONS.get(key) is session:
+                        AUTH_SESSIONS.pop(key)
                 event = session.get("event")
                 if hasattr(event, "set"):
                     event.set()
@@ -3252,7 +3256,9 @@ def complete_managed_gmail_auth(
     if not email:
         raise RuntimeError("Google 授权成功，但无法读取 Gmail 地址")
 
-    if session.get("managed_action") == "reauth" and cfg.get("email") not in {email, "未配置", "等待授权"}:
+    expected_email = str(cfg.get("email") or "")
+    if (session.get("managed_action") == "reauth" and expected_email not in {"未配置", "等待授权"}
+            and expected_email.casefold() != email.casefold()):
         raise RuntimeError(f"选择的 Gmail 账号与原账号不一致：{email}")
     if session.get("managed_action") == "add":
         with MAIL_ACCOUNTS_LOCK:
@@ -3432,7 +3438,7 @@ def start_watchers():
 
 @app.get("/")
 def index(request: FastAPIRequest):
-    if request.query_params.get("code") and request.query_params.get("state"):
+    if request.query_params.get("state") and (request.query_params.get("code") or request.query_params.get("error")):
         return complete_oauth_callback(request)
     return render_index_page(request)
 

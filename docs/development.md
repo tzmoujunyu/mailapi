@@ -337,6 +337,10 @@ Gmail 可以复用根目录 `credentials.json` 中的 OAuth 客户端配置；�
 在 Google 客户端中增加测试回调 `http://localhost:8001/`。
 使用 SSH 转发时可以在 `.env.test` 设置 `TEST_GMAIL_OAUTH_REDIRECT_BASE` 和 `TEST_APP_BASE_URL`，
 使回调地址与浏览器使用的本机端口匹配。
+Gmail 自动回调使用 GET，根路径接收 `state` 加 `code` 或 `error`，旧版
+`/oauth2callback/{account_name}` 仍兼容。桌面 OAuth 客户端返回 `localhost` 时，
+远程使用可通过端口转发，或在控制台提交完整返回链接；手工提交接口仍要求管理员权限和同源请求。
+Google Cloud 的 Web OAuth 客户端则可登记 HTTPS 公网回调并设置 `GMAIL_OAUTH_REDIRECT_BASE`。
 Outlook 在 `.env.test` 配置 `OUTLOOK_CLIENT_ID`、`OUTLOOK_CLIENT_SECRET` 和独立的
 `OUTLOOK_OAUTH_REDIRECT_URI`，指向测试服务的 `/api/admin/outlook/auth/callback`。
 Microsoft 使用 `form_post` 跨站提交授权结果，因此仅该回调路径的 POST 不走普通写请求的
@@ -344,6 +348,13 @@ Microsoft 使用 `form_post` 跨站提交授权结果，因此仅该回调路径
 再由 MSAL 校验原始授权流程后换取令牌。启动授权及其他写接口仍受原有同源和权限校验保护。
 若旧回调被“不允许跨站请求”错误拦截，Microsoft 端同意授权不代表邮箱已入池，
 修复后需要重新点击“添加 Outlook”完成一次新的授权。
+
+新增 Gmail、Outlook 时各自生成独立的随机内部编号及授权文件路径，互不复用待完成会话的编号；
+已有邮箱的编号、资源标识、上架状态、接码说明和分组关联保持不变。重复添加同一邮箱更新原记录，
+重新授权会核对邮箱地址（不区分大小写）。停用或移除邮箱会移除待处理的授权会话，之后收到的旧回调不能重新启用邮箱。
+邮箱列表的快照和原子落盘使用同一把锁，避免并发保存时较旧列表覆盖较新列表。
+`tests/test_mail_oauth_flows.py` 模拟上游令牌与邮箱资料，覆盖自动回调、手动提交、重复回调、
+重新授权、错误账号、重复添加、多会话隔离、停用取消、保存失败和并发落盘；不访问真实邮箱。
 
 Codex 回调监听也由共享应用实现。测试版默认关闭外部监听，因此不会启动回调监听或刷新
 外部账号；正式版默认按 `CODEX_LOGIN_ADDR`（默认 `localhost:1455`）启动。测试时若显式
