@@ -619,13 +619,12 @@
       </form>
     </dialog>
 
+    <script src="/static/page-performance.js"></script>
     <script src="/static/coding-plan-quota.js"></script>
     <script src="/static/coding-plan-config.js"></script>
     <script src="/static/account-subscription.js"></script>
-    <script src="/static/vendor/tiptap/tiptap.js"></script>
     <script src="/static/codex-tip-content.js"></script>
     <script src="/static/codex-tip-format.js"></script>
-    <script src="/static/codex-tip-editor.js"></script>
     <script>
       const accountRows = document.getElementById('account-rows');
       let accountsLoading = false;
@@ -658,6 +657,8 @@
       const totpSave = document.getElementById('totp-save');
       let totpAccountName = '';
       const codingPlanRows = document.getElementById('coding-plan-rows');
+      let codingPlansLoading = false;
+      let relayAccountsLoading = false;
       const codingPlanMessage = document.getElementById('coding-plan-message');
       const codingPlanDialog = document.getElementById('coding-plan-dialog');
       const codingPlanForm = document.getElementById('coding-plan-form');
@@ -778,20 +779,26 @@
       }
 
       async function loadCodingPlans() {
+        if (codingPlansLoading) return;
+        codingPlansLoading = true;
         try {
           const data = await api('/api/coding-plans');
           codingPlans = data.items || [];
-          codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="6" class="muted">暂无 Coding Plan。</td></tr>';
+          window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map(item => ({ key: item.id, html: codingPlanRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="6" class="muted">暂无 Coding Plan。</td></tr>' }]);
           refreshVisibleCodingPlanQuotas(codingPlans);
         } catch (error) { setMessage(codingPlanMessage, error.message, true); }
+        finally { codingPlansLoading = false; }
       }
 
       async function loadRelayAccounts() {
+        if (relayAccountsLoading) return;
+        relayAccountsLoading = true;
         try {
           const data = await api('/api/relay-accounts');
           relayAccounts = data.items || [];
-          relayAccountRows.innerHTML = relayAccounts.length ? relayAccounts.map(relayAccountRow).join('') : '<tr><td colspan="5" class="muted">暂无中转站账号。</td></tr>';
+          window.PagePerformance.renderRows(relayAccountRows, relayAccounts.length ? relayAccounts.map(item => ({ key: item.id, html: relayAccountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="5" class="muted">暂无中转站账号。</td></tr>' }]);
         } catch (error) { setMessage(relayAccountMessage, error.message, true); }
+        finally { relayAccountsLoading = false; }
       }
 
       codingPlanRows.addEventListener('click', event => {
@@ -1387,7 +1394,7 @@
         try {
           const data = await api('/api/accounts');
           gptAccounts = data.items;
-          accountRows.innerHTML = gptAccounts.length ? gptAccounts.map(accountRow).join('') : '<tr><td colspan="5" class="muted">暂无 GPT 账号，可点击“添加 GPT 账号”创建。</td></tr>';
+          window.PagePerformance.renderRows(accountRows, gptAccounts.length ? gptAccounts.map(item => ({ key: item.key, html: accountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="5" class="muted">暂无 GPT 账号，可点击“添加 GPT 账号”创建。</td></tr>' }]);
         } catch (error) {
           setMessage(gptMessage, error.message, true);
         } finally { accountsLoading = false; }
@@ -1454,8 +1461,8 @@
         try {
           const data = await api('/api/admin/mail/accounts');
           mailboxAccounts = data.items;
-          mailboxRows.innerHTML = mailboxAccounts.length ? mailboxAccounts.map(mailboxRow).join('')
-            : '<tr><td colspan="5" class="muted">暂无邮箱，可添加 Gmail 或 Outlook。</td></tr>';
+          window.PagePerformance.renderRows(mailboxRows, mailboxAccounts.length ? mailboxAccounts.map(item => ({ key: item.name, html: mailboxRow(item) }))
+            : [{ key: 'empty', html: '<tr><td colspan="5" class="muted">暂无邮箱，可添加 Gmail 或 Outlook。</td></tr>' }]);
         } catch (error) {
           setMessage(mailPoolMessage, error.message, true);
         } finally { mailboxesLoading = false; }
@@ -1711,26 +1718,33 @@
       }
 
       async function openCodexTip(tip) {
-        if (codexTipSave.disabled || window.CodexTipEditor.busy()) return;
+        if (codexTipCancel.disabled || window.CodexTipEditor?.busy()) return;
         editingCodexTip = tip?.id || '';
         document.getElementById('codex-tip-edit-heading').textContent = tip ? '修改提示' : '新增提示';
         codexTipTitle.value = tip?.title || '';
         codexTipError.textContent = '';
         codexTipEditor.showModal();
         codexTipSave.disabled = true;
+        codexTipCancel.disabled = true;
         try {
+          if (!window.CodexTipEditor) {
+            document.getElementById('codex-tip-body').textContent = '正在加载编辑器…';
+            await window.PagePerformance.loadScript('/static/vendor/tiptap/tiptap.js');
+            await window.PagePerformance.loadScript('/static/codex-tip-editor.js');
+          }
           await window.CodexTipEditor.open(tip);
           codexTipTitle.focus();
           codexTipSave.disabled = false;
-        } catch (error) { codexTipError.textContent = '编辑器加载失败，请刷新页面重试。'; }
+        } catch (error) { codexTipError.textContent = '编辑器加载失败，请关闭后重试。'; }
+        finally { codexTipCancel.disabled = false; }
       }
 
       addCodexTip.addEventListener('click', () => openCodexTip());
       codexTipCancel.addEventListener('click', () => {
-        if (window.CodexTipEditor.busy()) { codexTipError.textContent = '请等待图片上传完成'; return; }
+        if (window.CodexTipEditor?.busy()) { codexTipError.textContent = '请等待图片上传完成'; return; }
         codexTipEditor.close();
       });
-      codexTipEditor.addEventListener('cancel', event => { if (codexTipSave.disabled || window.CodexTipEditor.busy()) event.preventDefault(); });
+      codexTipEditor.addEventListener('cancel', event => { if (codexTipCancel.disabled || window.CodexTipEditor?.busy()) event.preventDefault(); });
       codexTipRows.addEventListener('click', async event => {
         const edit = event.target.closest('[data-edit-codex-tip]');
         if (edit) {
@@ -1777,7 +1791,20 @@
       loadCodingPlans();
       loadRelayAccounts();
       loadFilters();
-      setInterval(() => { loadAccounts(false); loadMailboxes(false); loadCodingPlans(); loadRelayAccounts(); }, 5000);
+      function refreshPanels(all = false) {
+        if (document.hidden) return;
+        const active = id => all || document.getElementById(id).getAttribute('aria-hidden') !== 'true';
+        return Promise.all([
+          active('gpt-pool-panel') ? loadAccounts(false) : null,
+          active('mail-pool-panel') ? loadMailboxes(false) : null,
+          active('coding-pool-panel') ? loadCodingPlans() : null,
+          active('relay-pool-panel') ? loadRelayAccounts() : null,
+        ]);
+      }
+      setInterval(() => refreshPanels(), 5000);
+      setInterval(() => refreshPanels(true), 30000);
+      document.addEventListener('management:change', () => refreshPanels());
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshPanels(true); });
     </script>
   </body>
 </html>

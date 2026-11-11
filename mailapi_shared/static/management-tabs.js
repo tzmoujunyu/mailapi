@@ -43,6 +43,7 @@
         });
       }
       viewport.classList.remove('is-switching');
+      if (restore) document.dispatchEvent(new CustomEvent('management:change'));
     }
 
     tabs.forEach((tab, index) => {

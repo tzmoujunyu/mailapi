@@ -219,6 +219,7 @@
       <p id="gpt-edit-error" class="status-bad" role="alert"></p>
     </dialog>
     <!-- PREVIEW_SCRIPT -->
+    <script src="/static/page-performance.js"></script>
     <script src="/static/coding-plan-quota.js"></script>
     <script src="/static/coding-plan-config.js"></script>
     <script src="/static/account-subscription.js"></script>
@@ -262,6 +263,7 @@
         return { text: remaining ? `${copiedExpiry ? '已复制码' : '当前码'}剩余 ${remaining} 秒` : '已复制码已过期，请重新复制', warning: remaining <= 5 };
       }
       function updateTotpCountdown() {
+        if (document.hidden) return;
         for (const node of rowsNode.querySelectorAll('[data-totp-validity]')) {
           const validity = totpValidity(node.dataset.totpValidity);
           if (node.textContent !== validity.text) node.textContent = validity.text;
@@ -376,7 +378,7 @@
         const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button>` : '<span class="muted">仅账号名</span>';
         const loginActions = `<div class="resource-secret">${details}${edit}</div>`;
         const statuses = row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') + emailStatuses.map(status => statusLine(status, '邮箱')).join('');
-        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => quotaCell(item.usage)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>${expanded && hasDetails ? detailRow(row) : ''}`;
+        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => quotaCell(item.usage)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>`;
       }
       async function loadHistory(name) {
         if (rowsNode.querySelector('[data-copy-type]:disabled')) return;
@@ -397,7 +399,7 @@
         if (historyTimer) clearInterval(historyTimer);
         historyItems = [];
         loadHistory(name);
-        historyTimer = setInterval(() => { if (historyName === name && !historyLoading) loadHistory(name); }, HISTORY_REFRESH_MS);
+        historyTimer = setInterval(() => { if (!document.hidden && historyName === name && !historyLoading) loadHistory(name); }, HISTORY_REFRESH_MS);
       }
       async function writeClipboard(value) {
         if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(value); return; }
@@ -425,8 +427,8 @@
         return `<tr><td><div class="resource-name">${name}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td><div class="resource-secret">${methods.join('') || '<span class="muted">未设置登录方式</span>'}</div></td><td>${escapeHtml(item.note || '-')}</td></tr>`;
       }
       function renderResources() {
-        codingPlanRows.innerHTML = codingPlans.length ? codingPlans.map(codingPlanRow).join('') : '<tr><td colspan="4" class="muted">暂无 Coding Plan。</td></tr>';
-        relayAccountRows.innerHTML = relayAccounts.length ? relayAccounts.map(relayAccountRow).join('') : '<tr><td colspan="4" class="muted">暂无中转站账号。</td></tr>';
+        window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map(item => ({ key: item.id, html: codingPlanRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted">暂无 Coding Plan。</td></tr>' }]);
+        window.PagePerformance.renderRows(relayAccountRows, relayAccounts.length ? relayAccounts.map(item => ({ key: item.id, html: relayAccountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted">暂无中转站账号。</td></tr>' }]);
       }
       async function copyResourceSecret(button) {
         button.disabled = true;
@@ -474,7 +476,10 @@
         finally { setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500); }
       }
       function render() {
-        rowsNode.innerHTML = accountRows.length ? accountRows.map(rowHtml).join('') : '<tr><td colspan="4" class="muted">暂无账号。</td></tr>';
+        const rows = accountRows.flatMap(row => [{ key: row.key, html: rowHtml(row) },
+          ...(expandedKey === row.key && (row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length)
+            ? [{ key: `${row.key}:details`, html: detailRow(row) }] : [])]);
+        window.PagePerformance.renderRows(rowsNode, rows.length ? rows : [{ key: 'empty', html: '<tr><td colspan="4" class="muted">暂无账号。</td></tr>' }]);
         updateTotpCountdown();
       }
       async function refreshAccounts() {
@@ -610,7 +615,8 @@
       loadCodexTips();
       refreshAccounts();
       refreshResources();
-      setInterval(() => { refreshAccounts(); refreshResources(); }, 3000);
+      setInterval(() => { if (!document.hidden) refreshAccounts(); }, 3000);
+      setInterval(() => { if (!document.hidden) refreshResources(); }, 30000);
       setInterval(updateTotpCountdown, 250);
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
@@ -618,6 +624,7 @@
         updateTotpCountdown();
         refreshAccounts();
         refreshResources();
+        if (historyName && !historyLoading) loadHistory(historyName);
       });
     </script>
     <script src="/static/mailbox-resources.js"></script>

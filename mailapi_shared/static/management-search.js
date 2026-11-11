@@ -18,21 +18,23 @@
       else root.closest('section').scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
     results.append(button);
-    return { root, button };
+    return { root, button, index: null };
   });
 
   function filter() {
     const terms = normalize(input.value).trim().split(/\s+/).filter(Boolean);
     let total = 0;
-    for (const { root, button } of scopes) {
+    for (const scope of scopes) {
+      const { root, button } = scope;
       const overview = root.hasAttribute('data-search-overview');
-      const items = [...root.querySelectorAll(overview ? '.matrix-cell' : ':scope > tr')]
-        .filter(item => !item.hasAttribute('data-search-empty') && !item.querySelector('td[colspan]'));
+      const items = scope.index ||= [...root.querySelectorAll(overview ? '.matrix-cell' : ':scope > tr')]
+        .filter(item => !item.hasAttribute('data-search-empty') && !item.querySelector('td[colspan]'))
+        .map(item => ({ item, text: normalize(item.textContent + ' ' + (item.dataset.searchText || '')
+          + ' ' + [...item.querySelectorAll('a[href]')].map(link => link.getAttribute('href')).join(' ')) }));
       let count = 0;
-      for (const item of items) {
-        const text = normalize(item.textContent + ' ' + (item.dataset.searchText || '')
-          + ' ' + [...item.querySelectorAll('a[href]')].map(link => link.getAttribute('href')).join(' '));
-        item.hidden = !terms.every(term => text.includes(term));
+      for (const { item, text } of items) {
+        const hidden = !terms.every(term => text.includes(term));
+        if (item.hidden !== hidden) item.hidden = hidden;
         if (!item.hidden) count++;
       }
       if (overview) {
@@ -69,11 +71,17 @@
     clear.hidden = results.hidden = !terms.length;
   }
 
-  input.addEventListener('input', filter);
-  function reset() { input.value = ''; filter(); input.focus(); }
+  let timer;
+  function schedule(delay = 0) { clearTimeout(timer); timer = setTimeout(filter, delay); }
+  input.addEventListener('input', event => { if (!event.isComposing) schedule(200); });
+  input.addEventListener('compositionend', () => schedule(200));
+  function reset() { clearTimeout(timer); input.value = ''; filter(); input.focus(); }
   clear.addEventListener('click', reset);
   input.addEventListener('keydown', event => { if (event.key === 'Escape') reset(); });
-  const observer = new MutationObserver(filter);
-  scopes.forEach(({ root }) => observer.observe(root, { childList: true, subtree: true, characterData: true }));
+  scopes.forEach(scope => {
+    const observer = new MutationObserver(() => { scope.index = null; schedule(); });
+    observer.observe(scope.root, { childList: true, subtree: true, characterData: true,
+      attributes: true, attributeFilter: ['data-search-text', 'href'] });
+  });
   filter();
 })();

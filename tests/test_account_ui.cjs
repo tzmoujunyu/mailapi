@@ -26,9 +26,12 @@ function page(file, preview = false, previewUserId = '') {
   const nodes = new Map();
   const calls = [];
   const timers = new Map();
+  const delays = new Map();
   let counter = 0;
   const element = () => ({
-    innerHTML: '', textContent: '', dataset: {}, value: '', listeners: {},
+    innerHTML: '', textContent: '', dataset: {}, value: '', listeners: {}, attributes: {},
+    getAttribute(name) { return this.attributes[name] ?? null; },
+    setAttribute(name, value) { this.attributes[name] = value; },
     addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
     querySelector() { return null; }, querySelectorAll() { return []; },
     showModal() { this.open = true; }, close() { this.open = false; }, focus() {}, reset() {},
@@ -38,7 +41,7 @@ function page(file, preview = false, previewUserId = '') {
   };
   const context = vm.createContext({ document, console, Date, Map, Set, Promise, AbortSignal, URLSearchParams,
     performance: { now: () => Date.now() },
-    setInterval(callback) { timers.set(++counter, callback); return counter; }, clearInterval(id) { timers.delete(id); },
+    setInterval(callback, delay) { timers.set(++counter, callback); delays.set(counter, delay); return counter; }, clearInterval(id) { timers.delete(id); },
     setTimeout(callback) { return ++counter; },
     navigator: { clipboard: { async writeText(value) { calls.push(['clipboard', value]); } } }, window: { isSecureContext: true, __USER_PREVIEW__: preview, __PREVIEW_USER_ID__: previewUserId },
     confirm: () => true,
@@ -52,6 +55,9 @@ function page(file, preview = false, previewUserId = '') {
     async open(tip) { document.getElementById('codex-tip-body').value = tip?.body || ''; },
     async save() { return [{ type: 'paragraph', data: { text: nodes.get('codex-tip-body').value } }]; },
     busy: () => false,
+  };
+  context.window.PagePerformance = {
+    renderRows(root, rows) { root.innerHTML = rows.map(row => row.html).join(''); },
   };
   const sourceFile = process.env.MAILAPI_UI_ROOT ? file.replace(/^static\//, `${process.env.MAILAPI_UI_ROOT}/`) : file;
   const quotaScript = sourceFile.replace(/[^/]+$/, 'coding-plan-quota.js');
@@ -69,7 +75,7 @@ function page(file, preview = false, previewUserId = '') {
     await flush();
     return button;
   }
-  return { context, nodes, calls, timers, click };
+  return { context, nodes, calls, timers, delays, click };
 }
 
 test('subscription display warns at five days and expires without assuming renewal', async () => {
@@ -259,6 +265,7 @@ test('Coding Plan configuration follows the provider and keeps copy beside the m
 
 test('homepage expands immediately, places history below email row, and collapses all details', async () => {
   const app = page('static/index.html'); await flush();
+  const initialTimers = app.timers.size;
   assert.match(app.nodes.get('rows').innerHTML, /75%/);
   const count = app.calls.length;
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
@@ -273,7 +280,66 @@ test('homepage expands immediately, places history below email row, and collapse
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /654321/);
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   assert.doesNotMatch(app.nodes.get('rows').innerHTML, /GPT密码/);
-  assert.equal(app.timers.size, 2);
+  assert.equal(app.timers.size, initialTimers);
+});
+
+test('homepage pauses hidden polling and separates live accounts from slower resource lists', async () => {
+  const app = page('static/index.html'); await flush();
+  app.calls.length = 0;
+  const tick = delay => app.timers.get([...app.delays].find(([, value]) => value === delay)[0])();
+  tick(3000); await flush();
+  assert.deepEqual(app.calls.map(([url]) => url), ['/api/accounts']);
+  app.calls.length = 0;
+  app.context.document.hidden = true;
+  tick(3000); tick(30000); await flush();
+  assert.equal(app.calls.length, 0);
+  app.context.document.hidden = false;
+  for (const handler of app.context.document.listeners.visibilitychange) handler();
+  await flush();
+  for (const path of ['/api/accounts', '/api/coding-plans', '/api/relay-accounts']) {
+    assert.ok(app.calls.some(([url]) => url === path));
+  }
+});
+
+test('console refreshes the selected panel quickly and keeps full search data on a slower timer', async () => {
+  const app = page('static/admin.html'); await flush();
+  for (const name of ['gpt', 'mail', 'coding', 'relay']) {
+    app.context.document.getElementById(`${name}-pool-panel`).setAttribute('aria-hidden', String(name !== 'mail'));
+  }
+  app.calls.length = 0;
+  await vm.runInContext('refreshPanels()', app.context);
+  assert.deepEqual(app.calls.map(([url]) => url), ['/api/admin/mail/accounts']);
+  app.calls.length = 0;
+  app.context.document.hidden = true;
+  await vm.runInContext('refreshPanels(true)', app.context);
+  assert.equal(app.calls.length, 0);
+  app.context.document.hidden = false;
+  await vm.runInContext('refreshPanels(true)', app.context);
+  assert.equal(app.calls.length, 4);
+});
+
+test('console lazy-loads the editor and allows retry after a failed download', async () => {
+  const app = page('static/admin.html'); await flush();
+  const editor = app.context.window.CodexTipEditor;
+  delete app.context.window.CodexTipEditor;
+  let failed = true;
+  const scripts = [];
+  app.context.window.PagePerformance.loadScript = async src => {
+    scripts.push(src);
+    if (failed) throw new Error('network failure');
+    if (src.endsWith('/codex-tip-editor.js')) app.context.window.CodexTipEditor = editor;
+  };
+  await app.click('add-codex-tip');
+  assert.match(app.nodes.get('codex-tip-error').textContent, /加载失败/);
+  assert.equal(app.nodes.get('codex-tip-cancel').disabled, false);
+  await app.click('codex-tip-cancel');
+  failed = false;
+  await app.click('add-codex-tip');
+  assert.equal(app.nodes.get('codex-tip-save').disabled, false);
+  assert.equal(app.nodes.get('codex-tip-edit-dialog').open, true);
+  assert.deepEqual(scripts, ['/static/vendor/tiptap/tiptap.js', '/static/vendor/tiptap/tiptap.js', '/static/codex-tip-editor.js']);
+  const html = fs.readFileSync(`${process.env.MAILAPI_UI_ROOT || 'static'}/admin.html`, 'utf8');
+  assert.doesNotMatch(html, /<script src="\/static\/(vendor\/tiptap\/tiptap|codex-tip-editor)\.js"/);
 });
 
 test('website account console exposes the admin-only batch user form', () => {
