@@ -13,6 +13,8 @@
 .codex-tip-label { flex: 1; min-width: 0; }
 #codex-tip-edit-dialog { width: min(900px, calc(100vw - 24px)); max-height: 90dvh; }
 .codex-tip-editor-field { min-width: 0; }
+#codex-tip-form > p { margin: 0; }
+#codex-tip-upload-status:empty, #codex-tip-error:empty { display: none; }
 .codex-tip-editor-field > label { margin-bottom: 7px; }
 .codex-tip-editor-shell { border: 1px solid var(--theme-border-strong, #c7ced6); border-radius: 10px; }
 .codex-tip-editor-shell:focus-within { border-color: var(--theme-focus, #2563eb); box-shadow: 0 0 0 2px var(--theme-info-bg, #eff6ff); }
