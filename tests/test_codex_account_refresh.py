@@ -12,7 +12,7 @@ import unittest
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import jwt
 import pyotp
@@ -675,6 +675,80 @@ class CodexAccountRefreshTests(unittest.TestCase):
             self.assertEqual(response.headers['location'], url)
             state = authorization.return_value.start.call_args.args[0]
             self.assertEqual(self.module.OUTLOOK_AUTH_SESSIONS[state]['managed_action'], 'add')
+
+    def test_outlook_cross_site_form_post_saves_mailbox_and_cache_without_login_cookie(self):
+        module = self.module
+        save_accounts = module.save_mail_accounts
+        with self.account_client() as (client, store), ExitStack() as stack:
+            directory = store.path.parent
+            token_path = directory / 'outlook_tokens' / 'account-new.json'
+            account_path = directory / 'mail-accounts.json'
+            state = 'synthetic-unpredictable-outlook-state'
+            flow = {'state': state, 'code_verifier': 'synthetic-pkce', 'nonce': 'synthetic-nonce'}
+            authorization = object.__new__(module.OutlookAuthorization)
+            authorization.app = Mock()
+            authorization.app.acquire_token_by_auth_code_flow.return_value = {'access_token': 'synthetic-access-token'}
+            authorization.cache = Mock()
+            authorization.cache.serialize.return_value = json.dumps({'AccessToken': {'synthetic': {'secret': 'synthetic-access-token'}}})
+            session = {'state': state, 'flow': flow, 'authorization': authorization, 'managed_action': 'add',
+                       'cfg': {'name': 'account-new', 'email': '等待授权', 'provider': 'outlook', 'token_file': str(token_path)}}
+            stack.enter_context(patch.object(module, 'OUTLOOK_AUTH_SESSIONS', {state: session}))
+            stack.enter_context(patch.object(module, 'ACCOUNTS', []))
+            stack.enter_context(patch.object(module, 'GMAIL_ACCOUNTS_FILE', str(account_path)))
+            stack.enter_context(patch.object(module, 'save_mail_accounts', save_accounts))
+            stack.enter_context(patch.object(module, 'fetch_outlook_profile', return_value={'email': 'added@example.test'}))
+            watcher = stack.enter_context(patch.object(module, 'start_mail_watcher'))
+            client.cookies.clear()
+            body = {'code': 'synthetic-authorization-code', 'state': state}
+            headers = {'Origin': 'https://login.microsoftonline.com', 'Sec-Fetch-Site': 'cross-site'}
+            response = client.post('/api/admin/outlook/auth/callback', data=body, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['content-type'], 'text/html; charset=utf-8')
+            self.assertIn('已授权', response.content.decode('utf-8'))
+            self.assertNotIn('synthetic-access-token', response.text)
+            self.assertNotIn('synthetic-authorization-code', response.text)
+            authorization.app.acquire_token_by_auth_code_flow.assert_called_once_with(flow, body)
+            self.assertEqual(json.loads(token_path.read_text())['AccessToken']['synthetic']['secret'], 'synthetic-access-token')
+            saved = json.loads(account_path.read_text())['items']
+            self.assertEqual([item['email'] for item in saved], ['added@example.test'])
+            self.assertEqual(saved[0]['provider'], 'outlook')
+            watcher.assert_called_once()
+            replay = client.post('/api/admin/outlook/auth/callback', data=body, headers=headers)
+            self.assertEqual(replay.status_code, 404)
+            self.assertIn('授权会话不存在或已完成', replay.content.decode('utf-8'))
+            authorization.app.acquire_token_by_auth_code_flow.assert_called_once()
+            self.use_session(client, self.admin_token)
+            listing = client.get('/api/admin/mail/accounts').json()['items']
+            self.assertEqual([item['email'] for item in listing], ['added@example.test'])
+
+    def test_outlook_callback_rejects_missing_unknown_or_mismatched_state_without_saving(self):
+        module = self.module
+        with self.account_client() as (client, store), patch.object(module, 'OUTLOOK_AUTH_SESSIONS', {}) as sessions, \
+                patch.object(module, 'fetch_outlook_profile') as profile, patch.object(module, 'write_json_atomic') as save:
+            headers = {'Origin': 'https://untrusted.example', 'Sec-Fetch-Site': 'cross-site'}
+            client.cookies.clear()
+            path = '/api/admin/outlook/auth/callback'
+            self.assertEqual(client.post(path, data={'code': 'fake'}, headers=headers).status_code, 400)
+            self.assertEqual(client.post(path, data={'state': 'unknown', 'code': 'fake'}, headers=headers).status_code, 404)
+            authorization = object.__new__(module.OutlookAuthorization)
+            authorization.app = Mock()
+            authorization.app.acquire_token_by_auth_code_flow.side_effect = ValueError('state mismatch')
+            sessions['known'] = {'authorization': authorization, 'flow': {'state': 'different'},
+                                 'cfg': {'name': 'new-outlook', 'email': '等待授权'}}
+            result = client.post(path, data={'state': 'known', 'code': 'fake'}, headers=headers)
+            self.assertEqual(result.status_code, 400)
+            self.assertIn('state 校验失败', result.text)
+            self.assertEqual(result.headers['content-type'], 'text/html; charset=utf-8')
+            profile.assert_not_called()
+            save.assert_not_called()
+
+    def test_outlook_callback_exception_does_not_exempt_other_cross_site_writes(self):
+        with self.account_client() as (client, store):
+            headers = {'Origin': 'https://login.microsoftonline.com', 'Sec-Fetch-Site': 'cross-site'}
+            for path in ('/api/admin/outlook/auth/start', '/api/auth/login', '/api/admin/gmail/auth/complete',
+                         '/api/admin/outlook/auth/callback/extra'):
+                self.assertEqual(client.post(path, json={}, headers=headers).status_code, 403, path)
+            self.assertEqual(client.put('/api/auth/preferences', json={'theme': 'dark'}, headers=headers).status_code, 403)
 
     def test_outlook_start_errors_render_escaped_html(self):
         with self.account_client() as (client, store):

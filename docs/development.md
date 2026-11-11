@@ -339,6 +339,11 @@ Gmail 可以复用根目录 `credentials.json` 中的 OAuth 客户端配置；�
 使回调地址与浏览器使用的本机端口匹配。
 Outlook 在 `.env.test` 配置 `OUTLOOK_CLIENT_ID`、`OUTLOOK_CLIENT_SECRET` 和独立的
 `OUTLOOK_OAUTH_REDIRECT_URI`，指向测试服务的 `/api/admin/outlook/auth/callback`。
+Microsoft 使用 `form_post` 跨站提交授权结果，因此仅该回调路径的 POST 不走普通写请求的
+同源校验，也不要求携带网站登录 Cookie；回调必须匹配本站保存的一次性随机 `state`，
+再由 MSAL 校验原始授权流程后换取令牌。启动授权及其他写接口仍受原有同源和权限校验保护。
+若旧回调被“不允许跨站请求”错误拦截，Microsoft 端同意授权不代表邮箱已入池，
+修复后需要重新点击“添加 Outlook”完成一次新的授权。
 
 Codex 回调监听也由共享应用实现。测试版默认关闭外部监听，因此不会启动回调监听或刷新
 外部账号；正式版默认按 `CODEX_LOGIN_ADDR`（默认 `localhost:1455`）启动。测试时若显式

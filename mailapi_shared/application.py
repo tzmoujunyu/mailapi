@@ -2553,7 +2553,9 @@ async def access_guard(request: FastAPIRequest, call_next):
         or path.startswith("/oauth2callback/")
         or (path == "/" and request.query_params.get("code") and request.query_params.get("state"))
     )
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and path != "/api/internal/mail-relay":
+    # Microsoft form_post callbacks use the saved one-time state and MSAL flow validation.
+    outlook_form_post = request.method == "POST" and path == "/api/admin/outlook/auth/callback"
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and path != "/api/internal/mail-relay" and not outlook_form_post:
         origin = request.headers.get("origin")
         fetch_site = request.headers.get("sec-fetch-site", "").lower()
         if fetch_site in {"cross-site", "same-site"} or (
