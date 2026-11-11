@@ -264,12 +264,17 @@ test('Coding Plan configuration follows the provider and keeps copy beside the m
 });
 
 test('homepage expands immediately, places history below email row, and collapses all details', async () => {
+  const root = process.env.MAILAPI_UI_ROOT || 'static';
+  const source = fs.readFileSync(`${root}/index.html`, 'utf8');
+  assert.match(source, /<thead><tr><th>账号<\/th><th>周额度<\/th><th>操作<\/th><th>状态<\/th><\/tr><\/thead>/);
+  assert.match(source, /非常规操作：<\/strong>修改后可能影响账号登录与验证码监听，仅限自主订阅账号填写。/);
   const app = page('static/index.html'); await flush();
   const initialTimers = app.timers.size;
   assert.match(app.nodes.get('rows').innerHTML, /75%/);
   const count = app.calls.length;
   await app.click('rows', '[data-expand-key]', { expandKey: 'email:user@example.com' });
   assert.equal(app.calls.length, count);
+  assert.match(app.nodes.get('rows').innerHTML, /data-expand-key="email:user@example.com">收起/);
   assert.match(app.nodes.get('rows').innerHTML, /GPT密码/);
   await app.click('rows', '[data-history-name]', { historyName: 'account-1' });
   const html = app.nodes.get('rows').innerHTML;

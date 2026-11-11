@@ -93,6 +93,7 @@
       .resource-link { color: var(--theme-link, #2563eb); text-decoration: none; }
       .resource-link:hover { text-decoration: underline; }
       .resource-secret { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+      .gpt-edit-warning { margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--theme-danger-border, #fecaca); border-radius: 8px; background: var(--theme-danger-bg, #fef2f2); line-height: 1.5; }
       #relay-mail-dialog {
         box-sizing: border-box; width: min(540px, calc(100vw - 24px)); height: min(540px, 86dvh);
         padding: 20px; border: 1px solid var(--theme-border, #dfe3e8); border-radius: 14px; color: var(--theme-text, #1f2937);
@@ -156,7 +157,7 @@
         <div id="load-error" class="status-bad" role="status"></div>
         <div class="table-wrap">
           <table class="account-table">
-            <thead><tr><th>账号</th><th>周额度</th><th>登陆方式</th><th>状态</th></tr></thead>
+            <thead><tr><th>账号</th><th>周额度</th><th>操作</th><th>状态</th></tr></thead>
             <tbody id="rows"><tr><td colspan="4" class="muted">加载中...</td></tr></tbody>
           </table>
         </div>
@@ -204,6 +205,7 @@
     </dialog>
     <dialog id="gpt-edit-dialog" aria-labelledby="gpt-edit-title">
       <div class="relay-mail-header"><h2 id="gpt-edit-title">编辑 GPT 账号</h2><button id="gpt-edit-close" class="small-btn" type="button">关闭</button></div>
+      <p class="status-bad gpt-edit-warning"><strong>非常规操作：</strong>修改后可能影响账号登录与验证码监听，仅限自主订阅账号填写。</p>
       <p class="muted">保存后立即更新共享账号信息。密码和 2FA 留空可保留原值。</p>
       <form id="gpt-edit-form">
         <label>登录账号（邮箱或用户名）<input id="gpt-edit-login" autocomplete="off" maxlength="120" required /></label>
@@ -383,7 +385,7 @@
         const expanded = expandedKey === row.key;
         const hasDetails = row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length;
         const edit = previewMode ? '' : `<button class="small-btn" type="button" data-edit-gpt-key="${escapeAttr(row.key)}" aria-haspopup="dialog">编辑账号</button>`;
-        const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '展开'}</button>` : '<span class="muted">仅账号名</span>';
+        const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '登陆'}</button>` : '<span class="muted">仅账号名</span>';
         const loginActions = `<div class="resource-secret">${details}${edit}</div>`;
         const statuses = row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') + emailStatuses.map(status => statusLine(status, '邮箱')).join('');
         return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => codexQuotaCell(item, row.key)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>`;
