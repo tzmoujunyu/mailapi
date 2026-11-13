@@ -993,6 +993,7 @@ def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
         provider="codex",
         resource_id=record.get("id") or record.get("email") or "unknown",
         source=str(payload.get("source") or "refresh"),
+        writer=write_json_atomic,
     )
 
 
@@ -3328,6 +3329,7 @@ def complete_managed_gmail_auth(
         provider="gmail",
         resource_id=cfg["name"],
         source=str(session.get("managed_action") or "oauth"),
+        writer=write_json_atomic,
     )
 
     with MAIL_ACCOUNTS_LOCK:
@@ -3397,6 +3399,7 @@ def complete_managed_outlook_auth(
         provider="outlook",
         resource_id=cfg["name"],
         source=str(session.get("managed_action") or "oauth"),
+        writer=write_json_atomic,
     )
 
     with MAIL_ACCOUNTS_LOCK:

@@ -134,15 +134,17 @@ class SiteAccountStore:
                 os.unlink(temporary)
 
     @staticmethod
-    def _public(user, *, include_note=False):
-        result = {
-            key: user.get(key)
-            for key in (
-                "id", "username", "role", "created_at", "status", "last_login_at",
-                "last_failed_login_at", "failed_login_count", "password_changed_at",
-                "password_version", "password_source", "must_change_password",
-            )
-        }
+    def _public(user, *, include_note=False, include_status=False):
+        result = {key: user.get(key) for key in ("id", "username", "role", "created_at")}
+        if include_status:
+            result.update({
+                key: user.get(key)
+                for key in (
+                    "status", "last_login_at", "last_failed_login_at", "failed_login_count",
+                    "password_changed_at", "password_version", "password_source",
+                    "must_change_password",
+                )
+            })
         if include_note:
             result["note"] = user.get("note", "")
         return result
@@ -215,7 +217,7 @@ class SiteAccountStore:
     def list_users(self, actor_id):
         with self._lock:
             self._administrator(self._data, actor_id)
-            return [self._public(user, include_note=True) for user in self._data["users"].values()]
+            return [self._public(user, include_note=True, include_status=True) for user in self._data["users"].values()]
 
     def require_admin(self, actor_id):
         with self._lock:
@@ -365,7 +367,7 @@ class SiteAccountStore:
                     continue
                 user["must_change_password"] = True
                 user["password_source"] = "initial"
-                matched.append(self._public(user, include_note=True))
+                matched.append(self._public(user, include_note=True, include_status=True))
         return {"checked_at": checked_at, "matched_count": len(matched), "matched": matched}
 
     def _record_login_failure(self, user_id):

@@ -15,17 +15,18 @@ class UserStatusTests(unittest.TestCase):
             _, admin = store.login("admin", "admin-password")
             user = store.create_user(admin["id"], "alice", "shared-password")
 
-            self.assertTrue(user["must_change_password"])
-            self.assertEqual(user["password_source"], "initial")
+            created = store.list_users(admin["id"])[1]
+            self.assertTrue(created["must_change_password"])
+            self.assertEqual(created["password_source"], "initial")
             result = store.scan_initial_password(admin["id"], "shared-password")
             self.assertEqual(result["matched_count"], 1)
             self.assertEqual(result["matched"][0]["username"], "alice")
             self.assertNotIn("password_hash", result["matched"][0])
 
-            signed_in = store.login("alice", "shared-password")[1]
-            self.assertIsNotNone(signed_in["last_login_at"])
+            store.login("alice", "shared-password")
+            self.assertIsNotNone(store.list_users(admin["id"])[1]["last_login_at"])
             store.change_password(user["id"], "shared-password", "new-password")
-            updated = store.get_user(user["id"])
+            updated = next(item for item in store.list_users(admin["id"]) if item["id"] == user["id"])
             self.assertFalse(updated["must_change_password"])
             self.assertEqual(updated["password_source"], "user")
             self.assertEqual(updated["password_version"], 2)

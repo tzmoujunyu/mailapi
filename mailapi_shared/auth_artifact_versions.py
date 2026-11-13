@@ -72,7 +72,7 @@ class AuthArtifactVersionStore:
     def _next_version(self, entries):
         return max((int(item.get("version", 0)) for item in entries), default=0) + 1
 
-    def write_json(self, path, value, *, provider, resource_id, source):
+    def write_json(self, path, value, *, provider, resource_id, source, writer=None):
         """Archive the current file, atomically write JSON, and record metadata."""
         target = Path(path)
         key = self._key(provider, resource_id)
@@ -105,20 +105,23 @@ class AuthArtifactVersionStore:
                 })
                 next_version += 1
 
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.chmod(target.parent, 0o700)
-            temporary = target.with_name(target.name + f".tmp.{os.getpid()}.{threading.get_ident()}")
-            try:
-                with temporary.open("w", encoding="utf-8") as output:
-                    os.chmod(temporary, 0o600)
-                    json.dump(value, output, ensure_ascii=False, indent=2)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, target)
-                os.chmod(target, 0o600)
-            finally:
-                if temporary.exists():
-                    temporary.unlink()
+            if writer is not None:
+                writer(str(target), value)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.chmod(target.parent, 0o700)
+                temporary = target.with_name(target.name + f".tmp.{os.getpid()}.{threading.get_ident()}")
+                try:
+                    with temporary.open("w", encoding="utf-8") as output:
+                        os.chmod(temporary, 0o600)
+                        json.dump(value, output, ensure_ascii=False, indent=2)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    os.replace(temporary, target)
+                    os.chmod(target, 0o600)
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
 
             for item in entries:
                 item["active"] = False
