@@ -40,6 +40,7 @@ class MailOAuthFlowTests(unittest.TestCase):
 
     def setUp(self):
         stack = self.enterContext(ExitStack())
+        stack.enter_context(patch('mailapi_shared.site_accounts.password_is_pwned', return_value=False))
         self.root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         module = self.module
         self.account_file = self.root / 'mail-accounts.json'
@@ -65,8 +66,8 @@ class MailOAuthFlowTests(unittest.TestCase):
             stack.enter_context(patch.object(module, name))
         stack.enter_context(patch('requests.sessions.Session.request', side_effect=AssertionError('unexpected external request')))
         site = SiteAccountStore(self.root / 'site.json', require_admin_mfa=False)
-        site.ensure_admin('isolated-admin-password')
-        self.admin_token, _ = site.login('admin', 'isolated-admin-password')
+        site.ensure_admin('isolated-fixture-entry')
+        self.admin_token, _ = site.login('admin', 'isolated-fixture-entry')
         stack.enter_context(patch.object(module.app.state, 'site_accounts', site))
         self.client = TestClient(module.app, base_url='https://mailapi.example.test')
         stack.callback(self.client.close)

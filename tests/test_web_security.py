@@ -14,11 +14,12 @@ from mailapi_shared.web_security import BodyLimitMiddleware, ProxyIngress, Secur
 
 class WebSecurityTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch("mailapi_shared.site_accounts.password_is_pwned", return_value=False))
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (root / "login.html").write_text("<!-- LOGIN_ERROR -->", encoding="utf-8")
         self.store = SiteAccountStore(root / "site_accounts.json", require_admin_mfa=True)
         self.totp = pyotp.TOTP("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
-        self.password = "test-admin-password"
+        self.password = "fixture-entry-8642"
         self.app = FastAPI()
         self.app.state.site_accounts = self.store
         self.login_failure = Mock()
@@ -54,10 +55,10 @@ class WebSecurityTests(unittest.TestCase):
         legacy = SiteAccountStore(self.store.path)
         legacy.ensure_admin(self.password)
         token, user = legacy.login("admin", self.password)
-        legacy.create_user(user["id"], "manager", "manager-password", "manager")
+        legacy.create_user(user["id"], "manager", "fixture-entry-1673", "manager")
         secure = SiteAccountStore(self.store.path, require_admin_mfa=True)
         self.assertIsNone(secure.session_user(token))
-        self.assertIsNone(secure.login("manager", "manager-password", self.totp.now()))
+        self.assertIsNone(secure.login("manager", "fixture-entry-1673", self.totp.now()))
 
     def test_admin_login_failure_reports_only_reason_and_keeps_the_public_response(self):
         self.store.provision_admin("admin", self.password, self.totp.secret)

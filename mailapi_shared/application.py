@@ -3484,7 +3484,7 @@ def totp_secret_for_account(cfg: AccountConfig) -> Optional[str]:
 @app.on_event("startup")
 def start_watchers():
     if IS_TEST:
-        app.state.site_accounts.ensure_admin(os.getenv("TEST_ADMIN_PASSWORD", "").strip())
+        app.state.site_accounts.ensure_admin(os.getenv("TEST_ADMIN_PASSWORD", ""))
     else:
         app.state.site_accounts.check_admin_setup()
     print(f"{APP_MODE} 版已启用网站账号登录；最高管理员用户名：admin")

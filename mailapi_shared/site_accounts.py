@@ -3,7 +3,9 @@ from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import hmac
+from http.client import HTTPException
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -12,12 +14,18 @@ import tempfile
 import threading
 import time
 from datetime import datetime, timezone
+from urllib.request import Request, urlopen
 
+from argon2 import PasswordHasher, Type
+from argon2.exceptions import InvalidHashError, VerificationError
 import pyotp
 
 
 SESSION_SECONDS = 86400
-PASSWORD_ITERATIONS = 600_000
+MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_LENGTH = 128
+PASSWORD_HASHER = PasswordHasher(memory_cost=19456, time_cost=2, parallelism=1, type=Type.ID)
+PASSWORD_HASH_SLOTS = threading.BoundedSemaphore(4)
 ADMIN_ROLES = {"manager", "admin"}
 MAX_BATCH_USERS = 100
 MAX_USER_NOTE_LENGTH = 80
@@ -35,30 +43,69 @@ class SiteAccountError(ValueError):
         self.status_code = status_code
 
 
-def password_hash(password):
-    if not isinstance(password, str) or not 8 <= len(password) <= 256:
-        raise SiteAccountError("密码长度须为 8–256 个字符")
+def validate_password_length(password):
+    if not isinstance(password, str) or not MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH:
+        raise SiteAccountError(f"密码长度须为 {MIN_PASSWORD_LENGTH}–{MAX_PASSWORD_LENGTH} 个字符")
+    if any(ord(char) < 32 or 127 <= ord(char) <= 159 or
+           0xD800 <= ord(char) <= 0xDFFF or char in "\u2028\u2029" for char in password):
+        raise SiteAccountError("密码包含不可输入的字符")
+
+
+def password_is_pwned(password):
+    # SHA-1 is only the lookup format of the HIBP range API.
+    digest = hashlib.sha1(password.encode("utf-8"), usedforsecurity=False).hexdigest().upper()
+    request = Request(f"https://api.pwnedpasswords.com/range/{digest[:5]}",
+                      headers={"Add-Padding": "true", "User-Agent": "MailAPI"})
     try:
-        password_bytes = password.encode()
-    except UnicodeEncodeError as error:
-        raise SiteAccountError("密码包含无效字符") from error
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password_bytes, salt.encode(), PASSWORD_ITERATIONS)
-    return f"pbkdf2_sha256${PASSWORD_ITERATIONS}${salt}${digest.hex()}"
+        with urlopen(request, timeout=2) as response:
+            body = response.read(128 * 1024 + 1)
+        if len(body) > 128 * 1024:
+            raise ValueError("range response too large")
+        suffix = digest[5:].encode("ascii")
+        for line in body.splitlines():
+            candidate, _, count = line.partition(b":")
+            if candidate.upper() == suffix:
+                return int(count) > 0
+    except (OSError, HTTPException, ValueError):
+        logging.getLogger(__name__).warning("HIBP 密码检查暂不可用，已跳过本次查询")
+    return False
+
+
+def validate_new_password(password, *identities):
+    validate_password_length(password)
+    folded = password.casefold()
+    for identity in identities:
+        prefix = str(identity or "").partition("@")[0].casefold()
+        if prefix and prefix in folded:
+            raise SiteAccountError("密码不能包含用户名或邮箱前缀")
+    if password_is_pwned(password):
+        raise SiteAccountError("该密码曾出现在泄露记录中，请换一个密码")
+
+
+def password_hash(password):
+    validate_password_length(password)
+    with PASSWORD_HASH_SLOTS:
+        return PASSWORD_HASHER.hash(password)
 
 
 def password_matches(password, encoded):
-    if not isinstance(password, str) or len(password) > 256:
+    if not isinstance(password, str) or len(password) > MAX_PASSWORD_LENGTH or not isinstance(encoded, str):
         return False
-    algorithm, iterations, salt, digest = encoded.split("$", 3)
-    if algorithm != "pbkdf2_sha256":
-        return False
+    legacy = encoded.startswith("pbkdf2_sha256$")
     try:
-        password_bytes = password.encode()
-    except UnicodeEncodeError:
+        with PASSWORD_HASH_SLOTS:
+            if encoded.startswith("$argon2id$"):
+                return PASSWORD_HASHER.verify(encoded, password)
+            if legacy:
+                _, iterations, salt, digest = encoded.split("$", 3)
+                actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iterations))
+                return hmac.compare_digest(actual.hex(), digest)
+    except (ValueError, VerificationError, InvalidHashError):
         return False
-    actual = hashlib.pbkdf2_hmac("sha256", password_bytes, salt.encode(), int(iterations))
-    return hmac.compare_digest(actual.hex(), digest)
+    return False
+
+
+DUMMY_PASSWORD_HASH = password_hash(secrets.token_urlsafe(32))
 
 
 def normalize_user_note(note):
@@ -134,7 +181,7 @@ class SiteAccountStore:
                 os.unlink(temporary)
 
     @staticmethod
-    def _public(user, *, include_note=False, include_status=False):
+    def _public(user, *, include_note=False, include_status=False, include_reminder=False):
         result = {key: user.get(key) for key in ("id", "username", "role", "created_at")}
         if include_status:
             result.update({
@@ -147,6 +194,8 @@ class SiteAccountStore:
             })
         if include_note:
             result["note"] = user.get("note", "")
+        if include_reminder:
+            result["must_change_password"] = user.get("must_change_password", False)
         return result
 
     @staticmethod
@@ -163,6 +212,7 @@ class SiteAccountStore:
                 return
             if not password:
                 raise SiteAccountError("首次启动须设置管理员密码（至少 8 个字符）")
+            validate_new_password(password, "admin")
             encoded = password_hash(password)
             with self._edit() as data:
                 user_id = secrets.token_hex(16)
@@ -178,8 +228,6 @@ class SiteAccountStore:
     def provision_admin(self, username, password, totp_secret):
         username = username.strip().lower()
         totp_secret = totp_secret.replace(" ", "").upper()
-        if not isinstance(password, str) or len(password) < 15:
-            raise SiteAccountError("管理员新密码至少需要 15 个字符")
         if not re.fullmatch(r"[A-Z2-7]{32}", totp_secret):
             raise SiteAccountError("请输入 32 个字符的 Base32 验证器密钥")
         with self._edit() as data:
@@ -196,6 +244,7 @@ class SiteAccountStore:
             user = next((user for user in data["users"].values() if user["username"] == username), None)
             if not user or user["role"] not in ADMIN_ROLES:
                 raise SiteAccountError("未找到管理员账户")
+            validate_new_password(password, username, user.get("email"))
             user["password_hash"] = password_hash(password)
             user["password_changed_at"] = timestamp_iso()
             user["password_source"] = "admin"
@@ -269,19 +318,26 @@ class SiteAccountStore:
                 raise SiteAccountError(f"批量用户名重复：{username}", 409)
             seen.add(username)
             normalized.append(username)
-        with self._edit() as data:
+
+        def check_new_users(data):
             self._administrator(data, actor_id, admin_only=admin_only)
             existing = {user["username"] for user in data["users"].values()}
             conflicts = [username for username in normalized if username in existing]
             if conflicts:
                 raise SiteAccountError(f"用户名已存在：{', '.join(conflicts)}", 409)
+        with self._lock:
+            check_new_users(self._data)
+        validate_new_password(password, *normalized)
+        hashes = [password_hash(password) for _ in normalized]
+        with self._edit() as data:
+            check_new_users(data)
             created = []
             created_at = int(time.time())
-            for username in normalized:
+            for username, encoded in zip(normalized, hashes):
                 user_id = secrets.token_hex(16)
                 user = {
                     "id": user_id, "username": username, "role": role,
-                    "password_hash": password_hash(password), "created_at": created_at,
+                    "password_hash": encoded, "created_at": created_at,
                     "status": "active", "password_changed_at": None,
                     "password_source": "initial", "password_version": 1,
                     "must_change_password": True, "last_login_at": None,
@@ -300,6 +356,17 @@ class SiteAccountStore:
         }
 
     def update_user(self, actor_id, user_id, payload):
+        if "password" in payload:
+            with self._lock:
+                actor = self._administrator(self._data, actor_id)
+                user = self._data["users"].get(user_id)
+                if not user:
+                    raise SiteAccountError("未找到网站账户", 404)
+                if user["role"] == "admin" or (actor["role"] != "admin" and
+                                              (user["role"] != "user" or "role" in payload)):
+                    raise SiteAccountError("无权重置此账户的密码", 403)
+            validate_new_password(payload["password"], user["username"], user.get("email"))
+            encoded = password_hash(payload["password"])
         with self._edit() as data:
             actor = self._administrator(data, actor_id)
             user = data["users"].get(user_id)
@@ -317,7 +384,7 @@ class SiteAccountStore:
             if "password" in payload:
                 if actor["role"] != "admin" and user["role"] != "user":
                     raise SiteAccountError("普通管理员只能重置用户的密码", 403)
-                user["password_hash"] = password_hash(payload["password"])
+                user["password_hash"] = encoded
                 user["password_changed_at"] = timestamp_iso()
                 user["password_source"] = "admin"
                 user["password_version"] = int(user.get("password_version", 0)) + 1
@@ -334,39 +401,49 @@ class SiteAccountStore:
         return self._public(user, include_note=True)
 
     def change_password(self, user_id, current_password, new_password):
+        validate_password_length(new_password)
+        with self._lock:
+            user = self._data["users"].get(user_id)
+        if not user or not password_matches(current_password, user["password_hash"]):
+            raise SiteAccountError("当前密码错误", 403)
+        if new_password == current_password:
+            raise SiteAccountError("新密码必须与当前密码不同")
+        validate_new_password(new_password, user["username"], user.get("email"))
+        encoded = password_hash(new_password)
+        previous_hash = user["password_hash"]
         with self._edit() as data:
             user = data["users"].get(user_id)
-            if not user or not password_matches(current_password, user["password_hash"]):
-                raise SiteAccountError("当前密码错误", 403)
-            if self._needs_mfa(user) and (not isinstance(new_password, str) or len(new_password) < 15):
-                raise SiteAccountError("管理员新密码至少需要 15 个字符")
-            user["password_hash"] = password_hash(new_password)
+            if not user or user["password_hash"] != previous_hash:
+                raise SiteAccountError("账户凭据已更新，请重新登录", 409)
+            user["password_hash"] = encoded
             user["password_changed_at"] = timestamp_iso()
             user["password_source"] = "user"
             user["password_version"] = int(user.get("password_version", 0)) + 1
             user["must_change_password"] = False
             self._revoke_user_sessions(data, user_id)
 
-    def scan_initial_password(self, actor_id, password):
-        if not isinstance(password, str) or not 8 <= len(password) <= 256:
+    def scan_initial_password(self, actor_id, password, *, usernames=None):
+        if not isinstance(password, str) or not MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH:
             raise SiteAccountError("请输入待检测的初始密码")
         checked_at = timestamp_iso()
+        with self._lock:
+            self._administrator(self._data, actor_id, admin_only=True)
+            candidates = [
+                user for user in self._data["users"].values()
+                if user["username"] != "admin" and user.get("password_source") != "user"
+                and (usernames is None or user["username"] in usernames)
+            ]
+        matches = [user for user in candidates if password_matches(password, user["password_hash"])]
         with self._edit() as data:
             self._administrator(data, actor_id, admin_only=True)
             matched = []
-            for user in data["users"].values():
-                if user["username"] == "admin":
-                    continue
-                if user.get("password_source") == "user":
-                    continue
-                try:
-                    matches = password_matches(password, user.get("password_hash", ""))
-                except (AttributeError, ValueError):
-                    matches = False
-                if not matches:
+            for candidate in matches:
+                user = data["users"].get(candidate["id"])
+                if not user or user["password_hash"] != candidate["password_hash"] or user.get("password_source") == "user":
                     continue
                 user["must_change_password"] = True
-                user["password_source"] = "initial"
+                if user.get("password_source") == "legacy":
+                    user["password_source"] = "initial"
                 matched.append(self._public(user, include_note=True, include_status=True))
         return {"checked_at": checked_at, "matched_count": len(matched), "matched": matched}
 
@@ -403,7 +480,7 @@ class SiteAccountStore:
                 on_admin_failure(reason)
 
         # Do the same password derivation for unknown usernames without holding the store lock.
-        encoded = user["password_hash"] if user else f"pbkdf2_sha256${PASSWORD_ITERATIONS}$" + "0" * 32 + "$" + "0" * 64
+        encoded = user["password_hash"] if user else DUMMY_PASSWORD_HASH
         if not password_matches(password, encoded) or not user:
             fail("password_mismatch")
             return None
@@ -434,8 +511,17 @@ class SiteAccountStore:
                     fail("totp_replayed" if matches else "totp_mismatch")
                     return None
             token = secrets.token_urlsafe(32)
+            upgraded_hash = None
+            if encoded.startswith("pbkdf2_sha256$"):
+                try:
+                    upgraded_hash = password_hash(password)
+                except SiteAccountError:
+                    # A legacy password may still be valid under the previous limits.
+                    pass
             with self._edit() as data:
                 signed_in_user = data["users"][user["id"]]
+                if upgraded_hash:
+                    signed_in_user["password_hash"] = upgraded_hash
                 signed_in_user["last_login_at"] = timestamp_iso()
                 signed_in_user["failed_login_count"] = 0
                 if step is not None:
@@ -445,7 +531,7 @@ class SiteAccountStore:
                     "user_id": user["id"], "expires_at": int(time.time()) + SESSION_SECONDS,
                     "mfa_verified": step is not None,
                 }
-            return token, self._public(signed_in_user)
+            return token, self._public(signed_in_user, include_reminder=True)
 
     def session_user(self, token):
         if not token or len(token) > 256:
@@ -457,7 +543,7 @@ class SiteAccountStore:
             user = self._data["users"].get(session["user_id"])
             if not user or (self._needs_mfa(user) and not session.get("mfa_verified")):
                 return None
-            return self._public(user)
+            return self._public(user, include_reminder=True)
 
     def logout(self, token):
         with self._edit() as data:

@@ -1,19 +1,79 @@
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from mailapi_shared.auth_artifact_versions import AuthArtifactVersionStore
 from mailapi_shared.account_credentials import AccountCredentialStore
+from mailapi_shared import site_accounts
 from mailapi_shared.site_accounts import SiteAccountStore
 
 
 class UserStatusTests(unittest.TestCase):
-    def test_initial_password_scan_and_password_change_status(self):
+    def test_new_password_policy_checks_bounds_identity_and_padded_range(self):
+        password = " 例🧪! test "
+        digest = hashlib.sha1(password.encode()).hexdigest().upper()
+        with patch.object(site_accounts, "urlopen") as lookup:
+            response = lookup.return_value.__enter__.return_value
+            response.read.return_value = f"{digest[5:]}:7\r\n".encode()
+            for invalid in ("x" * 7, "x" * 129, "contains-ALICE", "has-mailname-prefix", "line\nbreak"):
+                with self.assertRaises(site_accounts.SiteAccountError):
+                    site_accounts.validate_new_password(invalid, "alice", "mailname@example.test")
+            lookup.assert_not_called()
+            with self.assertRaisesRegex(site_accounts.SiteAccountError, "泄露"):
+                site_accounts.validate_new_password(password, "alice")
+            request = lookup.call_args.args[0]
+            self.assertEqual(request.full_url, f"https://api.pwnedpasswords.com/range/{digest[:5]}")
+            self.assertEqual(request.get_header("Add-padding"), "true")
+            response.read.return_value = f"{digest[5:]}:0\r\n".encode()
+            site_accounts.validate_new_password(password, "alice")
+            lookup.side_effect = TimeoutError
+            with self.assertLogs("mailapi_shared.site_accounts", level="WARNING"):
+                site_accounts.validate_new_password("🧪" * 128, "alice")
+        encoded = site_accounts.password_hash(password)
+        self.assertTrue(encoded.startswith("$argon2id$v=19$m=19456,t=2,p=1$"))
+        self.assertTrue(site_accounts.password_matches(password, encoded))
+        self.assertFalse(site_accounts.password_matches(password.strip(), encoded))
+        with patch.object(site_accounts, "PASSWORD_HASHER") as hasher:
+            self.assertFalse(site_accounts.password_matches("x" * 129, encoded))
+            with self.assertRaises(site_accounts.SiteAccountError):
+                site_accounts.password_hash("x" * 129)
+            self.assertFalse(hasher.mock_calls)
+
+    @patch.object(site_accounts, "password_is_pwned", return_value=False)
+    def test_legacy_login_upgrades_hash_without_clearing_reminder(self, lookup):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "site_accounts.json"
+            store = SiteAccountStore(path)
+            store.ensure_admin("fixture-entry-8642")
+            _, admin = store.login("admin", "fixture-entry-8642")
+            user = store.create_user(admin["id"], "alice", "shared-password")
+            data = json.loads(path.read_text())
+            salt = "test-salt"
+            digest = hashlib.pbkdf2_hmac("sha256", b"shared-password", salt.encode(), 600_000).hex()
+            data["users"][user["id"]]["password_hash"] = f"pbkdf2_sha256$600000${salt}${digest}"
+            data["users"][user["id"]]["must_change_password"] = False
+            path.write_text(json.dumps(data))
+            store = SiteAccountStore(path)
+            result = store.scan_initial_password(admin["id"], "shared-password", usernames={"alice"})
+            self.assertEqual(result["matched_count"], 1)
+            lookup.reset_mock()
+            _, logged_in = store.login("alice", "shared-password")
+            self.assertTrue(logged_in["must_change_password"])
+            updated = json.loads(path.read_text())["users"][user["id"]]
+            self.assertTrue(updated["password_hash"].startswith("$argon2id$"))
+            self.assertIsNone(updated["password_changed_at"])
+            self.assertEqual(updated["password_version"], 1)
+            lookup.assert_not_called()
+
+    @patch.object(site_accounts, "password_is_pwned", return_value=False)
+    def test_initial_password_scan_and_password_change_status(self, _lookup):
         with tempfile.TemporaryDirectory() as directory:
             store = SiteAccountStore(Path(directory) / "site_accounts.json")
-            store.ensure_admin("admin-password")
-            _, admin = store.login("admin", "admin-password")
+            store.ensure_admin("fixture-entry-8642")
+            _, admin = store.login("admin", "fixture-entry-8642")
             user = store.create_user(admin["id"], "alice", "shared-password")
 
             created = store.list_users(admin["id"])[1]

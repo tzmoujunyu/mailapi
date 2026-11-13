@@ -124,8 +124,8 @@ function render() {
     if (currentUser.role === 'admin' || user.role === 'user') actions.push(`<button type="button" data-edit-user="${escapeHtml(user.id)}">${user.role === 'admin' ? '编辑备注' : '编辑'}</button>`);
     if (currentUser.role === 'admin' && user.role !== 'admin') actions.push(`<button type="button" class="danger" data-delete-user="${escapeHtml(user.id)}">删除</button>`);
     const displayName = user.note ? `${user.username}（${user.note}）` : user.username;
-    const passwordStatus = user.must_change_password ? '<small class="muted">需修改初始密码</small>' : '';
-    return `<tr><td>${escapeHtml(displayName)} ${passwordStatus}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
+    const passwordStatus = user.must_change_password ? ' <small class="muted">需修改初始密码</small>' : '';
+    return `<tr><td>${escapeHtml(displayName)}${passwordStatus}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
   }).join('');
   const usersById = new Map(users.map(user => [user.id, user]));
   const groupMembers = group => group.member_ids.map(id => usersById.get(id) || { username: '已删除账户' });
@@ -177,7 +177,7 @@ function openUser(user = null) {
   byId('user-role').disabled = reserved || (Boolean(user) && currentUser.role !== 'admin');
   byId('user-password-field').hidden = byId('user-password').disabled = reserved;
   byId('user-password').required = !user;
-  byId('password-help').textContent = user ? '至少 8 个字符，留空保留当前密码。重置后该账户需重新登录。' : '密码至少 8 个字符。';
+  byId('password-help').textContent = user ? '8–128 个字符，留空保留当前密码。重置后该账户需重新登录。' : '密码须为 8–128 个字符。';
   byId('user-error').textContent = '';
   byId('user-dialog').showModal();
 }

@@ -71,7 +71,7 @@ class TestAppIsolationTests(unittest.TestCase):
         environment.pop("TEST_DATA_DIR", None)
         environment["MAILAPI_MODE"] = "test"
         environment["TEST_EXTERNAL_WATCHERS"] = "0"
-        environment["TEST_ADMIN_PASSWORD"] = "snapshot-admin-password"
+        environment["TEST_ADMIN_PASSWORD"] = "snapshot-fixture-entry"
         script = "\n".join([
             "import json",
             "from pathlib import Path",
@@ -93,7 +93,7 @@ class TestAppIsolationTests(unittest.TestCase):
             "    assert path.read_text() == cfg['name'] + '-token'",
             "assert not any(path.exists() or path.is_symlink() for path in auth_paths[4:])",
             "assert not (data / 'site_accounts.json').exists()",
-            "main.start_watchers()",
+            "with patch('mailapi_shared.site_accounts.password_is_pwned', return_value=False): main.start_watchers()",
             "assert not main.MAIL_WATCHERS",
             "mailbox = Mock()",
             "mailbox.save_refreshed_cache.side_effect = lambda writer: writer({'cache': 'test-only'})",
@@ -134,11 +134,11 @@ class TestAppIsolationTests(unittest.TestCase):
         environment = dict(os.environ)
         environment.pop("TEST_DATA_DIR", None)
         environment["TEST_EXTERNAL_WATCHERS"] = "0"
-        environment["TEST_ADMIN_PASSWORD"] = "snapshot-admin-password"
+        environment["TEST_ADMIN_PASSWORD"] = "snapshot-fixture-entry"
         script = "\n".join([
             "from unittest.mock import patch",
             "from test_app import main",
-            "with patch.object(main, 'start_mail_watcher') as mail, patch.object(main.threading, 'Thread') as thread:",
+            "with patch.object(main, 'start_mail_watcher') as mail, patch.object(main.threading, 'Thread') as thread, patch('mailapi_shared.site_accounts.password_is_pwned', return_value=False):",
             "    main.start_watchers()",
             "    assert not mail.called",
             "    assert not thread.called",

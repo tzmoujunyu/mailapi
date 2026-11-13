@@ -1,3 +1,4 @@
+argon2-cffi>=25.1.0
 fastapi
 google-api-python-client
 google-auth

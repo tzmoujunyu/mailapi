@@ -25,7 +25,7 @@ from mailapi_shared.codex_quota_schedule import CodexQuotaSchedule
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ADMIN_PASSWORD = "test-admin-password"
+ADMIN_PASSWORD = "fixture-entry-8642"
 USER_PASSWORD = "test-user-password"
 ADMIN_TOTP = pyotp.TOTP("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
 
@@ -101,6 +101,7 @@ class CodexAccountRefreshTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.enterClassContext(patch("mailapi_shared.site_accounts.password_is_pwned", return_value=False))
         cls.temporary_directory = tempfile.TemporaryDirectory()
         cls.previous_directory = os.getcwd()
         temporary_path = Path(cls.temporary_directory.name)

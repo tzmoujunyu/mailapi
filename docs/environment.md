@@ -64,7 +64,7 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 ### 正式版 `.env`
 
 正式进程停止后，从项目根目录运行 `python -m mailapi_shared.admin_credentials --data-dir runtime`。
-命令会交互式读取至少 15 字符的密码和 32 字符的随机 Base32 TOTP 密钥。将同一密钥录入验证器
+命令会交互式读取 8–128 字符的密码和 32 字符的随机 Base32 TOTP 密钥。将同一密钥录入验证器
 的基于时间条目。若设置了 `MAILAPI_DATA_DIR`，命令应指向相同目录。
 配置其他普通管理员时加 `--username 用户名`。配置会撤销目标账号的已有会话。
 

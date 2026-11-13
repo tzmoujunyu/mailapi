@@ -31,14 +31,19 @@
 
     const dialog = document.createElement('dialog');
     dialog.className = 'site-password';
-    dialog.innerHTML = '<form><h2>修改本人密码</h2><label>当前密码<input name="current_password" type="password" autocomplete="current-password" required maxlength="256"></label><label>新密码<input name="new_password" type="password" autocomplete="new-password" required minlength="8" maxlength="256"></label><p class="site-password-error" role="alert"></p><div class="site-password-actions"><button type="button" data-cancel>取消</button><button type="submit">保存并重新登录</button></div></form>';
+    dialog.innerHTML = '<form><h2>修改本人密码</h2><p data-initial-password hidden>你的账户仍在使用初始密码，请设置一个新密码。</p><label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label><label>新密码（8–128 字符）<input name="new_password" type="password" autocomplete="new-password" required></label><p class="site-password-error" role="alert"></p><div class="site-password-actions"><button type="button" data-cancel>取消</button><button type="submit">保存并重新登录</button></div></form>';
     document.body.append(dialog);
-    bar.querySelector('[data-password]').addEventListener('click', () => {
+    dialog.querySelector('[data-initial-password]').hidden = !user.must_change_password;
+    const passwordButton = bar.querySelector('[data-password]');
+    if (user.must_change_password) passwordButton.textContent = '修改初始密码';
+    const openPasswordDialog = () => {
       dialog.querySelector('form').reset();
       dialog.querySelector('[role="alert"]').textContent = '';
       dialog.showModal();
-    });
+    };
+    passwordButton.addEventListener('click', openPasswordDialog);
     dialog.querySelector('[data-cancel]').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('close', () => dialog.querySelector('form').reset());
     dialog.querySelector('form').addEventListener('submit', async event => {
       event.preventDefault();
       const submit = dialog.querySelector('[type="submit"]');
@@ -54,6 +59,7 @@
       } catch (error) { dialog.querySelector('[role="alert"]').textContent = error.message; }
       finally { submit.disabled = false; }
     });
+    if (user.must_change_password && location.pathname === '/') openPasswordDialog();
   }
   start().catch(() => {});
 })();

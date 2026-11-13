@@ -117,7 +117,9 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     @router.post("/api/auth/password")
     async def change_password(request: Request):
         payload = await read_payload(request, {"current_password", "new_password"})
-        store(request).change_password(user_id(request), payload.get("current_password"), payload.get("new_password"))
+        await run_in_threadpool(
+            store(request).change_password, user_id(request), payload.get("current_password"), payload.get("new_password"),
+        )
         response = JSONResponse({"ok": True})
         response.delete_cookie(SESSION_COOKIE)
         return response
@@ -138,8 +140,8 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     @router.post("/api/admin/users", status_code=201)
     async def create_user(request: Request):
         payload = await read_payload(request, {"username", "password", "role", "note"})
-        return {"item": store(request).create_user(
-            user_id(request), payload.get("username"), payload.get("password"), payload.get("role", "user"),
+        return {"item": await run_in_threadpool(
+            store(request).create_user, user_id(request), payload.get("username"), payload.get("password"), payload.get("role", "user"),
             note=payload.get("note", ""),
         )}
 
@@ -147,7 +149,8 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     async def create_users_batch(request: Request):
         payload = await read_payload(request, {"usernames", "password", "role"})
         return {
-            "items": store(request).create_users(
+            "items": await run_in_threadpool(
+                store(request).create_users,
                 user_id(request),
                 payload.get("usernames"),
                 payload.get("password"),
@@ -159,7 +162,7 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     @router.put("/api/admin/users/{target_id}")
     async def update_user(target_id: str, request: Request):
         payload = await read_payload(request, {"role", "password", "note"})
-        return {"item": store(request).update_user(user_id(request), target_id, payload)}
+        return {"item": await run_in_threadpool(store(request).update_user, user_id(request), target_id, payload)}
 
     @router.post("/api/admin/users/initial-password-scan")
     async def scan_initial_password(request: Request):

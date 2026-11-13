@@ -290,7 +290,10 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 查询失败时显示错误及上次成功的结果。测试版默认关闭外部查询，避免使用快照中的正式套餐密钥。
 
 账号、分组和会话写入临时目录中的 `site_accounts.json`，采用原子写入和文件权限 600。
-网站密码使用带独立盐的 PBKDF2-SHA256 哈希，登录 cookie 只携带随机会话 token，
+新设网站密码使用带独立盐的 Argon2id（19456 KiB、2 次迭代、并行度 1）。兼容的旧 PBKDF2 哈希在成功登录后升级。
+创建、重置和修改密码时校验 8–128 字符、用户名或已存邮箱前缀，并向 HIBP 发送五位哈希前缀。查询失败时继续本地校验流程。
+新建、重置和匹配初始密码的账户带有 `must_change_password`，用户成功换成不同密码后清除。
+登录 cookie 只携带随机会话 token，
 服务器只保存 token 摘要；会话有效期为 24 小时。退出、删除账号或修改密码会使相关旧会话失效，
 分组和角色变化从下一次请求起生效。服务保持单进程运行；不要设置多个 Uvicorn worker。
 
@@ -302,7 +305,7 @@ Token Plan 的 `tp-` 专用密钥，页面显示周期剩余比例及周期结�
 | 接口 | 用途 |
 | --- | --- |
 | `POST /api/auth/login` | JSON `username`、`password`，正式版管理员还需 `totp_code`。响应设置会话 cookie |
-| `GET /api/auth/me` | 当前账号和所属分组 |
+| `GET /api/auth/me` | 当前账号、所属分组和初始密码提醒状态 |
 | `POST /api/auth/logout`、`POST /api/auth/password` | 退出、修改本人密码 |
 | `GET/POST /api/admin/users` | 列表、创建网站账号 |
 | `POST /api/admin/users/batch` | 仅 admin 批量创建用户或普通管理员，共用一个初始密码 |

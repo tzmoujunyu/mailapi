@@ -20,19 +20,20 @@ from test_app.services.resource_accounts import ResourceStore
 class SiteAccountHTTPTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.enterClassContext(patch("mailapi_shared.site_accounts.password_is_pwned", return_value=False))
         cls.application_directory = tempfile.TemporaryDirectory()
         with patch.dict(os.environ, {"TEST_DATA_DIR": cls.application_directory.name}):
             cls.module = importlib.import_module("test_app.main")
         seed_path = Path(cls.application_directory.name) / "seed.json"
         seed = SiteAccountStore(seed_path)
-        seed.ensure_admin("admin-password")
-        admin_token, admin = seed.login("admin", "admin-password")
+        seed.ensure_admin("fixture-entry-8642")
+        admin_token, admin = seed.login("admin", "fixture-entry-8642")
         cls.identities = {"admin": admin}
         cls.tokens = {"admin": admin_token}
         for name, role in (("manager", "manager"), ("alice", "user"), ("bob", "user")):
-            user = seed.create_user(admin["id"], name, name + "-password", role)
+            user = seed.create_user(admin["id"], name, "fixture-entry-1673", role)
             cls.identities[name] = user
-            cls.tokens[name] = seed.login(name, name + "-password")[0]
+            cls.tokens[name] = seed.login(name, "fixture-entry-1673")[0]
         cls.seed_data = seed_path.read_text(encoding="utf-8")
 
     @classmethod
@@ -282,15 +283,15 @@ class SiteAccountHTTPTests(unittest.TestCase):
         response = client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
         self.assertEqual(response.status_code, 401)
         self.assertNotIn("set-cookie", response.headers)
-        response = client.post("/login", data={"username": "ADMIN", "password": "admin-password"})
+        response = client.post("/login", data={"username": "ADMIN", "password": "fixture-entry-8642"})
         self.assertEqual(response.status_code, 303, response.text)
         self.assertIn("HttpOnly", response.headers["set-cookie"])
         self.assertIn("SameSite=lax", response.headers["set-cookie"])
-        self.assertNotIn("admin-password", response.headers["set-cookie"])
+        self.assertNotIn("fixture-entry-8642", response.headers["set-cookie"])
         self.assertEqual(client.get("/api/auth/me").json()["user"]["role"], "admin")
         https = TestClient(self.module.app, base_url="https://testserver")
         self.addCleanup(https.close)
-        response = https.post("/api/auth/login", json={"username": "admin", "password": "admin-password"})
+        response = https.post("/api/auth/login", json={"username": "admin", "password": "fixture-entry-8642"})
         self.assertIn("Secure", response.headers["set-cookie"])
 
     def test_unauthed_requests_and_old_shared_tokens_cannot_bypass_login(self):
@@ -298,13 +299,13 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.addCleanup(client.close)
         for path in ("/api/accounts", "/api/codes", "/api/auth/me", "/api/coding-plans", "/api/admin/users", "/api/codex/accounts"):
             self.assertEqual(client.get(path).status_code, 401, path)
-            self.assertEqual(client.get(path + "?access_token=admin-password", headers={"x-access-token": "admin-password", "authorization": "Bearer admin-password"}).status_code, 401)
+            self.assertEqual(client.get(path + "?access_token=fixture-entry-8642", headers={"x-access-token": "fixture-entry-8642", "authorization": "Bearer fixture-entry-8642"}).status_code, 401)
         self.assertEqual(client.get("/").headers["location"], "/login")
         self.assertEqual(client.get("/static/access.html").headers["location"], "/login")
 
     def test_both_admin_roles_create_users_but_only_admin_deletes(self):
         for role in ("user", "manager"):
-            response = self.manager.post("/api/admin/users", json={"username": "new-" + role, "password": "new-user-password", "role": role})
+            response = self.manager.post("/api/admin/users", json={"username": "new-" + role, "password": "temporary-entry-8642", "role": role})
             self.assertEqual(response.status_code, 201, response.text)
             target_id = response.json()["item"]["id"]
             self.assertNotIn("password", response.text)
@@ -466,7 +467,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
 
     def test_reserved_admin_and_invalid_roles_are_rejected(self):
         for payload in ({"username": "Admin", "role": "user"}, {"username": "new-user", "role": "admin"}, {"username": "new-user", "role": {}}, {"username": "ab", "role": "user"}):
-            self.assertEqual(self.admin.post("/api/admin/users", json={**payload, "password": "new-user-password"}).status_code, 400)
+            self.assertEqual(self.admin.post("/api/admin/users", json={**payload, "password": "temporary-entry-8642"}).status_code, 400)
         self.assertEqual(self.admin.put("/api/admin/users/" + self.identities["alice"]["id"], json={"role": []}).status_code, 400)
 
     def test_deletion_removes_sessions_and_membership_without_inheriting_grants(self):
@@ -484,7 +485,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.admin.put("/api/admin/users/" + target, json={"role": "manager"}).status_code, 200)
         self.assertEqual(self.alice.get("/api/admin/users").status_code, 401)
         self.alice.cookies.clear()
-        self.assertEqual(self.alice.post("/api/auth/login", json={"username": "alice", "password": "alice-password"}).status_code, 200)
+        self.assertEqual(self.alice.post("/api/auth/login", json={"username": "alice", "password": "fixture-entry-1673"}).status_code, 200)
         self.assertEqual(self.alice.get("/api/admin/users").status_code, 200)
         self.assertEqual(self.admin.put("/api/admin/users/" + target, json={"role": "user"}).status_code, 200)
         self.assertEqual(self.alice.get("/api/admin/users").status_code, 401)
@@ -527,10 +528,18 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(created.json()["item"]["note"], "新人")
 
     def test_self_password_change_requires_current_password_and_revokes_sessions(self):
+        self.assertTrue(self.alice.get("/api/auth/me").json()["user"]["must_change_password"])
+        self.assertEqual(self.alice.post("/api/auth/password", json={
+            "current_password": "fixture-entry-1673", "new_password": "fixture-entry-1673",
+        }).status_code, 400)
+        self.assertTrue(self.alice.get("/api/auth/me").json()["user"]["must_change_password"])
         self.assertEqual(self.alice.post("/api/auth/password", json={"current_password": "wrong", "new_password": "replacement-password"}).status_code, 403)
         self.assertEqual(self.alice.get("/api/auth/me").status_code, 200)
-        self.assertEqual(self.alice.post("/api/auth/password", json={"current_password": "alice-password", "new_password": "replacement-password"}).status_code, 200)
+        self.assertEqual(self.alice.post("/api/auth/password", json={"current_password": "fixture-entry-1673", "new_password": "replacement-password"}).status_code, 200)
         self.assertEqual(self.alice.get("/api/auth/me").status_code, 401)
+        response = self.alice.post("/api/auth/login", json={"username": "alice", "password": "replacement-password"})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.alice.get("/api/auth/me").json()["user"]["must_change_password"])
 
     def test_cross_site_mutations_are_rejected_and_logout_revokes_token(self):
         for headers in ({"Origin": "https://evil.example"}, {"Origin": "https://testserver"},
@@ -553,11 +562,11 @@ class SiteAccountHTTPTests(unittest.TestCase):
     def test_persistence_password_hashes_and_session_expiry(self):
         reopened = SiteAccountStore(self.store.path)
         reopened.ensure_admin("different-bootstrap-password")
-        self.assertIsNotNone(reopened.login("admin", "admin-password"))
+        self.assertIsNotNone(reopened.login("admin", "fixture-entry-8642"))
         self.assertTrue(reopened.resource_allowed(self.identities["alice"]["id"], self.keys[0]))
         self.assertEqual(reopened.session_user(self.tokens["alice"])["username"], "alice")
         stored = self.store.path.read_text()
-        for secret in ("admin-password", "alice-password", self.tokens["alice"]):
+        for secret in ("fixture-entry-8642", "fixture-entry-1673", self.tokens["alice"]):
             self.assertNotIn(secret, stored)
         self.assertEqual(self.store.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.store.path.parent.stat().st_mode & 0o777, 0o700)

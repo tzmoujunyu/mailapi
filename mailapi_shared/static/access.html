@@ -68,7 +68,7 @@
       <label>用户名<input id="username" autocomplete="off" pattern="[A-Za-z0-9_.\-]{3,64}" minlength="3" maxlength="64" required><small>3–64 位字母、数字、下划线、点或短横线，登录时不区分大小写。</small></label>
       <label>备注<input id="user-note" maxlength="80" autocomplete="off" placeholder="可选"><small>组别总览优先显示备注。</small></label>
       <label id="user-role-field">角色<select id="user-role"><option value="user">用户</option><option value="manager">普通管理员</option></select></label>
-      <label id="user-password-field">密码<input id="user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256"><small id="password-help">密码至少 8 个字符。</small></label>
+      <label id="user-password-field">密码<input id="user-password" type="password" autocomplete="new-password"><small id="password-help">密码须为 8–128 个字符。</small></label>
       <p class="error" id="user-error" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close="user-dialog">取消</button><button class="primary" type="submit">保存</button></div>
     </form>
@@ -77,7 +77,7 @@
     <form id="initial-password-form">
       <h2>检测统一初始密码</h2>
       <p class="muted">输入候选初始密码进行一次匹配。系统不会保存或显示密码，匹配账户会标记为需修改密码。</p>
-      <label>候选密码<input id="initial-password" type="password" autocomplete="off" minlength="8" maxlength="256" required></label>
+      <label>候选密码<input id="initial-password" type="password" autocomplete="off" required></label>
       <p class="error" id="initial-password-error" role="alert"></p>
       <p class="muted" id="initial-password-result" role="status" aria-live="polite"></p>
       <div class="dialog-actions"><button type="button" data-close="initial-password-dialog">取消</button><button class="primary" type="submit">开始检测</button></div>
@@ -88,7 +88,7 @@
       <h2>批量创建账户</h2>
       <label>用户名<textarea id="batch-usernames" rows="7" maxlength="4096" placeholder="例如：\nalice\nbob\ncharlie"></textarea><small>每行一个，也可以用空格、逗号或分号分隔；一次最多 100 个。</small></label>
       <label>统一角色<select id="batch-user-role"><option value="user">用户</option><option value="manager">普通管理员</option></select></label>
-      <label>统一初始密码<input id="batch-user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256" required><small>所有新账户使用此密码首次登录，登录后可自行修改。</small></label>
+      <label>统一初始密码<input id="batch-user-password" type="password" autocomplete="new-password" required><small>密码须为 8–128 个字符。所有新账户登录后都会收到改密提醒。</small></label>
       <p class="error" id="batch-user-error" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close="batch-user-dialog">取消</button><button class="primary" type="submit">添加</button></div>
     </form>
