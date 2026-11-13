@@ -125,6 +125,10 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 {
                     "ACCESS_PASSWORD": "test-access-password",
                     "ADMIN_ACCESS_PASSWORD": "test-admin-password",
+                    "MAILAPI_MODE": "production",
+                    "MAILAPI_DATA_DIR": str(temporary_path / "runtime"),
+                    "MAILAPI_EXTERNAL_WATCHERS": "0",
+                    "MAILAPI_SITE_ACCOUNTS_BACKEND": "json",
                     "MAIL_RELAY_SECRET": "test-mail-relay-secret-32-characters",
                 },
             ):
@@ -136,6 +140,8 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 assert spec.loader is not None
                 sys.modules[spec.name] = cls.module
                 spec.loader.exec_module(cls.module)
+                if Path(cls.module.DATA_DIR).resolve() != (temporary_path / "runtime").resolve():
+                    raise RuntimeError("Production-entry regression must use its own temporary data directory")
         finally:
             os.chdir(cls.previous_directory)
 
@@ -621,7 +627,9 @@ class CodexAccountRefreshTests(unittest.TestCase):
                 def refresh_then_delete(record, **kwargs):
                     self.module.CODEX_ACCOUNTS.pop(record["id"], None)
                     return record
-                with patch.object(self.module, "refresh_codex_account_record", side_effect=refresh_then_delete):
+                with patch.object(self.module, "EXTERNAL_WATCHERS", True), patch.object(
+                    self.module, "refresh_codex_account_record", side_effect=refresh_then_delete,
+                ):
                     if manual:
                         self.assertEqual(client.post('/api/codex/accounts/codex-1/refresh').status_code, 404)
                     else:
@@ -776,7 +784,9 @@ class CodexAccountRefreshTests(unittest.TestCase):
             calls.append(force_token_refresh)
             return value
 
-        with patch.object(self.module, "CODEX_ACCOUNTS", {"account-id": record}), patch.object(
+        with patch.object(self.module, "EXTERNAL_WATCHERS", True), patch.object(
+            self.module, "CODEX_ACCOUNTS", {"account-id": record},
+        ), patch.object(
             self.module,
             "refresh_codex_account_record",
             side_effect=fake_refresh,
