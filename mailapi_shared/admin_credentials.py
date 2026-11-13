@@ -5,12 +5,14 @@ import json
 import sys
 from pathlib import Path
 
-from .site_accounts import SiteAccountError, SiteAccountStore
+from .site_accounts import SiteAccountError
+from .site_database import open_site_accounts
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--backend", choices=("json", "sqlite"), default="json")
     parser.add_argument("--username", default="admin")
     parser.add_argument("--stdin", action="store_true", help="read password and totp_secret as JSON")
     args = parser.parse_args()
@@ -25,7 +27,7 @@ def main():
             secret = getpass("Authenticator Base32 secret: ")
         if not isinstance(secret, str):
             parser.error("验证器密钥必须是字符串")
-        store = SiteAccountStore(args.data_dir / "site_accounts.json")
+        store = open_site_accounts(args.data_dir, backend=args.backend)
         store.provision_admin(args.username, password, secret)
     except SiteAccountError as error:
         parser.error(str(error))

@@ -128,22 +128,31 @@ class SiteAccountStore:
         self._lock = threading.RLock()
         self._data = {"version": 1, "users": {}, "groups": {}, "sessions": {}}
         if self.path.exists():
-            self._data = json.loads(self.path.read_text(encoding="utf-8"))
-            if self._data.get("version") != 1 or any(
-                not isinstance(self._data.get(key), dict) for key in ("users", "groups", "sessions")
-            ):
-                raise SiteAccountError("网站账户存储格式无效")
-            admins = [user for user in self._data["users"].values() if user["role"] == "admin"]
-            if len(admins) != 1 or admins[0]["username"] != "admin":
-                raise SiteAccountError("网站账户存储必须包含唯一的 admin")
-            migrated = False
-            for user in self._data["users"].values():
-                before = dict(user)
-                self._normalize_user(user)
-                migrated = migrated or user != before
-            if migrated:
-                self._write_snapshot(self._data)
+            self._data = self._read_snapshot()
+            self._normalize_snapshot()
             os.chmod(self.path, 0o600)
+
+    def _read_snapshot(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def validate_snapshot(data):
+        if not isinstance(data, dict) or data.get("version") != 1 or any(
+            not isinstance(data.get(key), dict) for key in ("users", "groups", "sessions")
+        ):
+            raise SiteAccountError("网站账户存储格式无效")
+        admins = [user for user in data["users"].values() if user["role"] == "admin"]
+        if len(admins) != 1 or admins[0]["username"] != "admin":
+            raise SiteAccountError("网站账户存储必须包含唯一的 admin")
+
+    def _normalize_snapshot(self):
+        self.validate_snapshot(self._data)
+        data = deepcopy(self._data)
+        for user in data["users"].values():
+            self._normalize_user(user)
+        if data != self._data:
+            self._write_snapshot(data)
+            self._data = data
 
     @staticmethod
     def _normalize_user(user):

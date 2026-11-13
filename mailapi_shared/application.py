@@ -99,7 +99,8 @@ from .account_passwords import (
 from .coding_plan_quota import CodingPlanQuotaCache
 from .codex_quota_schedule import CodexQuotaSchedule
 from .resource_accounts import ResourceStore, ResourceStoreError
-from .site_accounts import ADMIN_ROLES, SiteAccountError, SiteAccountStore
+from .site_accounts import ADMIN_ROLES, SiteAccountError
+from .site_database import DATABASE_NAME, LEGACY_NAME, open_site_accounts
 from .accounts import SESSION_COOKIE, create_account_router, read_payload, themed_page
 from .codex_tip_content import MAX_IMAGE_BYTES, image_directory, image_file, legacy_blocks, save_image, validate_blocks
 from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
@@ -198,7 +199,9 @@ def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
     path = Path(directory)
     ignored = {name for name in names if (path / name).is_symlink()}
     if path == _production_data:
-        ignored.update({"test", "site_accounts.json", "mail_relay_secret", "account_credentials.restore.key"})
+        ignored.update({"test", LEGACY_NAME, DATABASE_NAME, DATABASE_NAME + "-journal",
+                        DATABASE_NAME + "-wal", DATABASE_NAME + "-shm",
+                        "mail_relay_secret", "account_credentials.restore.key"})
     return ignored
 
 
@@ -2363,7 +2366,11 @@ def next_outlook_account_config() -> AccountConfig:
     }
 
 
-app.state.site_accounts = SiteAccountStore(Path(DATA_DIR) / "site_accounts.json", require_admin_mfa=not IS_TEST)
+app.state.site_accounts = open_site_accounts(
+    DATA_DIR,
+    backend=_setting("MAILAPI_SITE_ACCOUNTS_BACKEND", "TEST_SITE_ACCOUNTS_BACKEND", "json"),
+    require_admin_mfa=not IS_TEST,
+)
 app.state.auth_artifact_versions = AuthArtifactVersionStore(
     AUTH_ARTIFACT_VERSIONS_FILE, AUTH_ARTIFACT_ARCHIVE_DIR
 )

@@ -120,7 +120,20 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 
 正式运行数据至少包括 `gmail_accounts.json`、`codex_accounts.json`、`account_credentials.json`、`site_accounts.json`，以及 token、auth、历史和日志目录。
 
-测试版默认从正式 `runtime/` 创建临时快照，但会跳过正式 `site_accounts.json`、正式中继密钥和 `runtime/test/`。测试账号和分组不是正式迁移数据。
+测试版默认从正式 `runtime/` 创建临时快照，但会跳过正式账户 JSON、SQLite 及其日志文件、正式中继密钥和 `runtime/test/`。测试账号和分组不是正式迁移数据。
+
+### 网站账户迁移到 SQLite
+
+先停写，备份运行目录、配置和目录外授权文件，并记录代码提交。把备份恢复到私有的独立目录，使用对应的 Python 环境执行迁移。
+
+```bash
+python -m mailapi_shared.site_database --data-dir /path/to/isolated-data
+TEST_DATA_DIR=/path/to/isolated-data TEST_SITE_ACCOUNTS_BACKEND=sqlite TEST_EXTERNAL_WATCHERS=0 python code-receive-test.py
+```
+
+迁移命令创建权限为 600 的 `site_accounts.sqlite3`，保留源 JSON，已有目标库时拒绝覆盖。核对登录、分组权限和授权读取后，停止正式服务，对最新正式数据重新执行迁移。正式 `.env` 中设置 `MAILAPI_SITE_ACCOUNTS_BACKEND=sqlite` 并重启。SQLite 仍使用单进程和本机磁盘。离线配置管理员时为 `admin_credentials` 加上 `--backend sqlite`。
+
+切换前的 JSON 可用于上线检查失败时回退。正式 SQLite 已经接受写入后，旧 JSON 不会包含这些更新，回退前应先保全并核对 SQLite 新数据。后续数据库备份应在服务停写时复制，或使用 SQLite Backup API 取得一致副本，并与其他运行文件和密钥配套保存。
 
 ## 可选外部服务
 

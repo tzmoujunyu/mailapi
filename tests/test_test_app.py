@@ -43,6 +43,7 @@ class TestAppIsolationTests(unittest.TestCase):
         (production / "account_credentials.json").write_text('{"version": 1, "items": {}}')
         (production / "mail_relay_secret").write_text("production-mail-relay-secret-32-characters")
         (production / "site_accounts.json").write_text("{}")
+        (production / "site_accounts.sqlite3").write_bytes(b"production database fixture")
         accounts = []
         for name, provider, field, relative in (
             ("account-1", "gmail", "token_file", "gmail_tokens/account-1.json"),
@@ -93,6 +94,7 @@ class TestAppIsolationTests(unittest.TestCase):
             "    assert path.read_text() == cfg['name'] + '-token'",
             "assert not any(path.exists() or path.is_symlink() for path in auth_paths[4:])",
             "assert not (data / 'site_accounts.json').exists()",
+            "assert not (data / 'site_accounts.sqlite3').exists()",
             "with patch('mailapi_shared.site_accounts.password_is_pwned', return_value=False): main.start_watchers()",
             "assert not main.MAIL_WATCHERS",
             "mailbox = Mock()",
