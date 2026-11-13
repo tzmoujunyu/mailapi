@@ -1843,6 +1843,20 @@ def refresh_codex_account_record(
             and any(should_refresh_codex_token(error) for error in usage_errors)
         )
     )
+    security_account = CREDENTIAL_STORE.account_for_codex_email(updated.get("email"))
+    if security_account:
+        if updated["reauth_required"]:
+            CREDENTIAL_STORE.record_security_event(
+                security_account["key"],
+                "external_auth_invalidated",
+                "外部 Codex 授权失效，需要重新授权",
+            )
+        elif refresh_error and refresh_attempted:
+            CREDENTIAL_STORE.record_security_event(
+                security_account["key"],
+                "external_login_failure",
+                "外部 Codex 登录续期失败，请稍后重试或重新授权",
+            )
     if usage_errors:
         if updated["reauth_required"]:
             updated["status_reason"] = "refresh_token_invalid"
@@ -3663,7 +3677,15 @@ async def set_gpt_password(account_name: str, request: FastAPIRequest):
         password = payload.get("password") if isinstance(payload, dict) else None
         if not isinstance(password, str):
             raise AccountPasswordError("请求缺少 GPT 密码")
-        CREDENTIAL_STORE.set(cfg["email"], "password", password, actor=gpt_history_actor(request))
+        reason = payload.get("password_reason") if isinstance(payload, dict) else None
+        if reason not in {None, "external_backfill"}:
+            raise AccountPasswordError("未知密码修改来源")
+        if reason == "external_backfill" and request_access_role(request) != "admin":
+            return JSONResponse(content={"detail": "只有 admin 可以标记外部密码回填"}, status_code=403)
+        CREDENTIAL_STORE.set(
+            cfg["email"], "password", password, actor=gpt_history_actor(request),
+            change_reason=reason,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError, AccountPasswordError) as error:
         return JSONResponse(content={"detail": str(error)}, status_code=400)
 
@@ -4583,7 +4605,12 @@ async def save_gpt_account(request: FastAPIRequest, account_key: Optional[str] =
     ensure_gpt_pool()
     if account_key and CREDENTIAL_STORE.account_by_key(account_key) is None:
         return JSONResponse({"detail": "未找到 GPT 账号"}, status_code=404)
-    payload = await read_payload(request, ACCOUNT_FIELDS | {"listed", "mailbox_ids", "revision"})
+    payload = await read_payload(request, ACCOUNT_FIELDS | {"listed", "mailbox_ids", "revision", "password_reason"})
+    password_reason = payload.pop("password_reason", None)
+    if password_reason not in {None, "external_backfill"}:
+        return JSONResponse({"detail": "未知密码修改来源"}, status_code=400)
+    if password_reason == "external_backfill" and request_access_role(request) != "admin":
+        return JSONResponse({"detail": "只有 admin 可以标记外部密码回填"}, status_code=403)
     with MAIL_ACCOUNTS_LOCK:
         valid_mailboxes = {cfg["name"]: cfg["email"] for cfg in ACCOUNTS}
     try:
@@ -4591,7 +4618,10 @@ async def save_gpt_account(request: FastAPIRequest, account_key: Optional[str] =
             if account_key and "revision" in payload:
                 editable_gpt_account(request, account_key, payload["revision"])
             payload.pop("revision", None)
-            item = CREDENTIAL_STORE.save_account(account_key, payload, valid_mailboxes, actor=gpt_history_actor(request))
+            item = CREDENTIAL_STORE.save_account(
+                account_key, payload, valid_mailboxes, actor=gpt_history_actor(request),
+                password_change_reason=password_reason,
+            )
     except AccountPasswordError as error:
         return JSONResponse({"detail": str(error)}, status_code=400)
     return JSONResponse({"item": item}, status_code=200 if account_key else 201)

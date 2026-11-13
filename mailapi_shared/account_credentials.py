@@ -6,6 +6,7 @@ import os
 import secrets
 import tempfile
 import threading
+from datetime import datetime, timezone
 from calendar import monthrange
 from datetime import date
 from pathlib import Path
@@ -104,6 +105,42 @@ class AccountCredentialStore:
                 all_points.pop(key, None)
             data = {**data, "restore_points": all_points}
         self._save(data)
+        return entry
+
+    def record_security_event(self, key, event_type, description, *, related_event_id=None,
+                              close_correlation=False):
+        if not key or not event_type or not description:
+            return None
+        with self._lock:
+            history = dict(self._data.get("history", {}))
+            entries = list(history.get(key, []))
+            now = datetime.now(timezone.utc)
+            recent = next((item for item in reversed(entries) if item.get("event_type") == event_type), None)
+            if recent:
+                try:
+                    recent_at = datetime.fromisoformat(str(recent.get("at", "")).replace("Z", "+00:00"))
+                    if (now - recent_at).total_seconds() < 300:
+                        return recent
+                except ValueError:
+                    pass
+            security = dict(self._data.get("security", {}))
+            state = dict(security.get(key, {}))
+            correlation_id = state.get("active_correlation_id")
+            if not correlation_id:
+                correlation_id = secrets.token_hex(8)
+            actor = {"source": "system", "name": "系统", "id": None}
+            item = event(actor, [description], event_type=event_type, correlation_id=correlation_id)
+            if related_event_id:
+                item["related_event_id"] = related_event_id
+            entries.append(item)
+            history[key] = entries
+            if close_correlation:
+                state.pop("active_correlation_id", None)
+            else:
+                state["active_correlation_id"] = correlation_id
+            security[key] = state
+            self._save({**self._data, "history": history, "security": security})
+            return item
 
     def record_change(self, key, actor, *descriptions):
         if key and actor and any(descriptions):
@@ -233,7 +270,8 @@ class AccountCredentialStore:
                 })
             self._save({**self._data, "items": items, "pool_migrated": True})
 
-    def _save_account_change(self, old_identity, previous, record, actor, *, restore_of=None, field=None):
+    def _save_account_change(self, old_identity, previous, record, actor, *, restore_of=None, field=None,
+                             change_reason=None):
         identity = self.email_key(record.get("login", old_identity))
         items = dict(self._data["items"])
         if identity != old_identity:
@@ -244,14 +282,27 @@ class AccountCredentialStore:
         changed = [name for name in ("login", "password", "secret", *SUBSCRIPTION_FIELDS)
                    if (previous.get(name) or "") != (record.get(name) or "")]
         descriptions = [describe_change(name, previous.get(name) or "", record.get(name) or "") for name in changed]
+        if change_reason == "external_backfill" and "password" in changed:
+            descriptions = [
+                "外部密码回填（已配置）" if description == describe_change("password", previous.get("password") or "", record.get("password") or "") else description
+                for description in descriptions
+            ]
         snapshots = {name: {name: previous.get(name)} for name in ("login", "password", "secret")
                      if name in changed and (name != "login" or previous.get("login"))}
         if set(changed).intersection(SUBSCRIPTION_FIELDS):
             snapshots["subscription"] = {name: previous.get(name) for name in SUBSCRIPTION_FIELDS}
         if restore_of:
             descriptions.insert(0, f"恢复了{restore_label(field)}到修改前")
-        self._save_change({**self._data, "items": items}, record.get("key"), actor, descriptions,
-                          snapshots=snapshots, restore_of=restore_of)
+        entry = self._save_change({**self._data, "items": items}, record.get("key"), actor, descriptions,
+                                  snapshots=snapshots, restore_of=restore_of)
+        if change_reason == "external_backfill" and "password" in changed and entry:
+            self.record_security_event(
+                record.get("key"),
+                "external_password_backfill",
+                "管理员回填了外部 GPT 账号密码",
+                related_event_id=entry["id"],
+                close_correlation=True,
+            )
         return self._public(identity, record) if record.get("key") else None
 
     def restore_account_field(self, key, event_id, field, actor):
@@ -270,7 +321,7 @@ class AccountCredentialStore:
                     record[name] = value
             self._save_account_change(identity, previous, record, actor, restore_of=event_id, field=field)
 
-    def save_account(self, key, payload, valid_mailboxes, *, actor=None):
+    def save_account(self, key, payload, valid_mailboxes, *, actor=None, password_change_reason=None):
         if not isinstance(payload, dict) or set(payload) - (ACCOUNT_FIELDS | {"listed", "mailbox_ids"}):
             raise AccountPasswordError("GPT 账号包含无效字段")
         with self._lock:
@@ -330,7 +381,9 @@ class AccountCredentialStore:
                     record[field] = normalize_totp_secret(value) if field == "secret" else value
             if current and record == previous:
                 return current
-            return self._save_account_change(old_identity, previous, record, actor)
+            return self._save_account_change(
+                old_identity, previous, record, actor, change_reason=password_change_reason,
+            )
 
     def ensure_account(self, login, *, actor=None):
         with self._lock:
@@ -377,7 +430,7 @@ class AccountCredentialStore:
             if changed:
                 self._save({**self._data, "items": items})
 
-    def set(self, email, field, value, *, actor=None):
+    def set(self, email, field, value, *, actor=None, change_reason=None):
         email = self.email_key(email)
         if field not in {"password", "secret", "listed"}:
             raise AccountPasswordError("未知登录信息字段")
@@ -393,7 +446,7 @@ class AccountCredentialStore:
             previous = data["items"].get(email, {})
             record = {**previous, field: value}
             if record.get("key"):
-                self._save_account_change(email, previous, record, actor)
+                self._save_account_change(email, previous, record, actor, change_reason=change_reason)
             else:
                 data["items"][email] = record
                 self._save(data)

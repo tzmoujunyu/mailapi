@@ -390,6 +390,7 @@
         <h2 id="gpt-account-title">添加 GPT 账号</h2>
         <label>登录账号（邮箱或用户名）<input id="gpt-login" autocomplete="off" maxlength="120" required /></label>
         <label>GPT 密码（选填）<input id="gpt-initial-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
+        <label id="gpt-password-backfill-field" class="checkbox-label" hidden><input id="gpt-password-backfill" type="checkbox" />标记为外部密码回填</label>
         <label>身份验证器密钥（选填）<input id="gpt-initial-secret" autocomplete="off" spellcheck="false" maxlength="4096" /></label>
         <div id="gpt-subscription-status"></div>
         <label>手填订阅到期日（选填）<input id="gpt-subscription-end" type="date" /><small class="muted">授权文件提供有效到期日时优先显示自动日期。清空可移除手填日期。</small></label>
@@ -465,6 +466,8 @@
           GPT 密码
           <input id="password-input" type="password" autocomplete="new-password" maxlength="4096" required />
         </label>
+        <label class="checkbox-label"><input id="password-external-backfill" type="checkbox" />标记为外部密码回填</label>
+        <p class="muted">仅在外部 GPT 账号密码已变更、现在把新密码同步回网站时勾选。</p>
         <div class="dialog-actions">
           <button id="password-cancel" class="btn" type="button">取消</button>
           <button id="password-save" class="btn btn-primary" type="submit">保存</button>
@@ -646,6 +649,7 @@
       const passwordForm = document.getElementById('password-form');
       const passwordAccount = document.getElementById('password-account');
       const passwordInput = document.getElementById('password-input');
+      const passwordExternalBackfill = document.getElementById('password-external-backfill');
       const passwordCancel = document.getElementById('password-cancel');
       const passwordSave = document.getElementById('password-save');
       let passwordAccountName = '';
@@ -1177,6 +1181,7 @@
       function closePasswordDialog() {
         passwordDialog.close();
         passwordInput.value = '';
+        passwordExternalBackfill.checked = false;
         passwordAccountName = '';
       }
 
@@ -1190,7 +1195,8 @@
           await api(`/api/admin/accounts/${encodeURIComponent(passwordAccountName)}/gpt-password`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: passwordInput.value }),
+            body: JSON.stringify({ password: passwordInput.value,
+              ...(passwordExternalBackfill.checked ? { password_reason: 'external_backfill' } : {}) }),
           });
           closePasswordDialog();
           setMessage(gptMessage, 'GPT 密码已保存。');
@@ -1267,6 +1273,7 @@
             passwordAccountName = name;
             passwordAccount.textContent = email;
             passwordInput.value = '';
+            passwordExternalBackfill.checked = false;
             document.getElementById('password-error').textContent = '';
             passwordDialog.showModal();
             passwordInput.focus();
@@ -1486,6 +1493,8 @@
         subscriptionStatus.hidden = !item;
         subscriptionStatus.innerHTML = item ? renderAccountSubscription(item, escapeHtml) : '';
         document.getElementById('gpt-initial-listed').checked = item?.listed !== false;
+        document.getElementById('gpt-password-backfill-field').hidden = !item;
+        document.getElementById('gpt-password-backfill').checked = false;
         document.getElementById('gpt-account-error').textContent = '';
         gptDialog.showModal();
         document.getElementById('gpt-login').focus();
@@ -1517,6 +1526,7 @@
           const value = document.getElementById(id).value;
           if (value) payload[field] = value;
         }
+        if (document.getElementById('gpt-password-backfill').checked) payload.password_reason = 'external_backfill';
         const save = document.getElementById('gpt-account-save');
         save.disabled = true;
         document.getElementById('gpt-account-error').textContent = '';
@@ -1557,12 +1567,14 @@
           changesStatus.textContent = total ? `第 ${offset + 1}–${offset + items.length} 条，共 ${total} 条` : '没有匹配的修改记录';
           changesList.innerHTML = items.map(item => {
             const tag = `<span class="plan gpt-tag-${escapeAttr(item.source)}">${escapeHtml(changeLabels[item.source])}</span>`;
+            const audit = item.event_type ? '<span class="plan gpt-tag-system">安全审计</span>' : '';
+            const correlation = item.correlation_id ? `<small class="muted">关联 ${escapeHtml(item.correlation_id.slice(-8))}</small>` : '';
             const review = item.reviewed ? '<span class="plan gpt-tag-review">已审核</span>' :
               (['user', 'system'].includes(item.source) ? `<button class="btn" type="button" data-review-change="${escapeAttr(item.id)}">标记已审核</button>` : '');
             const messages = item.descriptions.map(description => `<li>${escapeHtml(description)}</li>`).join('');
             const restore = (item.restorable_fields || []).map(({ field, label }) =>
               `<button class="btn" type="button" data-restore-change="${escapeAttr(item.id)}" data-restore-field="${escapeAttr(field)}" data-restore-label="${escapeAttr(label)}">恢复${escapeHtml(label)}</button>`).join('');
-            return `<li><div class="actions">${tag}<strong>${escapeHtml(item.actor)}</strong><time class="muted">${escapeHtml(new Date(item.at).toLocaleString('zh-CN', { hour12: false }))}</time>${review}</div><ul>${messages}</ul>${restore ? `<div class="actions">${restore}</div>` : ''}</li>`;
+            return `<li><div class="actions">${tag}${audit}<strong>${escapeHtml(item.actor)}</strong><time class="muted">${escapeHtml(new Date(item.at).toLocaleString('zh-CN', { hour12: false }))}</time>${correlation}${review}</div><ul>${messages}</ul>${restore ? `<div class="actions">${restore}</div>` : ''}</li>`;
           }).join('');
           changesPrev.disabled = offset === 0;
           changesNext.disabled = offset + items.length >= total;

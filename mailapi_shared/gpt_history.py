@@ -44,7 +44,8 @@ def describe_change(field, before, after):
     return f"将{label}由 {before} 修改为 {after}"
 
 
-def event(actor, descriptions, *, review_of=None, restore_of=None):
+def event(actor, descriptions, *, review_of=None, restore_of=None, event_type=None,
+          correlation_id=None):
     return {
         "id": uuid4().hex,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -54,6 +55,8 @@ def event(actor, descriptions, *, review_of=None, restore_of=None):
         "descriptions": descriptions,
         **({"review_of": review_of} if review_of else {}),
         **({"restore_of": restore_of} if restore_of else {}),
+        **({"event_type": event_type} if event_type else {}),
+        **({"correlation_id": correlation_id} if correlation_id else {}),
     }
 
 

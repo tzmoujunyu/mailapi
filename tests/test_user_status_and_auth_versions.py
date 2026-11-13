@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from mailapi_shared.auth_artifact_versions import AuthArtifactVersionStore
+from mailapi_shared.account_credentials import AccountCredentialStore
 from mailapi_shared.site_accounts import SiteAccountStore
 
 
@@ -49,6 +50,24 @@ class AuthArtifactVersionTests(unittest.TestCase):
             self.assertNotIn("refresh_token", json.dumps(entries))
             self.assertTrue((root / "archive/gmail/account-1/v2-before.json").is_file())
             self.assertEqual(json.loads(target.read_text())["refresh_token"], "second")
+
+
+class SecurityAuditTests(unittest.TestCase):
+    def test_external_password_backfill_is_correlated_with_auth_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AccountCredentialStore(Path(directory) / "account_credentials.json")
+            actor = {"source": "admin", "name": "admin", "id": "admin-id"}
+            account = store.save_account(None, {"login": "user@example.com"}, set(), actor=actor)
+            store.record_security_event(account["key"], "external_auth_invalidated", "外部 Codex 授权失效，需要重新授权")
+            store.set("user@example.com", "password", "new-password", actor=actor, change_reason="external_backfill")
+            history = store.history(account["key"])["items"]
+            backfill = next(item for item in history if item.get("event_type") == "external_password_backfill")
+            invalidated = next(item for item in history if item.get("event_type") == "external_auth_invalidated")
+            self.assertEqual(backfill["correlation_id"], invalidated["correlation_id"])
+            self.assertEqual(backfill["related_event_id"], next(
+                item["id"] for item in history if "外部密码回填" in " ".join(item["descriptions"])
+            ))
+            self.assertTrue(any("外部密码回填" in " ".join(item["descriptions"]) for item in history))
 
 
 if __name__ == "__main__":
