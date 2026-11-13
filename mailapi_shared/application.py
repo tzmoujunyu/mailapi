@@ -3062,6 +3062,10 @@ def watch_outlook_account(
                 if error.status in {401, 403}:
                     save_state(name, {"status": f"需重新授权: HTTP {error.status}"})
                     break
+                if error.status in {429, 500, 502, 503, 504}:
+                    save_state(name, {"status": f"网络暂时异常，稍后重试: HTTP {error.status}"})
+                    stop_event.wait(max(5, OUTLOOK_POLL_INTERVAL_SECONDS))
+                    continue
                 save_state(name, {"status": f"API 错误: {error.status}"})
             except Exception as error:  # noqa: BLE001
                 log_exception(f"Outlook 监听 account={name}", error)

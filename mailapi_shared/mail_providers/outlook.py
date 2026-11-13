@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,6 +17,9 @@ from ..mail_messages import IncomingMail
 
 OUTLOOK_SCOPES = ("User.Read", "Mail.ReadWrite")
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+GRAPH_MAX_ATTEMPTS = 3
+GRAPH_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+GRAPH_RETRY_BACKOFF_SECONDS = (0.5, 1.5)
 
 
 class OutlookConfigurationError(RuntimeError):
@@ -169,24 +175,44 @@ def graph_request(
     }
     if data is not None:
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as error:
-        raw = error.read()
+    raw = b""
+    for attempt in range(GRAPH_MAX_ATTEMPTS):
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            payload = json.loads(raw.decode("utf-8"))
-            detail = payload.get("error", {}).get("message") or error.reason
-        except Exception:
-            detail = raw.decode("utf-8", errors="replace") or str(error.reason)
-        raise OutlookAPIError(error.code, str(detail)) from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"Microsoft Graph 连接失败：{error.reason}") from error
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read()
+            break
+        except urllib.error.HTTPError as error:
+            raw = error.read()
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+                detail = payload.get("error", {}).get("message") or error.reason
+            except Exception:
+                detail = raw.decode("utf-8", errors="replace") or str(error.reason)
+            if error.code in GRAPH_RETRYABLE_STATUS and attempt < GRAPH_MAX_ATTEMPTS - 1:
+                retry_after = _graph_retry_after(error.headers)
+                time.sleep(retry_after if retry_after is not None else GRAPH_RETRY_BACKOFF_SECONDS[attempt])
+                continue
+            raise OutlookAPIError(error.code, str(detail)) from error
+        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionResetError, ssl.SSLError) as error:
+            if attempt < GRAPH_MAX_ATTEMPTS - 1:
+                time.sleep(GRAPH_RETRY_BACKOFF_SECONDS[attempt])
+                continue
+            detail = getattr(error, "reason", error)
+            raise RuntimeError(f"Microsoft Graph 连接失败：{detail}") from error
     if not raw:
         return {}
     value = json.loads(raw.decode("utf-8"))
     return value if isinstance(value, dict) else {}
+
+
+def _graph_retry_after(headers: Any) -> Optional[float]:
+    value = headers.get("Retry-After") if headers else None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return min(max(seconds, 0.0), 10.0)
 
 
 def fetch_outlook_profile(access_token: str, timeout: int = 30) -> Dict[str, str]:

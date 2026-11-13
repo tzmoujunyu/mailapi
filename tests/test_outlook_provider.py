@@ -127,6 +127,29 @@ class OutlookProviderTests(unittest.TestCase):
         request = opener.call_args.args[0]
         self.assertEqual(request.get_header("Prefer"), 'outlook.body-content-type="html"')
 
+    def test_graph_retries_transient_network_timeout(self):
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b"{}"
+        with patch("urllib.request.urlopen", side_effect=[TimeoutError("read timed out"), response]) as opener, \
+                patch("mail_providers.outlook.time.sleep") as sleep:
+            self.assertEqual(graph_request("access-token", "/me"), {})
+        self.assertEqual(opener.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
+    def test_graph_retries_500_and_502_before_returning_final_error(self):
+        body = json.dumps({"error": {"message": "bad gateway"}}).encode()
+        first = urllib.error.HTTPError("https://graph.microsoft.com/v1.0/me", 500, "Server Error", {}, BytesIO(body))
+        second = urllib.error.HTTPError("https://graph.microsoft.com/v1.0/me", 502, "Bad Gateway", {}, BytesIO(body))
+        with patch("urllib.request.urlopen", side_effect=[first, second, second]) as opener, \
+                patch("mail_providers.outlook.time.sleep") as sleep:
+            with self.assertRaises(OutlookAPIError) as raised:
+                graph_request("access-token", "/me")
+        self.assertEqual(raised.exception.status, 502)
+        self.assertEqual(opener.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
     def test_marks_matching_message_as_read_through_graph(self):
         mailbox = object.__new__(OutlookMailbox)
         mailbox.access_token = "access-token"
