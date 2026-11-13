@@ -59,6 +59,9 @@ class WebSecurityTests(unittest.TestCase):
         secure = SiteAccountStore(self.store.path, require_admin_mfa=True)
         self.assertIsNone(secure.session_user(token))
         self.assertIsNone(secure.login("manager", "fixture-entry-1673", self.totp.now()))
+        secure.provision_admin("manager", "fixture-entry-1876", self.totp.secret)
+        _, manager = secure.login("manager", "fixture-entry-1876", self.totp.now())
+        self.assertTrue(manager["must_change_password"])
 
     def test_admin_login_failure_reports_only_reason_and_keeps_the_public_response(self):
         self.store.provision_admin("admin", self.password, self.totp.secret)

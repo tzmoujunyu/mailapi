@@ -249,7 +249,7 @@ class SiteAccountStore:
             user["password_changed_at"] = timestamp_iso()
             user["password_source"] = "admin"
             user["password_version"] = int(user.get("password_version", 0)) + 1
-            user["must_change_password"] = False
+            user["must_change_password"] = user["role"] != "admin"
             user["totp_secret"] = totp_secret
             user.pop("totp_last_step", None)
             self._revoke_user_sessions(data, user["id"])
