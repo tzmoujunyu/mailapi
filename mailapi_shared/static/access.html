@@ -50,7 +50,7 @@
     <div id="management-viewport" class="management-viewport">
       <div id="management-panels" class="management-panels">
         <section id="users-panel" class="management-panel" role="tabpanel" aria-labelledby="users-tab">
-          <div class="section-head"><h2>账户管理</h2><div class="actions"><button id="add-user" type="button" class="primary">创建账户</button><button id="batch-users" type="button">批量</button></div></div>
+          <div class="section-head"><h2>账户管理</h2><div class="actions"><button id="add-user" type="button" class="primary">创建账户</button><button id="batch-users" type="button">批量</button><button id="scan-initial-password" type="button">检测统一初始密码</button></div></div>
           <p class="muted">用户按所属分组使用资源。两类管理员均可创建账户和管理分组；仅 admin 可删除账户、调整角色或重置普通管理员密码。</p>
           <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>所属分组</th><th>操作</th></tr></thead><tbody id="users" data-search-scope="账户管理" data-search-tab="users-tab"></tbody></table></div>
         </section>
@@ -71,6 +71,16 @@
       <label id="user-password-field">密码<input id="user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256"><small id="password-help">密码至少 8 个字符。</small></label>
       <p class="error" id="user-error" role="alert"></p>
       <div class="dialog-actions"><button type="button" data-close="user-dialog">取消</button><button class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="initial-password-dialog">
+    <form id="initial-password-form">
+      <h2>检测统一初始密码</h2>
+      <p class="muted">输入候选初始密码进行一次匹配。系统不会保存或显示密码，匹配账户会标记为需修改密码。</p>
+      <label>候选密码<input id="initial-password" type="password" autocomplete="off" minlength="8" maxlength="256" required></label>
+      <p class="error" id="initial-password-error" role="alert"></p>
+      <p class="muted" id="initial-password-result" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" data-close="initial-password-dialog">取消</button><button class="primary" type="submit">开始检测</button></div>
     </form>
   </dialog>
   <dialog id="batch-user-dialog">

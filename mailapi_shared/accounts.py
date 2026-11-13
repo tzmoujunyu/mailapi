@@ -130,6 +130,11 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     def list_users(request: Request):
         return {"items": store(request).list_users(user_id(request))}
 
+    @router.get("/api/admin/auth-artifact-versions")
+    def list_auth_artifact_versions(request: Request):
+        store(request).require_admin(user_id(request))
+        return {"items": request.app.state.auth_artifact_versions.list_public()}
+
     @router.post("/api/admin/users", status_code=201)
     async def create_user(request: Request):
         payload = await read_payload(request, {"username", "password", "role", "note"})
@@ -155,6 +160,15 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     async def update_user(target_id: str, request: Request):
         payload = await read_payload(request, {"role", "password", "note"})
         return {"item": store(request).update_user(user_id(request), target_id, payload)}
+
+    @router.post("/api/admin/users/initial-password-scan")
+    async def scan_initial_password(request: Request):
+        payload = await read_payload(request, {"password"})
+        return await run_in_threadpool(
+            store(request).scan_initial_password,
+            user_id(request),
+            payload.get("password"),
+        )
 
     @router.delete("/api/admin/users/{target_id}")
     def delete_user(target_id: str, request: Request):

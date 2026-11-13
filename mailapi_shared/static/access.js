@@ -124,7 +124,8 @@ function render() {
     if (currentUser.role === 'admin' || user.role === 'user') actions.push(`<button type="button" data-edit-user="${escapeHtml(user.id)}">${user.role === 'admin' ? '编辑备注' : '编辑'}</button>`);
     if (currentUser.role === 'admin' && user.role !== 'admin') actions.push(`<button type="button" class="danger" data-delete-user="${escapeHtml(user.id)}">删除</button>`);
     const displayName = user.note ? `${user.username}（${user.note}）` : user.username;
-    return `<tr><td>${escapeHtml(displayName)}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
+    const passwordStatus = user.must_change_password ? '<small class="muted">需修改初始密码</small>' : '';
+    return `<tr><td>${escapeHtml(displayName)} ${passwordStatus}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
   }).join('');
   const usersById = new Map(users.map(user => [user.id, user]));
   const groupMembers = group => group.member_ids.map(id => usersById.get(id) || { username: '已删除账户' });
@@ -152,6 +153,8 @@ async function load() {
     byId('add-user').disabled = false;
     byId('batch-users').disabled = currentUser.role !== 'admin';
     byId('batch-users').hidden = currentUser.role !== 'admin';
+    byId('scan-initial-password').disabled = currentUser.role !== 'admin';
+    byId('scan-initial-password').hidden = currentUser.role !== 'admin';
     byId('add-group').disabled = false;
     byId('batch-resources').disabled = false;
   } catch (error) {
@@ -320,6 +323,13 @@ function openBatchUsers() {
   byId('batch-user-dialog').showModal();
 }
 
+function openInitialPasswordScan() {
+  byId('initial-password-form').reset();
+  byId('initial-password-error').textContent = '';
+  byId('initial-password-result').textContent = '';
+  byId('initial-password-dialog').showModal();
+}
+
 function batchUsernames(value) {
   return [...new Set(value.split(/[\s,，;；]+/).map(item => item.trim().toLowerCase()).filter(Boolean))];
 }
@@ -377,6 +387,16 @@ byId('batch-user-form').addEventListener('submit', event => submitForm(event, 'b
   byId('message').textContent = `已添加 ${usernames.length} 个账户`;
 }));
 
+byId('initial-password-form').addEventListener('submit', event => submitForm(event, 'initial-password-error', async () => {
+  const result = await api('/api/admin/users/initial-password-scan', jsonRequest('POST', {
+    password: byId('initial-password').value,
+  }));
+  byId('initial-password-result').textContent = result.matched_count
+    ? `已匹配 ${result.matched_count} 个账户，并标记为需修改密码。`
+    : '没有匹配账户。';
+  await load();
+}));
+
 async function remove(button, url, description) {
   if (!confirm(description)) return;
   button.disabled = true;
@@ -421,11 +441,13 @@ byId('group-overview').addEventListener('click', handleGroupAction);
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => byId(button.dataset.close).close()));
 byId('add-user').addEventListener('click', () => openUser());
 byId('batch-users').addEventListener('click', openBatchUsers);
+byId('scan-initial-password').addEventListener('click', openInitialPasswordScan);
 byId('add-group').addEventListener('click', () => openGroup());
 byId('batch-resources').addEventListener('click', openBatchResources);
 byId('add-user').disabled = true;
 byId('add-group').disabled = true;
 byId('batch-resources').disabled = true;
+byId('scan-initial-password').disabled = true;
 
 window.addEventListener('focus', () => { if (!document.querySelector('dialog[open]')) load(); });
 load();

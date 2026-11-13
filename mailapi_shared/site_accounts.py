@@ -11,6 +11,7 @@ import secrets
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 
 import pyotp
 
@@ -22,6 +23,10 @@ MAX_BATCH_USERS = 100
 MAX_USER_NOTE_LENGTH = 80
 USERNAME_PATTERN = re.compile(r"[a-z0-9_.-]{3,64}")
 TOTP_PATTERN = re.compile(r"[0-9]{6}")
+
+
+def timestamp_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 class SiteAccountError(ValueError):
@@ -84,7 +89,21 @@ class SiteAccountStore:
             admins = [user for user in self._data["users"].values() if user["role"] == "admin"]
             if len(admins) != 1 or admins[0]["username"] != "admin":
                 raise SiteAccountError("网站账户存储必须包含唯一的 admin")
+            for user in self._data["users"].values():
+                self._normalize_user(user)
             os.chmod(self.path, 0o600)
+
+    @staticmethod
+    def _normalize_user(user):
+        user.setdefault("status", "active")
+        user.setdefault("last_login_at", None)
+        user.setdefault("last_failed_login_at", None)
+        user.setdefault("failed_login_count", 0)
+        user.setdefault("password_changed_at", None)
+        user.setdefault("password_version", 1)
+        user.setdefault("password_source", "legacy")
+        user.setdefault("must_change_password", False)
+        return user
 
     @contextmanager
     def _edit(self):
@@ -107,7 +126,14 @@ class SiteAccountStore:
 
     @staticmethod
     def _public(user, *, include_note=False):
-        result = {key: user[key] for key in ("id", "username", "role", "created_at")}
+        result = {
+            key: user.get(key)
+            for key in (
+                "id", "username", "role", "created_at", "status", "last_login_at",
+                "last_failed_login_at", "failed_login_count", "password_changed_at",
+                "password_version", "password_source", "must_change_password",
+            )
+        }
         if include_note:
             result["note"] = user.get("note", "")
         return result
@@ -132,6 +158,10 @@ class SiteAccountStore:
                 data["users"][user_id] = {
                     "id": user_id, "username": "admin", "role": "admin",
                     "password_hash": encoded, "created_at": int(time.time()),
+                    "status": "active", "password_source": "initial",
+                    "password_version": 1, "must_change_password": False,
+                    "password_changed_at": None, "last_login_at": None,
+                    "last_failed_login_at": None, "failed_login_count": 0,
                 }
 
     def provision_admin(self, username, password, totp_secret):
@@ -146,12 +176,20 @@ class SiteAccountStore:
                 user_id = secrets.token_hex(16)
                 data["users"][user_id] = {
                     "id": user_id, "username": username, "role": "admin",
-                    "created_at": int(time.time()),
+                    "created_at": int(time.time()), "status": "active",
+                    "last_login_at": None, "last_failed_login_at": None,
+                    "failed_login_count": 0, "password_changed_at": None,
+                    "password_version": 0, "password_source": "initial",
+                    "must_change_password": False,
                 }
             user = next((user for user in data["users"].values() if user["username"] == username), None)
             if not user or user["role"] not in ADMIN_ROLES:
                 raise SiteAccountError("未找到管理员账户")
             user["password_hash"] = password_hash(password)
+            user["password_changed_at"] = timestamp_iso()
+            user["password_source"] = "admin"
+            user["password_version"] = int(user.get("password_version", 0)) + 1
+            user["must_change_password"] = False
             user["totp_secret"] = totp_secret
             user.pop("totp_last_step", None)
             self._revoke_user_sessions(data, user["id"])
@@ -169,6 +207,10 @@ class SiteAccountStore:
         with self._lock:
             self._administrator(self._data, actor_id)
             return [self._public(user, include_note=True) for user in self._data["users"].values()]
+
+    def require_admin(self, actor_id):
+        with self._lock:
+            return self._administrator(self._data, actor_id, admin_only=True)
 
     def get_user(self, user_id):
         with self._lock:
@@ -229,6 +271,10 @@ class SiteAccountStore:
                 user = {
                     "id": user_id, "username": username, "role": role,
                     "password_hash": password_hash(password), "created_at": created_at,
+                    "status": "active", "password_changed_at": None,
+                    "password_source": "initial", "password_version": 1,
+                    "must_change_password": True, "last_login_at": None,
+                    "last_failed_login_at": None, "failed_login_count": 0,
                 }
                 if note:
                     user["note"] = note
@@ -261,6 +307,10 @@ class SiteAccountStore:
                 if actor["role"] != "admin" and user["role"] != "user":
                     raise SiteAccountError("普通管理员只能重置用户的密码", 403)
                 user["password_hash"] = password_hash(payload["password"])
+                user["password_changed_at"] = timestamp_iso()
+                user["password_source"] = "admin"
+                user["password_version"] = int(user.get("password_version", 0)) + 1
+                user["must_change_password"] = True
                 self._revoke_user_sessions(data, user_id)
             if "note" in payload:
                 if actor["role"] != "admin" and user["role"] != "user":
@@ -280,7 +330,43 @@ class SiteAccountStore:
             if self._needs_mfa(user) and (not isinstance(new_password, str) or len(new_password) < 15):
                 raise SiteAccountError("管理员新密码至少需要 15 个字符")
             user["password_hash"] = password_hash(new_password)
+            user["password_changed_at"] = timestamp_iso()
+            user["password_source"] = "user"
+            user["password_version"] = int(user.get("password_version", 0)) + 1
+            user["must_change_password"] = False
             self._revoke_user_sessions(data, user_id)
+
+    def scan_initial_password(self, actor_id, password):
+        if not isinstance(password, str) or not 8 <= len(password) <= 256:
+            raise SiteAccountError("请输入待检测的初始密码")
+        checked_at = timestamp_iso()
+        with self._edit() as data:
+            self._administrator(data, actor_id, admin_only=True)
+            matched = []
+            for user in data["users"].values():
+                if user["username"] == "admin":
+                    continue
+                if user.get("password_source") == "user":
+                    continue
+                try:
+                    matches = password_matches(password, user.get("password_hash", ""))
+                except (AttributeError, ValueError):
+                    matches = False
+                if not matches:
+                    continue
+                user["must_change_password"] = True
+                user["password_source"] = "initial"
+                matched.append(self._public(user, include_note=True))
+        return {"checked_at": checked_at, "matched_count": len(matched), "matched": matched}
+
+    def _record_login_failure(self, user_id):
+        if not user_id:
+            return
+        with self._edit() as data:
+            user = data["users"].get(user_id)
+            if user:
+                user["last_failed_login_at"] = timestamp_iso()
+                user["failed_login_count"] = int(user.get("failed_login_count", 0)) + 1
 
     def delete_user(self, actor_id, user_id):
         with self._edit() as data:
@@ -301,6 +387,7 @@ class SiteAccountStore:
             user = next((user for user in self._data["users"].values() if user["username"] == username), None)
 
         def fail(reason):
+            self._record_login_failure(user.get("id") if user else None)
             if on_admin_failure and user and user["role"] in ADMIN_ROLES:
                 on_admin_failure(reason)
 
@@ -337,14 +424,17 @@ class SiteAccountStore:
                     return None
             token = secrets.token_urlsafe(32)
             with self._edit() as data:
+                signed_in_user = data["users"][user["id"]]
+                signed_in_user["last_login_at"] = timestamp_iso()
+                signed_in_user["failed_login_count"] = 0
                 if step is not None:
-                    data["users"][user["id"]]["totp_last_step"] = step
+                    signed_in_user["totp_last_step"] = step
                 data["sessions"] = {key: value for key, value in data["sessions"].items() if value["expires_at"] > time.time()}
                 data["sessions"][hashlib.sha256(token.encode()).hexdigest()] = {
                     "user_id": user["id"], "expires_at": int(time.time()) + SESSION_SECONDS,
                     "mfa_verified": step is not None,
                 }
-            return token, self._public(user)
+            return token, self._public(signed_in_user)
 
     def session_user(self, token):
         if not token or len(token) > 256:

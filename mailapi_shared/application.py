@@ -87,6 +87,7 @@ from .auth_storage import (
     secure_auth_file,
 )
 from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore, AccountRestoreError
+from .auth_artifact_versions import AuthArtifactVersionStore
 from .gpt_history import SOURCE_LABELS, describe_change
 from .subscription_dates import public_subscription, read_subscription_claims
 from .account_passwords import (
@@ -266,6 +267,8 @@ MAIL_FILTERS_FILE = os.path.join(DATA_DIR, "mail_filters.json")
 CODING_PLANS_FILE = os.path.join(DATA_DIR, "coding_plans.json")
 RELAY_ACCOUNTS_FILE = os.path.join(DATA_DIR, "relay_accounts.json")
 CODEX_TIPS_FILE = os.path.join(DATA_DIR, "codex_tips.json")
+AUTH_ARTIFACT_VERSIONS_FILE = os.path.join(DATA_DIR, "auth_artifact_versions.json")
+AUTH_ARTIFACT_ARCHIVE_DIR = os.path.join(DATA_DIR, "auth_artifact_versions")
 PROTON_CONFIG_FILE = os.path.expanduser(
     _setting(
         "PROTON_CONFIG_FILE",
@@ -984,7 +987,13 @@ def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
         "access_token_expires_at": record.get("access_token_expires_at"),
     }
     path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
-    write_json_atomic(path, payload)
+    AUTH_ARTIFACT_VERSIONS.write_json(
+        path,
+        payload,
+        provider="codex",
+        resource_id=record.get("id") or record.get("email") or "unknown",
+        source=str(payload.get("source") or "refresh"),
+    )
 
 
 def delete_codex_record_auth_files(record: Dict[str, Any], *, strict: bool = False) -> None:
@@ -1874,6 +1883,33 @@ def load_codex_accounts() -> None:
                     CODEX_ACCOUNTS[str(item["id"])] = record
     except Exception as e:  # noqa: BLE001
         log_exception(f"加载 Codex 账号信息 {CODEX_ACCOUNTS_FILE}", e)
+
+
+def register_existing_auth_artifacts() -> None:
+    for cfg in ACCOUNTS:
+        provider = cfg.get("provider", "gmail")
+        path = account_auth_file(cfg)
+        if path:
+            AUTH_ARTIFACT_VERSIONS.register_existing(
+                path, provider=provider, resource_id=cfg.get("name") or "unknown"
+            )
+    if not os.path.isdir(CODEX_AUTH_DIR):
+        return
+    for filename in os.listdir(CODEX_AUTH_DIR):
+        if not filename.endswith(".json"):
+            continue
+        path = os.path.join(CODEX_AUTH_DIR, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as source:
+                payload = json.load(source)
+            if isinstance(payload, dict):
+                AUTH_ARTIFACT_VERSIONS.register_existing(
+                    path,
+                    provider="codex",
+                    resource_id=payload.get("account_id") or payload.get("email") or filename,
+                )
+        except (OSError, ValueError, TypeError) as error:
+            log_exception(f"记录现有授权文件版本 {path}", error)
         print(f"Codex 账号信息加载失败：{e}")
 
 
@@ -2313,6 +2349,10 @@ def next_outlook_account_config() -> AccountConfig:
 
 
 app.state.site_accounts = SiteAccountStore(Path(DATA_DIR) / "site_accounts.json", require_admin_mfa=not IS_TEST)
+app.state.auth_artifact_versions = AuthArtifactVersionStore(
+    AUTH_ARTIFACT_VERSIONS_FILE, AUTH_ARTIFACT_ARCHIVE_DIR
+)
+AUTH_ARTIFACT_VERSIONS = app.state.auth_artifact_versions
 
 ACCOUNTS = load_accounts()
 MAIL_FILTERS = load_mail_filters()
@@ -3282,7 +3322,13 @@ def complete_managed_gmail_auth(
     cfg["provider"] = "gmail"
     cfg["enabled"] = True
     stop_mail_watcher(str(cfg["name"]), cancel_auth=False)
-    write_json_atomic(str(cfg["token_file"]), json.loads(credentials.to_json()))
+    AUTH_ARTIFACT_VERSIONS.write_json(
+        str(cfg["token_file"]),
+        json.loads(credentials.to_json()),
+        provider="gmail",
+        resource_id=cfg["name"],
+        source=str(session.get("managed_action") or "oauth"),
+    )
 
     with MAIL_ACCOUNTS_LOCK:
         index = next((i for i, item in enumerate(ACCOUNTS) if item["name"] == cfg["name"]), None)
@@ -3345,7 +3391,13 @@ def complete_managed_outlook_auth(
     cfg["provider"] = "outlook"
     cfg["enabled"] = True
     stop_mail_watcher(str(cfg["name"]), cancel_auth=False)
-    write_json_atomic(str(cfg["token_file"]), authorization.serialized_cache())
+    AUTH_ARTIFACT_VERSIONS.write_json(
+        str(cfg["token_file"]),
+        authorization.serialized_cache(),
+        provider="outlook",
+        resource_id=cfg["name"],
+        source=str(session.get("managed_action") or "oauth"),
+    )
 
     with MAIL_ACCOUNTS_LOCK:
         index = next(
@@ -3424,6 +3476,7 @@ def start_watchers():
     save_mail_accounts()
     load_histories()
     load_codex_accounts()
+    register_existing_auth_artifacts()
     CREDENTIAL_STORE.migrate(
         list(ACCOUNTS) + [{"name": f"codex:{item['id']}", "email": item.get("email") or ""} for item in CODEX_ACCOUNTS.values()],
         GPT_PASSWORD_STORE, TOTP_SECRET_STORE, {} if IS_TEST else os.environ,
