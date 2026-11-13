@@ -1883,6 +1883,7 @@ def load_codex_accounts() -> None:
                     CODEX_ACCOUNTS[str(item["id"])] = record
     except Exception as e:  # noqa: BLE001
         log_exception(f"加载 Codex 账号信息 {CODEX_ACCOUNTS_FILE}", e)
+        print(f"Codex 账号信息加载失败：{e}")
 
 
 def register_existing_auth_artifacts() -> None:
@@ -1910,7 +1911,6 @@ def register_existing_auth_artifacts() -> None:
                 )
         except (OSError, ValueError, TypeError) as error:
             log_exception(f"记录现有授权文件版本 {path}", error)
-        print(f"Codex 账号信息加载失败：{e}")
 
 
 def save_codex_accounts() -> None:
