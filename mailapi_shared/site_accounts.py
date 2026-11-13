@@ -89,8 +89,13 @@ class SiteAccountStore:
             admins = [user for user in self._data["users"].values() if user["role"] == "admin"]
             if len(admins) != 1 or admins[0]["username"] != "admin":
                 raise SiteAccountError("网站账户存储必须包含唯一的 admin")
+            migrated = False
             for user in self._data["users"].values():
+                before = dict(user)
                 self._normalize_user(user)
+                migrated = migrated or user != before
+            if migrated:
+                self._write_snapshot(self._data)
             os.chmod(self.path, 0o600)
 
     @staticmethod
@@ -110,19 +115,23 @@ class SiteAccountStore:
         with self._lock:
             data = deepcopy(self._data)
             yield data
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            os.chmod(self.path.parent, 0o700)
-            descriptor, temporary = tempfile.mkstemp(prefix=self.path.name + ".", dir=self.path.parent)
-            try:
-                with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                    json.dump(data, output, ensure_ascii=False, indent=2)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, self.path)
-                self._data = data
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            self._write_snapshot(data)
+            self._data = data
+
+    def _write_snapshot(self, data):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
+        descriptor, temporary = tempfile.mkstemp(prefix=self.path.name + ".", dir=self.path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(data, output, ensure_ascii=False, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.path)
+            os.chmod(self.path, 0o600)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     @staticmethod
     def _public(user, *, include_note=False):
