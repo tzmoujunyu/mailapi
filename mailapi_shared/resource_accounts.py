@@ -26,20 +26,23 @@ class ResourceStoreError(ValueError):
 class ResourceStore:
     """Persist a small list of named records with one secret field."""
 
-    def __init__(self, path: str | Path, secret_field: str, value_label: str) -> None:
+    def __init__(self, path: str | Path, secret_field: str, value_label: str, *, database=None) -> None:
         self.path = Path(path)
         self.secret_field = secret_field
         self.value_label = value_label
         self._lock = threading.RLock()
+        self._database = database
         self._items = self._load()
 
     def _load(self) -> List[Dict[str, str]]:
-        if not self.path.is_file():
-            return []
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            payload = self._database.load(self.path.name) if self._database is not None else (
+                json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else None
+            )
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ResourceStoreError(f"{self.value_label}存储格式无效") from error
+        if payload is None:
+            return []
         raw_items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(raw_items, list):
             raise ResourceStoreError(f"{self.value_label}存储格式无效")
@@ -75,13 +78,18 @@ class ResourceStore:
                 provider = raw.get("provider")
                 item["provider"] = provider if isinstance(provider, str) and provider in CODING_PLAN_ENDPOINTS else ""
             items.append(item)
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        if self._database is None:
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
         return items
 
-    def _save(self) -> None:
+    def _save(self, items) -> None:
+        payload = {"version": 1, "items": items}
+        if self._database is not None:
+            self._database.save(self.path.name, payload)
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self.path.parent, 0o700)
@@ -93,7 +101,7 @@ class ResourceStore:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
                 os.chmod(temporary, 0o600)
-                json.dump({"version": 1, "items": self._items}, output, ensure_ascii=False, indent=2)
+                json.dump(payload, output, ensure_ascii=False, indent=2)
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, self.path)
@@ -224,8 +232,9 @@ class ResourceStore:
     def create(self, payload: Any) -> Dict[str, Any]:
         with self._lock:
             item = self._record(payload)
-            self._items = [*self._items, item]
-            self._save()
+            items = [*self._items, item]
+            self._save(items)
+            self._items = items
             return self._public(item)
 
     def update(self, item_id: str, payload: Any) -> Optional[Dict[str, Any]]:
@@ -234,8 +243,9 @@ class ResourceStore:
             if current is None:
                 return None
             updated = self._record(payload, current)
-            self._items = [updated if item["id"] == item_id else item for item in self._items]
-            self._save()
+            items = [updated if item["id"] == item_id else item for item in self._items]
+            self._save(items)
+            self._items = items
             return self._public(updated)
 
     def delete(self, item_id: str) -> bool:
@@ -243,6 +253,6 @@ class ResourceStore:
             remaining = [item for item in self._items if item["id"] != item_id]
             if len(remaining) == len(self._items):
                 return False
+            self._save(remaining)
             self._items = remaining
-            self._save()
             return True

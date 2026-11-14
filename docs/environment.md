@@ -135,6 +135,19 @@ TEST_DATA_DIR=/path/to/isolated-data TEST_SITE_ACCOUNTS_BACKEND=sqlite TEST_EXTE
 
 切换前的 JSON 可用于上线检查失败时回退。正式 SQLite 已经接受写入后，旧 JSON 不会包含这些更新，回退前应先保全并核对 SQLite 新数据。后续数据库备份应在服务停写时复制，或使用 SQLite Backup API 取得一致副本，并与其他运行文件和密钥配套保存。
 
+### 资源元数据迁移到 SQLite
+
+停写后备份 `runtime/`、配置和目录外授权文件，再在隔离副本演练。
+
+```bash
+python -m mailapi_shared.resource_database --data-dir /path/to/isolated-data
+TEST_DATA_DIR=/path/to/isolated-data TEST_RESOURCE_BACKEND=sqlite TEST_EXTERNAL_WATCHERS=0 python code-receive-test.py
+```
+
+离线迁移校验资源 ID、顺序和导入结果，生成 `resources.sqlite3` 和 `resource_secrets/`，原 JSON 保留为切换前基线。正式版迁移使用停写后的实时数据，在 `.env` 设置 `MAILAPI_RESOURCE_BACKEND=sqlite` 后启动。网站账户数据库独立切换。审核和恢复点沿用原事件 ID 与恢复密钥。SQLite 事务引用已落盘的 JSON 凭据版本，提交后清理旧版本。
+
+备份和恢复时须配套保存资源库、`resource_secrets/`、`account_credentials.restore.key` 以及授权和图片文件。切换后如需回退，停写后用 `python -m mailapi_shared.resource_database --data-dir runtime --export-to /path/to/empty-private-directory` 重建当前版本的五份资源 JSON，再替换对应文件并切回 JSON 后端。已切换后产生的更新只会写入新存储。
+
 ## 可选外部服务
 
 | 功能 | 额外条件 |

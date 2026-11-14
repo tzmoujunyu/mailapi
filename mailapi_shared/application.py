@@ -104,6 +104,8 @@ from .site_database import DATABASE_NAME, LEGACY_NAME, open_site_accounts
 from .accounts import SESSION_COOKIE, create_account_router, read_payload, themed_page
 from .codex_tip_content import MAX_IMAGE_BYTES, image_directory, image_file, legacy_blocks, save_image, validate_blocks
 from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
+from .resource_database import DATABASE_NAME as RESOURCE_DATABASE_NAME, SECRET_DIRECTORY as RESOURCE_SECRET_DIRECTORY
+from .resource_database import FIELDS as RESOURCE_POOLS, ResourceDatabase
 
 
 def dotenv_entries(path: str | Path):
@@ -201,7 +203,10 @@ def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
     if path == _production_data:
         ignored.update({"test", LEGACY_NAME, DATABASE_NAME, DATABASE_NAME + "-journal",
                         DATABASE_NAME + "-wal", DATABASE_NAME + "-shm",
-                        "mail_relay_secret", "account_credentials.restore.key"})
+                        "mail_relay_secret", "account_credentials.restore.key",
+                        RESOURCE_DATABASE_NAME, RESOURCE_DATABASE_NAME + "-journal",
+                        RESOURCE_DATABASE_NAME + "-wal", RESOURCE_DATABASE_NAME + "-shm",
+                        RESOURCE_SECRET_DIRECTORY})
     return ignored
 
 
@@ -216,12 +221,23 @@ def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, b
     owner = tempfile.TemporaryDirectory(prefix="mailapi-test-")
     path = Path(owner.name)
     if _production_data.is_dir():
+        source_config = dict(dotenv_entries(BASE_DIR / ".env"))
+        use_database = os.getenv("MAILAPI_RESOURCE_BACKEND", source_config.get("MAILAPI_RESOURCE_BACKEND", "json")).strip() == "sqlite"
+
+        def ignore(directory, names):
+            ignored = _snapshot_ignore(directory, names)
+            if use_database and Path(directory) == _production_data:
+                ignored.update(RESOURCE_POOLS)
+            return ignored
+
         shutil.copytree(
             _production_data,
             path,
             dirs_exist_ok=True,
-            ignore=_snapshot_ignore,
+            ignore=ignore,
         )
+        if use_database:
+            ResourceDatabase(_production_data).export_json(path, include_restore_points=False)
     os.chmod(path, 0o700)
     return owner, path, True
 
@@ -1882,11 +1898,14 @@ def refresh_codex_account_record(
 
 
 def load_codex_accounts() -> None:
-    if not os.path.exists(CODEX_ACCOUNTS_FILE):
-        return
     try:
-        with open(CODEX_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        if RESOURCE_DATABASE is not None:
+            data = RESOURCE_DATABASE.load(Path(CODEX_ACCOUNTS_FILE).name)
+        elif os.path.exists(CODEX_ACCOUNTS_FILE):
+            with open(CODEX_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            return
         items = data.get("items") if isinstance(data, dict) else data
         if not isinstance(items, list):
             return
@@ -1900,6 +1919,8 @@ def load_codex_accounts() -> None:
                     record.pop("subscription_last_refresh_at", None)
                     CODEX_ACCOUNTS[str(item["id"])] = record
     except Exception as e:  # noqa: BLE001
+        if RESOURCE_DATABASE is not None:
+            raise
         log_exception(f"加载 Codex 账号信息 {CODEX_ACCOUNTS_FILE}", e)
         print(f"Codex 账号信息加载失败：{e}")
 
@@ -1934,7 +1955,10 @@ def register_existing_auth_artifacts() -> None:
 def save_codex_accounts() -> None:
     with CODEX_ACCOUNTS_LOCK:
         items = list(CODEX_ACCOUNTS.values())
-        write_json_atomic(CODEX_ACCOUNTS_FILE, {"items": items})
+        if RESOURCE_DATABASE is not None:
+            RESOURCE_DATABASE.save(Path(CODEX_ACCOUNTS_FILE).name, {"items": items})
+        else:
+            write_json_atomic(CODEX_ACCOUNTS_FILE, {"items": items})
 
 
 def login_credentials(email: str) -> Dict[str, Any]:
@@ -2244,7 +2268,10 @@ def mailbox_resource_key(cfg: AccountConfig) -> str:
 
 def load_accounts() -> List[AccountConfig]:
     cfgs: Any = None
-    if os.path.exists(GMAIL_ACCOUNTS_FILE):
+    if RESOURCE_DATABASE is not None:
+        value = RESOURCE_DATABASE.load(Path(GMAIL_ACCOUNTS_FILE).name)
+        cfgs = value["items"] if value is not None else None
+    elif os.path.exists(GMAIL_ACCOUNTS_FILE):
         try:
             with open(GMAIL_ACCOUNTS_FILE, "r", encoding="utf-8") as f:
                 value = json.load(f)
@@ -2316,7 +2343,10 @@ def save_mail_accounts() -> None:
         for item in ACCOUNTS:
             mailbox_resource_key(item)
         items = [dict(item) for item in ACCOUNTS]
-        write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
+        if RESOURCE_DATABASE is not None:
+            RESOURCE_DATABASE.save(Path(GMAIL_ACCOUNTS_FILE).name, {"items": items})
+        else:
+            write_json_atomic(GMAIL_ACCOUNTS_FILE, {"items": items})
 
 
 def find_mail_account(name: str) -> Optional[AccountConfig]:
@@ -2376,15 +2406,22 @@ app.state.auth_artifact_versions = AuthArtifactVersionStore(
 )
 AUTH_ARTIFACT_VERSIONS = app.state.auth_artifact_versions
 
+RESOURCE_BACKEND = _setting("MAILAPI_RESOURCE_BACKEND", "TEST_RESOURCE_BACKEND", "json")
+if RESOURCE_BACKEND not in {"json", "sqlite"}:
+    raise ValueError("资源存储须为 json 或 sqlite")
+RESOURCE_DATABASE = ResourceDatabase(DATA_DIR) if RESOURCE_BACKEND == "sqlite" else None
+if RESOURCE_DATABASE is not None:
+    RESOURCE_DATABASE.prune_private_files()
 ACCOUNTS = load_accounts()
 MAIL_FILTERS = load_mail_filters()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
 TOTP_SECRET_STORE = AccountPasswordStore(TOTP_SECRETS_FILE)
 CREDENTIAL_STORE = AccountCredentialStore(os.path.join(DATA_DIR, "account_credentials.json"),
-                                          fresh_restore_points=IS_TEST and TEST_DATA_EPHEMERAL)
-CODING_PLAN_STORE = ResourceStore(CODING_PLANS_FILE, "api_key", "API key")
+                                          fresh_restore_points=IS_TEST and TEST_DATA_EPHEMERAL,
+                                          database=RESOURCE_DATABASE)
+CODING_PLAN_STORE = ResourceStore(CODING_PLANS_FILE, "api_key", "API key", database=RESOURCE_DATABASE)
 CODING_PLAN_QUOTAS = CodingPlanQuotaCache()
-RELAY_ACCOUNT_STORE = ResourceStore(RELAY_ACCOUNTS_FILE, "password", "密码")
+RELAY_ACCOUNT_STORE = ResourceStore(RELAY_ACCOUNTS_FILE, "password", "密码", database=RESOURCE_DATABASE)
 STATE_LOCK = threading.Lock()
 STATE: Dict[str, Dict[str, Optional[str]]] = {}
 CODE_HISTORY: Dict[str, List[Dict[str, str]]] = {}

@@ -26,16 +26,21 @@ class AccountRestoreError(AccountPasswordError):
 
 
 class AccountCredentialStore:
-    def __init__(self, path, *, fresh_restore_points=False):
+    def __init__(self, path, *, fresh_restore_points=False, database=None):
         self.path = Path(path)
         self.restore_key_path = self.path.with_suffix(".restore.key")
         self._lock = threading.RLock()
+        self._database = database
         self._data = {"version": 1, "migrated": False, "items": {}}
-        if self.path.exists():
-            self._data = json.loads(self.path.read_text(encoding="utf-8"))
-            if self._data.get("version") != 1 or not isinstance(self._data.get("items"), dict):
+        saved = database.load(self.path.name) if database is not None else (
+            json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else None
+        )
+        if saved is not None:
+            if not isinstance(saved, dict) or saved.get("version") != 1 or not isinstance(saved.get("items"), dict):
                 raise AccountPasswordError("账号登录信息存储格式无效")
-            os.chmod(self.path, 0o600)
+            self._data = saved
+            if database is None:
+                os.chmod(self.path, 0o600)
         if fresh_restore_points:
             self._data.pop("restore_points", None)
 
@@ -44,6 +49,10 @@ class AccountCredentialStore:
         return str(email or "").strip().lower()
 
     def _save(self, data):
+        if self._database is not None:
+            self._database.save(self.path.name, data)
+            self._data = data
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.path.parent, 0o700)
         descriptor, temporary = tempfile.mkstemp(prefix=self.path.name + ".", dir=self.path.parent)

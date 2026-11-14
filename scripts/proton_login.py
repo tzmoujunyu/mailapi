@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -10,13 +11,28 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from mail_providers.proton import ProtonMailbox, load_proton_credentials  # noqa: E402
+from mailapi_shared.resource_database import ResourceDatabase  # noqa: E402
 
 
 def load_account(name: str) -> dict:
-    path = ROOT / "runtime" / "gmail_accounts.json"
-    if not path.exists():
+    settings = ROOT / ".env"
+    config = {}
+    if settings.is_file():
+        for line in settings.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.strip().removeprefix("export ").partition("=")
+            if separator and key.strip() in {"MAILAPI_DATA_DIR", "MAILAPI_RESOURCE_BACKEND"}:
+                config[key.strip()] = value.strip().strip("'\042")
+    directory = ROOT / Path(os.getenv("MAILAPI_DATA_DIR", config.get("MAILAPI_DATA_DIR", "runtime"))).expanduser()
+    backend = os.getenv("MAILAPI_RESOURCE_BACKEND", config.get("MAILAPI_RESOURCE_BACKEND", "json")).strip()
+    path = directory / "gmail_accounts.json"
+    if backend == "sqlite":
+        value = ResourceDatabase(directory).load(path.name)
+    elif path.is_file():
+        value = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        value = None
+    if value is None:
         raise RuntimeError(f"邮箱账号配置不存在：{path}")
-    value = json.loads(path.read_text(encoding="utf-8"))
     items = value.get("items", []) if isinstance(value, dict) else value
     for item in items:
         if item.get("name") == name and item.get("provider") == "proton":
