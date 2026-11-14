@@ -122,6 +122,8 @@ def _copy_oauth(source, target, mailboxes, *, reader, writer, original_root=None
                 path = path.relative_to(original_root or source)
             except ValueError:
                 raise CredentialCryptoError("请先把测试邮箱的 token 路径改到隔离源目录内") from None
+        elif original_root and path.parts[:1] == (original_root.name,):
+            path = Path(*path.parts[1:])
         if (not path.parts or ".." in path.parts or not
                 (path.parts[0] == provider + "_tokens" and len(path.parts) > 1
                  or len(path.parts) == 1 and re.fullmatch(r"token_account\d+\.json", path.name))):

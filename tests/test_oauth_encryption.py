@@ -268,7 +268,14 @@ assert main.RESOURCE_DATABASE.load("codex_accounts.json")["items"][0]["token"]["
         config = json.loads(self.key.read_text())
         config["environment"] = "production"
         self.key.write_text(json.dumps(config))
-        rewrite(self.source, self.encrypted, self.key, production=True, oauth=True)
+        baseline = self.root / "runtime"
+        with sqlite3.connect(self.source / "resources.sqlite3") as db:
+            for name, raw in db.execute("SELECT record_id,data FROM records WHERE pool='gmail_accounts.json'").fetchall():
+                item = json.loads(raw)
+                relative = Path(item["token_file"]).relative_to(self.source)
+                item["token_file"] = str(Path("runtime") / relative) if item["provider"] == "outlook" else str(baseline / relative)
+                db.execute("UPDATE records SET data=? WHERE pool='gmail_accounts.json' AND record_id=?", (json.dumps(item), name))
+        rewrite(self.source, self.encrypted, self.key, production=True, oauth=True, original_root=baseline)
         ring = CredentialKeyring(self.key, data_dirs=(self.encrypted,), production=True)
         OAuthFiles(self.encrypted, ring).write_json(self.encrypted / GMAIL, {**self.gmail, "refresh_token": MARKERS[3]})
         copy_backup(self.encrypted, self.backup, self.key, production=True, oauth=True)
