@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from mailapi_shared.credential_crypto import CredentialCryptoError, CredentialKeyring
 from mailapi_shared.oauth_files import OAuthFiles, codex_token_version
+from mailapi_shared.oauth_clients import FILENAME as CLIENTS_NAME, migrate_clients
 from mailapi_shared.resource_database import ResourceDatabase, migrate_resources
 from mailapi_shared.site_accounts import SiteAccountStore
 from mailapi_shared.site_database import migrate_site_accounts
@@ -92,6 +93,8 @@ class OAuthEncryptionTests(unittest.TestCase):
                "TEST_SITE_ACCOUNTS_BACKEND": "sqlite", "TEST_RESOURCE_BACKEND": "sqlite",
                "TEST_CREDENTIAL_KEY_FILE": str(self.key), "TEST_OAUTH_ENCRYPTION": "1",
                "TEST_EXTERNAL_WATCHERS": "0"}
+        if (directory / CLIENTS_NAME).exists():
+            env["TEST_OAUTH_CLIENTS_ENCRYPTED"] = "1"
         result = subprocess.run([sys.executable, "-c", script], cwd=self.project, env=env,
                                 text=True, capture_output=True, timeout=40)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -105,6 +108,18 @@ class OAuthEncryptionTests(unittest.TestCase):
     def test_migrate_refresh_backup_restore_and_restart(self):
         snap = {p.relative_to(self.source): p.read_bytes() for p in self.source.rglob("*") if p.is_file()}
         rewrite(self.source, self.encrypted, self.key, oauth=True)
+        google = self.root / "google.json"
+        google.write_text(json.dumps({"installed": {
+            "client_id": self.gmail["client_id"], "client_secret": self.gmail["client_secret"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token",
+        }}))
+        outlook_config = {"OUTLOOK_CLIENT_ID": "fixture", "OUTLOOK_CLIENT_SECRET": "outlook-client-fixture",
+                          "OUTLOOK_OAUTH_REDIRECT_URI": "http://localhost"}
+        storage = OAuthFiles(self.encrypted, CredentialKeyring(self.key, data_dirs=(self.encrypted,)))
+        migrate_clients(storage, google, outlook_config)
+        assert b"outlook-client-fixture" not in (self.encrypted / CLIENTS_NAME).read_bytes()
+        assert b"gmail-client-fixture" not in (self.encrypted / CLIENTS_NAME).read_bytes()
+        google.unlink()
         self.assertEqual(snap, {p.relative_to(self.source): p.read_bytes() for p in self.source.rglob("*") if p.is_file()})
         self._no_plaintext(self.encrypted)
         self._app(self.encrypted, r"""
@@ -119,17 +134,21 @@ from google.oauth2 import reauth
 
 def gmail_refresh(request, token_uri, refresh_token, *args, **kwargs):
     assert refresh_token == "gmail-original-refresh"
+    assert args[:2] == ("gmail-client", "gmail-client-fixture")
     return "gmail-new-access", "gmail-renewed-refresh", datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1), {}, None
 
 assert not main.EXTERNAL_WATCHERS
 main.start_watchers()
 gmail, ms = main.ACCOUNTS
+flow = main.gmail_oauth_flow(gmail)
+assert flow.client_config["client_id"] == "gmail-client"
 with patch.object(reauth, "refresh_grant", side_effect=gmail_refresh) as grant, \
         patch.object(main, "build", side_effect=lambda *a, **kw: kw["credentials"]), \
         patch.object(main, "request_gmail_browser_auth", side_effect=AssertionError("unexpected reauthorization")):
     creds = main.get_gmail_service(gmail, threading.Event())
     assert creds.refresh_token == "gmail-renewed-refresh"
     assert main.read_oauth_json(gmail["token_file"])["token"] == "gmail-new-access"
+    assert "client_secret" not in main.read_oauth_json(gmail["token_file"])
     assert grant.call_count == 1
     grant.side_effect = None
     grant.return_value = ("gmail-later-access", "gmail-renewed-refresh", creds.expiry, {}, None)
@@ -161,7 +180,8 @@ def silent_client(*args, **kwargs):
 def outlook_refresh_tokens(cache):
     return {entry["secret"] for entry in cache["RefreshToken"].values()}
 
-settings = outlook.OutlookSettings("fixture", "fixture", "https://login.microsoftonline.com/common", "http://localhost")
+settings = main.load_outlook_settings()
+assert settings.client_secret == "outlook-client-fixture"
 with patch.object(outlook, "_msal_types", return_value=(silent_client, SerializableTokenCache)), \
         patch.object(outlook, "fetch_outlook_profile", return_value={"email": "outlook@example.test"}):
     mailbox = outlook.OutlookMailbox(settings, ms["token_file"], ms["email"], oauth_files=main.OAUTH_FILES)
@@ -200,6 +220,8 @@ assert main.load_codex_auth_files()[0]["tokens"]["refresh_token"] == "codex-rene
 from pathlib import Path
 from mailapi_shared import application as main
 main.start_watchers()
+assert main.load_outlook_settings().client_secret == "outlook-client-fixture"
+assert main.gmail_oauth_flow(main.ACCOUNTS[0]).client_config["client_id"] == "gmail-client"
 gmail, outlook = main.ACCOUNTS
 assert main.read_oauth_json(gmail["token_file"])["refresh_token"] == "gmail-renewed-refresh"
 assert any(entry["secret"] == "outlook-renewed-refresh"

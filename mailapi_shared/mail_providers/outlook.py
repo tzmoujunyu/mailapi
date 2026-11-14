@@ -44,15 +44,16 @@ class OutlookSettings:
     redirect_uri: str
 
 
-def load_outlook_settings(default_redirect_uri: str = "") -> OutlookSettings:
-    client_id = os.getenv("OUTLOOK_CLIENT_ID", "").strip()
-    client_secret = os.getenv("OUTLOOK_CLIENT_SECRET", "").strip()
-    tenant = os.getenv("OUTLOOK_TENANT", "common").strip() or "common"
+def load_outlook_settings(default_redirect_uri: str = "", *, config=None) -> OutlookSettings:
+    settings = os.environ if config is None else config
+    client_id = settings.get("OUTLOOK_CLIENT_ID", "").strip()
+    client_secret = settings.get("OUTLOOK_CLIENT_SECRET", "").strip()
+    tenant = settings.get("OUTLOOK_TENANT", "common").strip() or "common"
     authority = (
-        os.getenv("OUTLOOK_AUTHORITY", "").strip()
+        settings.get("OUTLOOK_AUTHORITY", "").strip()
         or f"https://login.microsoftonline.com/{tenant}"
     ).rstrip("/")
-    redirect_uri = os.getenv("OUTLOOK_OAUTH_REDIRECT_URI", "").strip() or default_redirect_uri
+    redirect_uri = settings.get("OUTLOOK_OAUTH_REDIRECT_URI", "").strip() or default_redirect_uri
 
     if not client_id:
         raise OutlookConfigurationError("缺少 OUTLOOK_CLIENT_ID")

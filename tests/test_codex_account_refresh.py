@@ -525,8 +525,8 @@ class CodexAccountRefreshTests(unittest.TestCase):
             module = self.module
             store.set('user@example.com', 'password', 'private-password')
             store.set('user@example.com', 'secret', 'JBSWY3DPEHPK3PXP')
-            module.STATE['account-1'] = {'last_code': '123456', 'rule_id': 'openai', 'email': 'user@example.com'}
-            module.CODE_HISTORY['account-1'] = [{'code': '654321', 'rule_id': 'openai', 'email': 'user@example.com'}]
+            module.STATE['account-1'] = {'updated_at': module.now_iso(), 'last_code': '123456', 'rule_id': 'openai', 'email': 'user@example.com'}
+            module.CODE_HISTORY['account-1'] = [{'created_at': module.now_iso(), 'code': '654321', 'rule_id': 'openai', 'email': 'user@example.com'}]
             for cfg in module.ACCOUNTS:
                 module.mailbox_resource_key(cfg)
             accounts_before = json.loads(json.dumps(module.ACCOUNTS))

@@ -185,7 +185,7 @@ class OutlookWatcherTests(unittest.TestCase):
             OUTLOOK_CATCHUP_LIMIT=30, OUTLOOK_POLL_INTERVAL_SECONDS=3,
             APP_BASE_URL="https://mail.example.com", MAIL_WATCHERS={},
             MAIL_WATCHERS_LOCK=threading.Lock(),
-            save_state=Mock(), log_exception=Mock(), write_oauth_json=Mock(), OAUTH_FILES=None,
+            save_state=Mock(), log_exception=Mock(), error_diagnostic=Mock(return_value="diagnostic"), write_oauth_json=Mock(), OAUTH_FILES=None,
             load_outlook_settings=Mock(), OutlookMailbox=Mock(), store_code_result=Mock(return_value=True),
         )
         exec(compile(functions, str(source), "exec", flags=__future__.annotations.compiler_flag), self.env)
@@ -211,7 +211,7 @@ class OutlookWatcherTests(unittest.TestCase):
     def test_failed_history_write_does_not_suppress_retry_as_duplicate(self):
         old = {"message_id": "old"}
         self.env.update(CODE_HISTORY={"test": [old]}, HISTORY_LOCK=threading.Lock(),
-                        MAX_HISTORY_RECORDS=10, save_code_history=Mock(side_effect=OSError("disk full")))
+                        MAX_HISTORY_RECORDS=10, recent_mail_records=list, save_code_history=Mock(side_effect=OSError("disk full")))
         append = self.env["append_code_record"]
         record = {"message_id": "new"}
         with self.assertRaises(OSError):

@@ -115,7 +115,7 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 
 正式运行数据包括两个 SQLite 库、`resource_secrets/` 及配套的 OAuth、接码历史和图文目录。完整归档还需备份运行配置与目录外的客户端配置。正式凭据密钥单独保管。
 
-测试版默认从正式 `runtime/` 创建临时快照，但会跳过正式账户 JSON、SQLite 及其日志文件、以及 `runtime/test/`。测试账号和分组不是正式迁移数据。
+测试版默认从正式 `runtime/` 创建临时快照，跳过正式账户 JSON、SQLite 及其日志文件和 `runtime/test/`。正式 OAuth 加密启用后，测试版必须使用独立数据目录和测试密钥。
 
 ### 网站账户迁移到 SQLite
 
@@ -193,6 +193,19 @@ python -m mailapi_shared.test_credential_storage restore --oauth \
 停写并备份正式运行目录、配置及 OAuth 文件，另存对应密钥。将备份恢复到独立目录。使用 `encrypt-oauth --production-key --original-runtime /path/production-runtime` 创建并核对加密副本。该选项把旧绝对路径映射到副本。切换资源库、配套文件与 OAuth 目录后设置 `MAILAPI_OAUTH_ENCRYPTION=1`。正式密钥取自 `MAILAPI_CREDENTIAL_KEY_FILE`。先验证读取、刷新与加密写回，再恢复正常监听。
 
 若切换后服务商已经轮换令牌，先停写并保存当前加密状态。从停写副本调用 `rollback_oauth` 转换最新 OAuth 文件和配套资源库，然后按原布局还原并关闭 OAuth 加密开关。切换前备份用于核对和更早的恢复点，已轮换的令牌可能无法从该备份继续使用。
+
+### OAuth 客户端配置与接码保留期
+
+`oauth_clients.json` 集中保存完整的 Google 和 Outlook 客户端配置，使用当前环境的 OAuth 文件密钥加密，随运行目录备份并在密钥轮换时重新加密。停写后可用下面的命令从现有配置迁移：
+
+```bash
+python -m mailapi_shared.oauth_clients --data-dir /path/test-data \
+  --key-file /keys/test.json --google-file /private/google.json --outlook-env /private/test.env
+```
+
+正式版增加 `--production-key`，并在校验通过后设置 `MAILAPI_OAUTH_CLIENTS_ENCRYPTED=1`。隔离版用 `TEST_OAUTH_CLIENTS_ENCRYPTED=1`。现有 Gmail 的 client ID 须与 Google 配置一致。启用后，新写入的 Gmail 令牌文件从集中配置取得客户端密钥。撤销此开关前，恢复 Google 客户端文件和 Outlook 环境配置，并把 Gmail 客户端密钥填回采用新格式的令牌文件。
+
+接码历史从本站捕获时间起保留 24 小时，每个邮箱最多 30 条。过期记录不再出现在接口中，正式进程启动时和运行期间每五分钟清理历史文件。旧错误日志与历史备份仍受各自的保留策略约束。
 
 ## 可选外部服务
 

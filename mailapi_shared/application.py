@@ -13,7 +13,6 @@ import shutil
 import threading
 import tempfile
 import time
-import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,7 +52,7 @@ from .mail_providers.outlook import (
     OutlookConfigurationError,
     OutlookMailbox,
     fetch_outlook_profile,
-    load_outlook_settings,
+    load_outlook_settings as parse_outlook_settings,
     outlook_incoming_mail,
 )
 from .google_oauth_callback import (
@@ -78,6 +77,9 @@ from .auth_storage import (
 from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore, AccountRestoreError
 from .credential_crypto import CredentialCryptoError, CredentialKeyring
 from .oauth_files import OAuthFiles, codex_token_version
+from .oauth_clients import gmail_token_info, load_clients
+from .mail_retention import retain_mail_records
+from .log_privacy import error_diagnostic, redact_log_text, safe_traceback
 from .configuration import dotenv_entries
 from .auth_artifact_versions import AuthArtifactVersionStore
 from .gpt_history import SOURCE_LABELS, describe_change
@@ -121,6 +123,8 @@ TEST_PORT = APP_PORT if IS_TEST else 8001
 CHECK_INTERVAL_SECONDS = 3
 MAX_POLL_RESULTS = 100
 MAX_HISTORY_RECORDS = 30
+MAIL_HISTORY_RETENTION_SECONDS = 24 * 60 * 60
+MAIL_HISTORY_SWEEP_SECONDS = 5 * 60
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 _production_data = (BASE_DIR / "runtime").resolve()
 
@@ -260,6 +264,10 @@ if OAUTH_ENCRYPTED and not CREDENTIAL_KEYRING:
 if OAUTH_ENCRYPTED:
     DATA_DIR = str(Path(DATA_DIR).resolve())
 OAUTH_FILES = OAuthFiles(DATA_DIR, CREDENTIAL_KEYRING) if OAUTH_ENCRYPTED else None
+CLIENTS_ENCRYPTED = _parse_bool(_setting("MAILAPI_OAUTH_CLIENTS_ENCRYPTED", "TEST_OAUTH_CLIENTS_ENCRYPTED"))
+if CLIENTS_ENCRYPTED and not OAUTH_FILES:
+    raise RuntimeError("集中 OAuth 客户端配置需要启用 OAuth 文件加密")
+OAUTH_CLIENTS = load_clients(OAUTH_FILES) if CLIENTS_ENCRYPTED else None
 EXTERNAL_WATCHERS_DISABLED_STATUS = (
     "测试模式：未启动外部监听" if IS_TEST else "外部监听未启用"
 )
@@ -341,15 +349,6 @@ SEARCH_QUERY = (
     'OR "ChatGPT" OR "OpenAI")'
 )
 
-BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
-OAUTH_QUERY_LOG_PATTERN = re.compile(r"(?i)([?&](?:code|state)=)[^&\s]+")
-SECRET_LOG_PATTERN = re.compile(
-    r'(?i)(access_token|refresh_token|id_token|authorization|client_secret|password|totp_secret|'
-    r'session_id|cookie|signature)'
-    r'(\s*["\']?\s*[:=]\s*["\']?)([^"\',}\s]+)'
-)
-
-
 class AccountConfig(TypedDict, total=False):
     name: str
     email: str
@@ -382,12 +381,23 @@ def oauth_callback_url(account_name: str) -> str:
     return f"{GMAIL_OAUTH_REDIRECT_BASE}/"
 
 
+def gmail_oauth_flow(cfg):
+    if OAUTH_CLIENTS:
+        return InstalledAppFlow.from_client_config(OAUTH_CLIENTS["google"], SCOPES)
+    return InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
+
+
+def load_outlook_settings(default_redirect_uri=""):
+    config = OAUTH_CLIENTS["outlook"] if OAUTH_CLIENTS else None
+    return parse_outlook_settings(default_redirect_uri, config=config)
+
+
 def create_auth_session(
     cfg: AccountConfig,
     managed: bool = False,
     stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, object]:
-    flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
+    flow = gmail_oauth_flow(cfg)
     flow.redirect_uri = oauth_callback_url(cfg["name"])
     auth_url, state = flow.authorization_url(
         access_type="offline",
@@ -462,7 +472,7 @@ def request_gmail_browser_auth(cfg: AccountConfig, stop_event: threading.Event) 
         raise GmailAuthCancelled
     print(f"[{cfg['name']}] 开始浏览器授权：{cfg['email']}（token: {cfg['token_file']}）")
     if should_use_console_auth():
-        flow = InstalledAppFlow.from_client_secrets_file(cfg["credential_file"], SCOPES)
+        flow = gmail_oauth_flow(cfg)
         return request_gmail_credentials(cfg, flow)
 
     session = create_auth_session(cfg, stop_event=stop_event)
@@ -584,24 +594,10 @@ def configure_error_logging() -> None:
         pass
 
 
-def redact_log_text(value: Any) -> str:
-    text = str(value)
-    text = BEARER_LOG_PATTERN.sub("Bearer <redacted>", text)
-    text = OAUTH_QUERY_LOG_PATTERN.sub(r"\1<redacted>", text)
-    text = SECRET_LOG_PATTERN.sub(r"\1\2<redacted>", text)
-    return text
-
-
 def log_exception(context: str, error: Exception) -> None:
-    stack = "".join(traceback.format_tb(error.__traceback__)).rstrip()
-    stack_detail = f"\nTraceback:\n{redact_log_text(stack)}" if stack else ""
-    ERROR_LOGGER.error(
-        "%s: %s: %s%s",
-        redact_log_text(context),
-        type(error).__name__,
-        redact_log_text(error),
-        stack_detail,
-    )
+    stack = safe_traceback(error)
+    ERROR_LOGGER.error("%s: %s%s", redact_log_text(context), error_diagnostic(error),
+                       f" [{stack}]" if stack else "")
 
 
 configure_error_logging()
@@ -774,6 +770,11 @@ def write_oauth_json(path, value):
         OAUTH_FILES.write_json(path, value)
     else:
         write_json_atomic(path, value)
+
+
+def gmail_token_json(credentials):
+    # The application client secret comes from the encrypted client store on reload.
+    return json.loads(credentials.to_json(strip=["client_secret"])) if OAUTH_CLIENTS else json.loads(credentials.to_json())
 
 
 MAIL_FILTERS_LOCK = threading.Lock()
@@ -996,7 +997,7 @@ def delete_codex_record_auth_files(record: Dict[str, Any], *, strict: bool = Fal
             if isinstance(e, CredentialCryptoError) or (strict and isinstance(e, OSError)):
                 raise
             log_exception(f"删除 Codex auth 文件 {path}", e)
-            print(f"Codex auth 文件删除失败：{path}: {e}")
+            print(f"Codex auth 文件删除失败：{error_diagnostic(e)}")
 
 
 def load_codex_auth_files() -> List[Dict[str, Any]]:
@@ -1018,7 +1019,7 @@ def load_codex_auth_files() -> List[Dict[str, Any]]:
             if OAUTH_FILES:
                 raise
             log_exception(f"加载 Codex auth 文件 {path}", e)
-            print(f"Codex auth 文件加载失败：{path}: {e}")
+            print(f"Codex auth 文件加载失败：{error_diagnostic(e)}")
 
     deduped: Dict[str, Dict[str, Any]] = {}
     for _, path, payload in sorted(entries, key=lambda item: item[0]):
@@ -1872,7 +1873,7 @@ def load_codex_accounts() -> None:
         if RESOURCE_DATABASE is not None:
             raise
         log_exception(f"加载 Codex 账号信息 {CODEX_ACCOUNTS_FILE}", e)
-        print(f"Codex 账号信息加载失败：{e}")
+        print(f"Codex 账号信息加载失败：{error_diagnostic(e)}")
 
 
 def register_existing_auth_artifacts() -> None:
@@ -2146,7 +2147,7 @@ def codex_refresh_loop() -> None:
             refresh_all_codex_accounts_once()
         except Exception as e:  # noqa: BLE001
             log_exception("Codex 后台刷新循环", e)
-            print(f"Codex 账号额度刷新失败：{e}")
+            print(f"Codex 账号额度刷新失败：{error_diagnostic(e)}")
         time.sleep(5)
 
 
@@ -2245,7 +2246,7 @@ def load_accounts() -> List[AccountConfig]:
             cfgs = value.get("items") if isinstance(value, dict) else value
         except Exception as e:  # noqa: BLE001
             log_exception(f"加载 Gmail 账号配置 {GMAIL_ACCOUNTS_FILE}", e)
-            print(f"Gmail 账号配置加载失败：{e}")
+            print(f"Gmail 账号配置加载失败：{error_diagnostic(e)}")
 
     if not isinstance(cfgs, list):
         raw = os.getenv("TEST_GMAIL_ACCOUNTS" if IS_TEST else "GMAIL_ACCOUNTS")
@@ -2412,11 +2413,8 @@ def ensure_mail_state(cfg: AccountConfig) -> None:
             or ("待启动" if cfg["enabled"] else "已停用"),
         }
     with HISTORY_LOCK:
-        CODE_HISTORY.setdefault(cfg["name"], [])
-
-
-for cfg in ACCOUNTS:
-    ensure_mail_state(cfg)
+        if cfg["name"] not in CODE_HISTORY:
+            CODE_HISTORY[cfg["name"]] = load_code_history(cfg["name"])
 
 
 def history_file_path(name: str) -> str:
@@ -2443,15 +2441,14 @@ def save_code_history(name: str, records: List[Dict[str, str]]) -> None:
 
 
 def clear_code_history(name: str) -> None:
-    CODE_HISTORY.pop(name, None)
-    path = history_file_path(name)
-    if os.path.exists(path):
-        os.remove(path)
+    with HISTORY_LOCK:
+        Path(history_file_path(name)).unlink(missing_ok=True)
+        CODE_HISTORY.pop(name, None)
 
 
 def append_code_record(name: str, record: Dict[str, str]) -> bool:
     with HISTORY_LOCK:
-        records = CODE_HISTORY.get(name, [])
+        records = recent_mail_records(CODE_HISTORY.get(name, []))
         if any(item.get("message_id") == record.get("message_id") for item in records):
             return False
         updated = [record, *records][:MAX_HISTORY_RECORDS]
@@ -2460,9 +2457,48 @@ def append_code_record(name: str, record: Dict[str, str]) -> bool:
         return True
 
 
-def load_histories():
-    for cfg in ACCOUNTS:
-        CODE_HISTORY[cfg["name"]] = load_code_history(cfg["name"])
+def recent_mail_records(records):
+    return retain_mail_records(records, now=time.time(), retention_seconds=MAIL_HISTORY_RETENTION_SECONDS)
+
+
+for cfg in ACCOUNTS:
+    ensure_mail_state(cfg)
+
+
+def prune_code_histories():
+    # Include retained files from deleted mailboxes, which are no longer in ACCOUNTS.
+    suffix = ".codes.history.json"
+    with HISTORY_LOCK:
+        names = set(CODE_HISTORY)
+        names.update(path.name.removesuffix(suffix) for path in Path(HISTORY_DIR).glob(f"*{suffix}")
+                     if not path.is_symlink())
+        for name in names:
+            records = CODE_HISTORY[name] if name in CODE_HISTORY else load_code_history(name)
+            kept = recent_mail_records(records)
+            if kept != records:
+                save_code_history(name, kept)
+            if name in CODE_HISTORY:
+                CODE_HISTORY[name] = kept
+    with STATE_LOCK:
+        for state in STATE.values():
+            if state.get("updated_at") and not recent_mail_records([{"created_at": state["updated_at"]}]):
+                for field in ("last_code", "result_value", "message_id", "subject", "rule_name", "rule_id", "updated_at"):
+                    state[field] = None
+
+
+def mail_history_sweep(stop):
+    while not stop.wait(MAIL_HISTORY_SWEEP_SECONDS):
+        try:
+            prune_code_histories()
+        except OSError as error:
+            log_exception("清理过期接码历史", error)
+
+
+@app.on_event("shutdown")
+def stop_mail_history_sweep():
+    stop = getattr(app.state, "mail_history_stop", None)
+    if stop is not None:
+        stop.set()
 
 
 def request_access_role(request: FastAPIRequest) -> Optional[str]:
@@ -2536,7 +2572,7 @@ def mailbox_history(
         if records is None:
             records = load_code_history(cfg["name"])
             CODE_HISTORY[cfg["name"]] = records
-        return [dict(item) for item in records
+        return [dict(item) for item in recent_mail_records(records)
                 if str(item.get("email") or "").casefold() == cfg["email"].casefold()
                 and (rule_id is None or item.get("rule_id") == rule_id)
                 and (not gpt_only or is_gpt_mail_result(item))]
@@ -2549,7 +2585,7 @@ def public_mailbox(
         state = dict(STATE.get(cfg["name"], {}))
     latest = state if state.get("email", "").casefold() == cfg["email"].casefold() and (
         state.get("result_value") or state.get("last_code")
-    ) else {}
+    ) and recent_mail_records([{"created_at": state.get("updated_at")}]) else {}
     if (not latest or (rule_id is not None and latest.get("rule_id") != rule_id)
             or (gpt_only and not is_gpt_mail_result(latest))):
         latest = next(iter(mailbox_history(cfg, gpt_only=gpt_only, rule_id=rule_id)), {})
@@ -2712,7 +2748,7 @@ class EncryptedGmailCredentials(Credentials):
         super().refresh(request)
         if self.stop_event.is_set():
             raise GmailAuthCancelled
-        write_oauth_json(self.token_file, json.loads(self.to_json()))
+        write_oauth_json(self.token_file, gmail_token_json(self))
 
 
 def get_gmail_service(cfg: AccountConfig, stop_event: threading.Event):
@@ -2720,7 +2756,10 @@ def get_gmail_service(cfg: AccountConfig, stop_event: threading.Event):
     token_file = cfg["token_file"]
     if os.path.exists(token_file):
         if OAUTH_FILES:
-            creds = EncryptedGmailCredentials.from_authorized_user_info(read_oauth_json(token_file), SCOPES)
+            info = read_oauth_json(token_file)
+            if OAUTH_CLIENTS:
+                info = gmail_token_info(OAUTH_CLIENTS, info)
+            creds = EncryptedGmailCredentials.from_authorized_user_info(info, SCOPES)
             creds.token_file, creds.stop_event = token_file, stop_event
         else:
             creds = Credentials.from_authorized_user_file(token_file, SCOPES)
@@ -2737,10 +2776,10 @@ def get_gmail_service(cfg: AccountConfig, stop_event: threading.Event):
                     raise RuntimeError(format_google_auth_error(e)) from e
                 backup_path = backup_token_file(token_file)
                 suffix = f"，旧 token 已备份到 {backup_path}" if backup_path else ""
-                print(f"[{cfg['name']}] token 刷新失败，将重新授权{suffix}：{format_google_auth_error(e)}")
+                print(f"[{cfg['name']}] token 刷新失败，将重新授权{suffix}：{error_diagnostic(e)}")
                 creds = None
         if not creds or not creds.valid:
-            if not os.path.exists(cfg["credential_file"]):
+            if not OAUTH_CLIENTS and not os.path.exists(cfg["credential_file"]):
                 raise FileNotFoundError(
                     f"{cfg['name']} 的 credential 文件未找到: {cfg['credential_file']}"
                 )
@@ -2748,7 +2787,7 @@ def get_gmail_service(cfg: AccountConfig, stop_event: threading.Event):
         if stop_event.is_set():
             raise GmailAuthCancelled
         if not isinstance(creds, EncryptedGmailCredentials):
-            write_oauth_json(token_file, json.loads(creds.to_json()))
+            write_oauth_json(token_file, gmail_token_json(creds))
             if OAUTH_FILES:
                 creds = EncryptedGmailCredentials.from_authorized_user_info(json.loads(creds.to_json()), SCOPES)
                 creds.token_file, creds.stop_event = token_file, stop_event
@@ -3039,14 +3078,14 @@ def watch_gmail_account(cfg: AccountConfig, stop_event: Optional[threading.Event
                 save_state(name, {"status": f"API 错误: {status}"})
             except Exception as e:  # noqa: BLE001
                 log_exception(f"Gmail 监听 account={name}", e)
-                save_state(name, {"status": f"运行错误: {e}"})
+                save_state(name, {"status": f"运行错误: {error_diagnostic(e)}"})
 
             stop_event.wait(CHECK_INTERVAL_SECONDS)
     except GmailAuthCancelled:
         return
     except Exception as e:  # noqa: BLE001
         log_exception(f"启动 Gmail 监听 account={name}", e)
-        save_state(name, {"status": f"启动失败: {e}"})
+        save_state(name, {"status": f"启动失败: {error_diagnostic(e)}"})
     finally:
         with MAIL_WATCHERS_LOCK:
             current = MAIL_WATCHERS.get(name)
@@ -3146,13 +3185,13 @@ def watch_outlook_account(
                 save_state(name, {"status": f"API 错误: {error.status}"})
             except Exception as error:  # noqa: BLE001
                 log_exception(f"Outlook 监听 account={name}", error)
-                save_state(name, {"status": f"运行错误: {error}"})
+                save_state(name, {"status": f"运行错误: {error_diagnostic(error)}"})
             stop_event.wait(max(1, OUTLOOK_POLL_INTERVAL_SECONDS))
     except OutlookAuthorizationRequired as error:
         save_state(name, {"status": str(error)})
     except Exception as error:  # noqa: BLE001
         log_exception(f"启动 Outlook 监听 account={name}", error)
-        save_state(name, {"status": f"启动失败: {error}"})
+        save_state(name, {"status": f"启动失败: {error_diagnostic(error)}"})
     finally:
         with MAIL_WATCHERS_LOCK:
             current = MAIL_WATCHERS.get(name)
@@ -3266,7 +3305,7 @@ def complete_managed_gmail_auth(
     stop_mail_watcher(str(cfg["name"]), cancel_auth=False)
     AUTH_ARTIFACT_VERSIONS.write_json(
         str(cfg["token_file"]),
-        json.loads(credentials.to_json()),
+        gmail_token_json(credentials),
         provider="gmail",
         resource_id=cfg["name"],
         source=str(session.get("managed_action") or "oauth"),
@@ -3408,7 +3447,7 @@ def start_watchers():
     print(f"{APP_MODE} 版已启用网站账号登录；最高管理员用户名：admin")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
     save_mail_accounts()
-    load_histories()
+    prune_code_histories()
     load_codex_accounts()
     register_existing_auth_artifacts()
     CREDENTIAL_STORE.migrate(
@@ -3417,6 +3456,10 @@ def start_watchers():
     )
     ensure_gpt_pool()
     import_codex_auth_file(refresh_snapshot=False, overwrite_existing_tokens=False)
+    if not IS_TEST:
+        history_stop = threading.Event()
+        app.state.mail_history_stop = history_stop
+        threading.Thread(target=mail_history_sweep, args=(history_stop,), daemon=True).start()
     if EXTERNAL_WATCHERS:
         threading.Thread(target=codex_refresh_loop, daemon=True).start()
         for cfg in ACCOUNTS:
@@ -3723,7 +3766,7 @@ def start_gmail_admin_auth(account_name: Optional[str] = None):
     else:
         cfg = next_gmail_account_config()
 
-    if not os.path.exists(cfg["credential_file"]):
+    if not OAUTH_CLIENTS and not os.path.exists(cfg["credential_file"]):
         return JSONResponse(
             content={"detail": f"Google OAuth 配置不存在：{cfg['credential_file']}"},
             status_code=400,

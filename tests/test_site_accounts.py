@@ -77,8 +77,8 @@ class SiteAccountHTTPTests(unittest.TestCase):
             },
             "STATE": {"account-1": {"last_code": "111111"}, "account-2": {"last_code": "222222"}},
             "CODE_HISTORY": {
-                "account-1": [{"code": "111111", "rule_id": "openai", "email": "owned@example.com"}],
-                "account-2": [{"code": "222222", "rule_id": "openai", "email": "other@example.com"}],
+                "account-1": [{"created_at": self.module.now_iso(), "code": "111111", "rule_id": "openai", "email": "owned@example.com"}],
+                "account-2": [{"created_at": self.module.now_iso(), "code": "222222", "rule_id": "openai", "email": "other@example.com"}],
             },
         }
         for name, value in patches.items():
@@ -747,10 +747,10 @@ class SiteAccountHTTPTests(unittest.TestCase):
         key = self.module.mailbox_resource_key(cfg)
         relay_id = self.relay["id"]
         self.module.CODE_HISTORY[cfg["name"]][0:0] = [
-            {"email": cfg["email"], "code": "999999", "rule_name": "硅基流动验证码"},
-            {"email": cfg["email"], "code": "321321", "rule_id": "siliconflow"},
+            {"created_at": self.module.now_iso(), "email": cfg["email"], "code": "999999", "rule_name": "硅基流动验证码"},
+            {"created_at": self.module.now_iso(), "email": cfg["email"], "code": "321321", "rule_id": "siliconflow"},
         ]
-        self.module.STATE[cfg["name"]].update(email=cfg["email"], last_code="222222", rule_id="openai")
+        self.module.STATE[cfg["name"]].update(email=cfg["email"], updated_at=self.module.now_iso(), last_code="222222", rule_id="openai")
         response = self.manager.put(f"/api/admin/relay-accounts/{relay_id}", json={
             "mailbox_key": key, "mail_rule_id": "siliconflow",
         })
@@ -821,12 +821,12 @@ class SiteAccountHTTPTests(unittest.TestCase):
         cfg = self.module.ACCOUNTS[0]
         address = cfg["email"]
         self.module.CODE_HISTORY["account-1"] = [
-            {"type": "link", "value": "https://claude.ai/login#private", "rule_id": "claude", "rule_name": "Claude", "email": address, "subject": "Claude login"},
-            {"type": "code", "value": "111111", "code": "111111", "rule_id": "openai", "email": address, "subject": "OpenAI code"},
-            {"code": "333333", "email": address, "subject": "Legacy unknown"},
-            {"code": "999999", "rule_id": "openai", "email": "previous-owner@example.com"},
+            {"created_at": self.module.now_iso(), "type": "link", "value": "https://claude.ai/login#private", "rule_id": "claude", "rule_name": "Claude", "email": address, "subject": "Claude login"},
+            {"created_at": self.module.now_iso(), "type": "code", "value": "111111", "code": "111111", "rule_id": "openai", "email": address, "subject": "OpenAI code"},
+            {"created_at": self.module.now_iso(), "code": "333333", "email": address, "subject": "Legacy unknown"},
+            {"created_at": self.module.now_iso(), "code": "999999", "rule_id": "openai", "email": "previous-owner@example.com"},
         ]
-        self.module.STATE["account-1"].update(email=address, result_type="link", result_value="https://claude.ai/login#private", rule_id="claude", subject="Claude login")
+        self.module.STATE["account-1"].update(email=address, updated_at=self.module.now_iso(), result_type="link", result_value="https://claude.ai/login#private", rule_id="claude", subject="Claude login")
         gpt = self.alice.get("/api/accounts")
         self.assertEqual(gpt.json()["items"][0]["mail"][0]["last_code"], "111111")
         self.assertNotIn("claude.ai", gpt.text)
@@ -857,7 +857,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
         replacement = {"name": "account-1", "email": "replacement@example.com", "provider": "gmail", "enabled": False}
         self.module.ACCOUNTS.append(replacement)
         self.module.save_mail_accounts()
-        self.module.CODE_HISTORY["account-1"] = [{"code": "111111", "rule_id": "openai", "email": "owned@example.com"}]
+        self.module.CODE_HISTORY["account-1"] = [{"created_at": self.module.now_iso(), "code": "111111", "rule_id": "openai", "email": "owned@example.com"}]
         self.assertNotEqual(old, self.module.mailbox_resource_key(replacement))
         self.admin.put("/api/admin/mail/accounts/account-1/listing", json={"listed": True})
         self.assertEqual(self.bob.get("/api/mailboxes").json()["items"], [])

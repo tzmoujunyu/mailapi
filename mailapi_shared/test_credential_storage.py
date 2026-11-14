@@ -15,6 +15,7 @@ from .account_credentials import open_legacy_restore_point
 from .configuration import dotenv_entries
 from .credential_crypto import CredentialCryptoError, CredentialKeyring
 from .oauth_files import OAuthFiles, codex_token_version
+from .oauth_clients import FILENAME as OAUTH_CLIENTS_NAME, load_clients
 from .resource_database import DATABASE_NAME as RESOURCE_NAME
 from .resource_database import ENCRYPTED_RESTORE_FIELDS, FIELDS, GPT, SECRET_DIRECTORY
 from .resource_database import ResourceDatabase, create_resource_database
@@ -111,6 +112,12 @@ def _copy_oauth(source, target, mailboxes, *, reader, writer, original_root=None
     paths = {path.relative_to(source) for directory in directories for path in directory.rglob("*") if path.is_file()}
     paths.update(path.relative_to(source) for path in source.iterdir()
                  if path.is_file() and LEGACY_OAUTH.fullmatch(path.name))
+    if (source / OAUTH_CLIENTS_NAME).exists():
+        if reader is None:
+            raise CredentialCryptoError("集中 OAuth 客户端配置需要源密钥")
+        load_clients(reader)
+        if not rollback_root:
+            paths.add(Path(OAUTH_CLIENTS_NAME))
     for item in (mailboxes or {}).get("items", []):
         provider = item.get("provider") or "gmail"
         configured = item.get("token_file")
