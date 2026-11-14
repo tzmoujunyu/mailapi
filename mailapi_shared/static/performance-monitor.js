@@ -42,7 +42,7 @@
       method: normalizedMethod, path, count: 0, errors: 0, total: 0, max: 0,
     };
     summary.count += 1;
-    summary.errors += item.error || (item.status != null && item.status >= 400) ? 1 : 0;
+    if (item.error || (item.status != null && item.status >= 400)) summary.errors += 1;
     summary.total = round(summary.total + item.duration);
     summary.max = Math.max(summary.max, item.duration || 0);
     requestGroups.set(key, summary);
