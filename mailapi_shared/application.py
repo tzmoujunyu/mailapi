@@ -201,6 +201,11 @@ def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, b
     if os.getenv("TEST_CREDENTIAL_KEY_FILE"):
         raise RuntimeError("凭据加密须显式指定独立的 TEST_DATA_DIR")
 
+    if os.getenv("MAILAPI_CREDENTIAL_KEY_FILE") or any(
+        key == "MAILAPI_CREDENTIAL_KEY_FILE" and value for key, value in dotenv_entries(BASE_DIR / ".env")
+    ):
+        raise RuntimeError("正式资源已启用加密，请为测试版指定独立的 TEST_DATA_DIR")
+
     owner = tempfile.TemporaryDirectory(prefix="mailapi-test-")
     path = Path(owner.name)
     if _production_data.is_dir():
@@ -251,12 +256,14 @@ EXTERNAL_WATCHERS = _parse_bool(
 TEST_EXTERNAL_WATCHERS = EXTERNAL_WATCHERS
 SITE_BACKEND = _setting("MAILAPI_SITE_ACCOUNTS_BACKEND", "TEST_SITE_ACCOUNTS_BACKEND", "json")
 RESOURCE_BACKEND = _setting("MAILAPI_RESOURCE_BACKEND", "TEST_RESOURCE_BACKEND", "json")
-TEST_KEY_FILE = os.getenv("TEST_CREDENTIAL_KEY_FILE") if IS_TEST else None
+KEY_FILE = _setting("MAILAPI_CREDENTIAL_KEY_FILE", "TEST_CREDENTIAL_KEY_FILE")
 CREDENTIAL_KEYRING = None
-if TEST_KEY_FILE:
-    if SITE_BACKEND != "sqlite" or RESOURCE_BACKEND != "sqlite" or EXTERNAL_WATCHERS:
-        raise RuntimeError("凭据加密测试须启用两个 SQLite 后端并关闭外部监听")
-    CREDENTIAL_KEYRING = CredentialKeyring(TEST_KEY_FILE, data_dirs=(Path(DATA_DIR), _production_data))
+if KEY_FILE:
+    if SITE_BACKEND != "sqlite" or RESOURCE_BACKEND != "sqlite":
+        raise RuntimeError("凭据加密须启用两个 SQLite 后端")
+    if IS_TEST and EXTERNAL_WATCHERS:
+        raise RuntimeError("凭据加密测试须关闭外部监听")
+    CREDENTIAL_KEYRING = CredentialKeyring(KEY_FILE, data_dirs=(Path(DATA_DIR), _production_data), production=not IS_TEST)
 EXTERNAL_WATCHERS_DISABLED_STATUS = (
     "测试模式：未启动外部监听" if IS_TEST else "外部监听未启用"
 )

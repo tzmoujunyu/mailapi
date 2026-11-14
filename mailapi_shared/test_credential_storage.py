@@ -111,11 +111,11 @@ def _check_legacy_points(document, key_path, *, convert=False):
     return needs_key
 
 
-def rewrite(source, destination, key_file, *, old_key_file=None):
+def rewrite(source, destination, key_file, *, old_key_file=None, production=False):
     source, destination = _paths(source, destination)
     roots = (source, destination)
-    keyring = CredentialKeyring(key_file, data_dirs=roots)
-    old = CredentialKeyring(old_key_file, data_dirs=roots) if old_key_file else None
+    keyring = CredentialKeyring(key_file, data_dirs=roots, production=production)
+    old = CredentialKeyring(old_key_file, data_dirs=roots, production=production) if old_key_file else None
     if old and not keyring.rotation_from(old):
         raise CredentialCryptoError("轮换须使用相同测试环境标识、新的密钥 ID 和新密钥")
     with closing(_read_db(source / SITE_NAME)) as db:
@@ -141,10 +141,10 @@ def rewrite(source, destination, key_file, *, old_key_file=None):
             _check_integrity(db)
 
 
-def copy_backup(source, destination, key_file):
+def copy_backup(source, destination, key_file, *, production=False):
     """Create or restore a stopped encrypted snapshot using its matching key."""
     source, destination = _paths(source, destination)
-    ring = CredentialKeyring(key_file, data_dirs=(source, destination))
+    ring = CredentialKeyring(key_file, data_dirs=(source, destination), production=production)
     with _stage(destination) as stage:
         _copy_remaining(source, stage)
         _copy_entry(source / SECRET_DIRECTORY, stage / SECRET_DIRECTORY)
@@ -172,15 +172,16 @@ def main():
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--key-file", type=Path, required=True)
     parser.add_argument("--old-key-file", type=Path)
+    parser.add_argument("--production-key", action="store_true", help="use a production key on a stopped, isolated copy")
     args = parser.parse_args()
     if (args.action == "rotate") != bool(args.old_key_file):
         parser.error("仅轮换需要 --old-key-file")
     os.umask(0o077)
     try:
         if args.action in {"backup", "restore"}:
-            copy_backup(args.source, args.destination, args.key_file)
+            copy_backup(args.source, args.destination, args.key_file, production=args.production_key)
         else:
-            rewrite(args.source, args.destination, args.key_file, old_key_file=args.old_key_file)
+            rewrite(args.source, args.destination, args.key_file, old_key_file=args.old_key_file, production=args.production_key)
     except CredentialCryptoError as error:
         parser.exit(1, f"{error}\n")
     except (OSError, sqlite3.Error, ValueError, KeyError, AttributeError, TypeError):

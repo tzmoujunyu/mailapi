@@ -1,4 +1,4 @@
-"""Authenticated encryption for the isolated SQLite credential store."""
+"""Authenticated encryption for SQLite credentials."""
 from base64 import b64decode, b64encode
 import json
 import os
@@ -23,13 +23,13 @@ def _identifier(value):
 
 
 class CredentialKeyring:
-    def __init__(self, path, *, data_dirs):
+    def __init__(self, path, *, data_dirs, production=False):
         path = Path(path).expanduser()
         if not path.is_absolute() or any(
             path.resolve().is_relative_to(root.resolve())
             for root in (Path(__file__).resolve().parents[1], *data_dirs)
         ):
-            raise CredentialCryptoError("测试密钥须使用项目和数据目录外的绝对路径")
+            raise CredentialCryptoError("密钥须使用项目和数据目录外的绝对路径")
         try:
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(descriptor, "rb") as source:
@@ -39,22 +39,26 @@ class CredentialKeyring:
                     raise ValueError
                 document = json.loads(source.read(16385))
             namespace, active, keys = document["namespace"], document["active"], document["keys"]
+            environment = "production" if production else "test"
+            if document.get("environment", "test") != environment:
+                raise ValueError
             if not _identifier(namespace) or not _identifier(active) or not isinstance(keys, dict):
                 raise ValueError
             keys = {key_id: b64decode(value, validate=True) for key_id, value in keys.items()}
             if active not in keys or any(not _identifier(key_id) or len(value) != 32 for key_id, value in keys.items()):
                 raise ValueError
         except (OSError, ValueError, KeyError, TypeError):
-            raise CredentialCryptoError("无法读取测试密钥，检查文件格式、所有者与 0600 权限") from None
+            raise CredentialCryptoError("无法读取密钥，检查环境、文件格式、所有者与 0600 权限") from None
+        self.environment = environment
         self.namespace = namespace
         self.active = active
         self._keys = keys
 
     def _aad(self, key_id, scope):
-        return _encode(["mailapi-test", 1, self.namespace, key_id, *scope])
+        return _encode(["mailapi-" + self.environment, 1, self.namespace, key_id, *scope])
 
     def rotation_from(self, old):
-        return (self.namespace == old.namespace and self.active not in old._keys
+        return (self.environment == old.environment and self.namespace == old.namespace and self.active not in old._keys
                 and self._keys[self.active] not in old._keys.values())
 
     def seal(self, value, *scope):
@@ -88,7 +92,7 @@ def check_database_crypto(db, keyring, store):
     if version == 1 and keyring is None:
         return
     if version != 2 or keyring is None:
-        raise CredentialCryptoError("数据库版本与测试凭据加密配置不匹配")
+        raise CredentialCryptoError("数据库版本与凭据加密配置不匹配")
     markers = db.execute("SELECT marker FROM credential_profile").fetchall()
     if len(markers) != 1:
         raise CredentialCryptoError("凭据库缺少加密标记")

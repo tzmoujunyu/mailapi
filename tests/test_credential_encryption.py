@@ -94,10 +94,11 @@ class EncryptedCredentialTests(unittest.TestCase):
         migrate_site_accounts(self.source)
         migrate_resources(self.source)
 
-    def _create_key(self, key_id, *, namespace="mailapi-test-fixture"):
+    def _create_key(self, key_id, *, namespace="mailapi-test-fixture", production=False):
         path = self.root / (key_id + ".json")
         path.touch(mode=0o600)
         path.write_text(json.dumps({
+            "environment": "production" if production else "test",
             "namespace": namespace, "active": key_id, "keys": {
                 key_id: b64encode(AESGCM.generate_key(bit_length=256)).decode("ascii"),
             },
@@ -272,3 +273,21 @@ with patch("mailapi_shared.site_accounts.time.time", return_value=timestamp), \
         with self.assertRaises(CredentialCryptoError):
             rewrite(self.before, self.after, self.key2, old_key_file=self.key1)
         self.assertFalse(self.after.exists())
+
+    def test_production_key_migrates_and_restores_with_distinct_environment(self):
+        key = self._create_key("production-v1", production=True)
+        with self.assertRaises(CredentialCryptoError):
+            rewrite(self.source, self.before, key)
+        rewrite(self.source, self.before, key, production=True)
+        ring = CredentialKeyring(key, data_dirs=(self.before,), production=True)
+        test_ring = self._ring(self.key1)
+        with self.assertRaises(CredentialCryptoError):
+            open_site_accounts(self.before, backend="sqlite", keyring=test_ring)
+        copy_backup(self.before, self.backup, key, production=True)
+        store = open_site_accounts(self.backup, backend="sqlite", keyring=ring, require_admin_mfa=True)
+        with patch("mailapi_shared.site_accounts.time.time", return_value=self.timestamp):
+            self.assertIsNone(store.login("admin", PASSWORD))
+            result = store.login("admin", PASSWORD, pyotp.TOTP(ADMIN_TOTP).at(self.timestamp))
+            self.assertEqual(result[1]["role"], "admin")
+        db = ResourceDatabase(self.backup, keyring=ring)
+        self.assertEqual(db.load(GPT)["items"]["gpt@example.test"]["password"], GPT_PASSWORD)
