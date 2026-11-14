@@ -1,5 +1,6 @@
 import json
 import hashlib
+import os
 from base64 import b64encode
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -179,6 +180,46 @@ class AuthArtifactVersionTests(unittest.TestCase):
             recovered_archives = list((recovery / "archives").rglob("*.json"))
             self.assertEqual(len(recovered_archives), 10)
             self.assertTrue(all("secret_marker" in oauth_files.read_json(path) for path in recovered_archives))
+
+    def test_prune_also_cleans_encrypted_provider_backup_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.json"
+            key_file.write_text(json.dumps({
+                "namespace": "auth-backup-prune-test",
+                "active": "v1",
+                "keys": {"v1": b64encode(AESGCM.generate_key(bit_length=256)).decode()},
+            }))
+            key_file.chmod(0o600)
+            runtime = root / "runtime"
+            runtime.mkdir(mode=0o700)
+            keyring = CredentialKeyring(key_file, data_dirs=(runtime,))
+            oauth_files = OAuthFiles(runtime, keyring)
+            store = AuthArtifactVersionStore(
+                runtime / "auth_artifact_versions.json",
+                runtime / "auth_artifact_versions",
+                oauth_files=oauth_files,
+            )
+            backups = [runtime / "gmail_tokens" / "backups" / "mailbox-1",
+                       runtime / "codex_auth" / "backups"]
+            now = datetime(2026, 11, 14, tzinfo=timezone.utc)
+            for directory_index, backup_dir in enumerate(backups):
+                for index in range(8):
+                    path = backup_dir / f"backup-{index}.json"
+                    oauth_files.write_json(path, {"secret_marker": f"backup-{directory_index}-{index}"})
+                    age = [5, 10, 15, 20, 25, 29, 31, 32][index]
+                    timestamp = (now - timedelta(days=age)).timestamp()
+                    os.utime(path, (timestamp, timestamp))
+
+            result = store.prune(now=now, extra_directories=backups)
+
+            self.assertEqual(result["removed_files"], 4)
+            for backup_dir in backups:
+                remaining = sorted(backup_dir.glob("*.json"))
+                self.assertEqual(len(remaining), 6)
+                self.assertTrue(all("secret_marker" in oauth_files.read_json(path) for path in remaining))
+            recovery = Path(result["recovery_point"])
+            self.assertEqual(len(list((recovery / "extras").rglob("*.json"))), 16)
 
 
 class SecurityAuditTests(unittest.TestCase):

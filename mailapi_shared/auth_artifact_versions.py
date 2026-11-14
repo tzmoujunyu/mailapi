@@ -102,7 +102,7 @@ class AuthArtifactVersionStore:
             raise ValueError("授权归档路径超出归档目录")
         return candidate
 
-    def _create_recovery_point(self):
+    def _create_recovery_point(self, extra_directories=()):
         if self.oauth_files is None:
             raise ValueError("授权清理需要已启用的加密 OAuth 存储")
         recovery_root = self.archive_directory.parent / "auth_artifact_restore_points"
@@ -123,9 +123,22 @@ class AuthArtifactVersionStore:
                 raise ValueError("授权归档包含不受支持的文件")
             target = recovery / "archives" / source.relative_to(self.archive_directory)
             self.oauth_files.copy(source, target)
+        for index, directory in enumerate(extra_directories):
+            directory = Path(directory)
+            if not directory.exists():
+                continue
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError("授权备份目录不是受支持的私有目录")
+            for source in directory.rglob("*"):
+                if source.is_dir():
+                    continue
+                if source.is_symlink() or not source.is_file():
+                    raise ValueError("授权备份目录包含不受支持的文件")
+                target = recovery / "extras" / str(index) / source.relative_to(directory)
+                self.oauth_files.copy(source, target)
         return recovery
 
-    def prune(self, *, keep_history=5, max_age_days=30, now=None):
+    def prune(self, *, keep_history=5, max_age_days=30, now=None, extra_directories=()):
         """Create an encrypted restore point, then prune stale archive versions.
 
         The current entry is always kept. Historical entries are retained when
@@ -141,12 +154,14 @@ class AuthArtifactVersionStore:
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
         cutoff = current - timedelta(days=max_age_days)
+        extra_directories = tuple(Path(directory) for directory in extra_directories)
 
         with self._lock:
-            recovery = self._create_recovery_point()
+            recovery = self._create_recovery_point(extra_directories)
             original = deepcopy(self._data)
             kept = {}
             removed_archive_files = set()
+            removed_extra_files = set()
             removed_entries = 0
             try:
                 for key, entries in self._data["artifacts"].items():
@@ -189,12 +204,53 @@ class AuthArtifactVersionStore:
                         if relative not in referenced:
                             removed_archive_files.add(relative)
 
+                for index, directory in enumerate(extra_directories):
+                    if not directory.exists():
+                        continue
+                    grouped = {}
+                    for path in directory.rglob("*"):
+                        if path.is_dir():
+                            continue
+                        if path.is_symlink() or not path.is_file():
+                            raise ValueError("授权备份目录包含不受支持的文件")
+                        group = path.parent.relative_to(directory).as_posix()
+                        grouped.setdefault(group, []).append(path)
+                    for paths in grouped.values():
+                        ranked = sorted(
+                            paths,
+                            key=lambda path: (
+                                datetime.fromtimestamp(path.stat().st_mtime, timezone.utc),
+                                path.name,
+                            ),
+                            reverse=True,
+                        )
+                        keep_paths = set(ranked[:keep_history])
+                        for path in paths:
+                            timestamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                            if timestamp >= cutoff:
+                                keep_paths.add(path)
+                            if path not in keep_paths:
+                                removed_extra_files.add((index, path.relative_to(directory).as_posix()))
+
                 self._data["artifacts"] = kept
                 self._write_manifest()
                 for relative in sorted(removed_archive_files):
                     path = self._archive_path(relative)
                     if path.is_file():
                         path.unlink()
+                for index, relative in sorted(removed_extra_files):
+                    path = extra_directories[index] / relative
+                    if path.is_file() and not path.is_symlink():
+                        path.unlink()
+                for directory in extra_directories:
+                    for child in sorted(
+                        (path for path in directory.rglob("*") if path.is_dir()),
+                        key=lambda path: len(path.parts), reverse=True,
+                    ):
+                        try:
+                            child.rmdir()
+                        except OSError:
+                            pass
                 for directory in sorted(
                     (path for path in self.archive_directory.rglob("*") if path.is_dir()),
                     key=lambda path: len(path.parts), reverse=True,
@@ -205,17 +261,17 @@ class AuthArtifactVersionStore:
                         pass
             except Exception:
                 self._data = original
-                self._restore_recovery_point(recovery)
+                self._restore_recovery_point(recovery, extra_directories)
                 raise
 
             return {
                 "recovery_point": str(recovery),
                 "removed_entries": removed_entries,
-                "removed_files": len(removed_archive_files),
+                "removed_files": len(removed_archive_files) + len(removed_extra_files),
                 "remaining_entries": sum(len(entries) for entries in kept.values()),
             }
 
-    def _restore_recovery_point(self, recovery):
+    def _restore_recovery_point(self, recovery, extra_directories=()):
         manifest = self.oauth_files.read_json(recovery / "manifest.json")
         for path in self.archive_directory.rglob("*"):
             if path.is_file() and not path.is_symlink():
@@ -225,6 +281,20 @@ class AuthArtifactVersionStore:
                 continue
             target = self.archive_directory / source.relative_to(recovery / "archives")
             self.oauth_files.copy(source, target)
+        for index, directory in enumerate(extra_directories):
+            directory = Path(directory)
+            if directory.exists():
+                for path in directory.rglob("*"):
+                    if path.is_file() and not path.is_symlink():
+                        path.unlink()
+            source_root = recovery / "extras" / str(index)
+            if not source_root.exists():
+                continue
+            for source in source_root.rglob("*"):
+                if source.is_dir():
+                    continue
+                target = directory / source.relative_to(source_root)
+                self.oauth_files.copy(source, target)
         self._data = manifest
         self._write_manifest()
 

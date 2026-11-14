@@ -3454,6 +3454,7 @@ def start_watchers():
         cleanup = AUTH_ARTIFACT_VERSIONS.prune(
             keep_history=int(os.getenv("TEST_AUTH_ARTIFACT_KEEP_HISTORY", "5")),
             max_age_days=int(os.getenv("TEST_AUTH_ARTIFACT_MAX_AGE_DAYS", "30")),
+            extra_directories=(GMAIL_TOKEN_BACKUP_DIR, CODEX_AUTH_BACKUP_DIR),
         )
         print(
             "测试版授权归档清理完成："
