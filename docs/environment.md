@@ -193,6 +193,12 @@ python -m mailapi_shared.test_credential_storage restore --oauth \
 
 迁移保留 OAuth token 和 MSAL 缓存内容。服务商可撤销令牌，或者在续期时使旧 refresh token 失效，因此恢复旧备份时仍要核对当时的令牌是否有效。演练用合成凭据验证读取、模拟续期和加密写回。Google OAuth 客户端配置、Outlook 应用凭据和 Proton 文件沿用现有管理方式。
 
+### 正式版 OAuth 加密
+
+停写并备份正式运行目录、配置及 OAuth 文件，另存对应密钥。将备份恢复到独立目录。使用 `encrypt-oauth --production-key --original-runtime /path/production-runtime` 创建并核对加密副本。该选项把旧绝对路径映射到副本。切换资源库、配套文件与 OAuth 目录后设置 `MAILAPI_OAUTH_ENCRYPTION=1`。正式密钥取自 `MAILAPI_CREDENTIAL_KEY_FILE`。先验证读取、刷新与加密写回，再恢复正常监听。
+
+若切换后服务商已经轮换令牌，先停写并保存当前加密状态。从停写副本调用 `rollback_oauth` 转换最新 OAuth 文件和配套资源库，然后按原布局还原并关闭 OAuth 加密开关。切换前备份用于核对和更早的恢复点，已轮换的令牌可能无法从该备份继续使用。
+
 ## 可选外部服务
 
 | 功能 | 额外条件 |

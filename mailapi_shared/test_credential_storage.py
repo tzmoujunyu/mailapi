@@ -104,7 +104,7 @@ def _copy_remaining(source, target, *, skip_oauth=False):
             _copy_entry(entry, target / entry.name)
 
 
-def _copy_oauth(source, target, mailboxes, *, reader, writer):
+def _copy_oauth(source, target, mailboxes, *, reader, writer, original_root=None, rollback_root=None):
     """Copy or reseal every managed artifact and make mailbox paths portable."""
     directories = [source / name for name in OAUTH_DIRECTORIES]
     directories += [source / "auth_artifact_versions" / provider for provider in OAUTH_PROVIDERS]
@@ -119,14 +119,14 @@ def _copy_oauth(source, target, mailboxes, *, reader, writer):
         path = Path(configured)
         if path.is_absolute():
             try:
-                path = path.relative_to(source)
+                path = path.relative_to(original_root or source)
             except ValueError:
                 raise CredentialCryptoError("请先把测试邮箱的 token 路径改到隔离源目录内") from None
         if (not path.parts or ".." in path.parts or not
                 (path.parts[0] == provider + "_tokens" and len(path.parts) > 1
                  or len(path.parts) == 1 and re.fullmatch(r"token_account\d+\.json", path.name))):
             raise CredentialCryptoError("旧邮箱 token 须放到 Gmail 或 Outlook 目录")
-        item["token_file"] = path.as_posix()
+        item["token_file"] = str(rollback_root / path) if rollback_root else path.as_posix()
 
     for relative in sorted(paths):
         origin = source / relative
@@ -136,6 +136,13 @@ def _copy_oauth(source, target, mailboxes, *, reader, writer):
             writer.write_bytes(out, raw)
             if writer.read_bytes(out) != raw:
                 raise CredentialCryptoError("迁移前后的 OAuth 文件内容不匹配")
+        elif rollback_root:
+            out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(out, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "wb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
         else:
             out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             _copy_entry(origin, out)
@@ -163,15 +170,14 @@ def _check_legacy_points(document, key_path, *, convert=False):
     return needs_key
 
 
-def rewrite(source, destination, key_file, *, old_key_file=None, production=False, oauth=False, enable_oauth=False):
+def rewrite(source, destination, key_file, *, old_key_file=None, production=False, oauth=False,
+            enable_oauth=False, original_root=None):
     source, destination = _paths(source, destination)
     roots = (source, destination)
     keyring = CredentialKeyring(key_file, data_dirs=roots, production=production)
     old = CredentialKeyring(old_key_file, data_dirs=roots, production=production) if old_key_file else None
-    if (oauth or enable_oauth) and production:
-        raise CredentialCryptoError("OAuth 文件加密仅在隔离测试版启用")
     if enable_oauth and (not oauth or not old or old.active != keyring.active):
-        raise CredentialCryptoError("启用 OAuth 加密时须沿用源数据库的测试密钥")
+        raise CredentialCryptoError("启用 OAuth 加密时须沿用源数据库的密钥")
     if old and not enable_oauth and not keyring.rotation_from(old):
         raise CredentialCryptoError("轮换须使用相同测试环境标识、新的密钥 ID 和新密钥")
     with closing(_read_db(source / SITE_NAME)) as db:
@@ -190,7 +196,8 @@ def rewrite(source, destination, key_file, *, old_key_file=None, production=Fals
             if oauth and pool == "gmail_accounts.json":
                 _copy_oauth(source, stage, data,
                             reader=OAuthFiles(source, old) if source_oauth else None,
-                            writer=OAuthFiles(stage, keyring))
+                            writer=OAuthFiles(stage, keyring),
+                            original_root=original_root.resolve() if original_root else None)
             if pool == GPT and data is not None:
                 legacy_key = source / LEGACY_RESTORE_KEY
                 if _check_legacy_points(data, legacy_key, convert=old is None):
@@ -207,8 +214,6 @@ def copy_backup(source, destination, key_file, *, production=False, oauth=False)
     source, destination = _paths(source, destination)
     ring = CredentialKeyring(key_file, data_dirs=(source, destination), production=production)
     with _stage(destination) as stage:
-        if oauth and production:
-            raise CredentialCryptoError("OAuth 文件加密仅在隔离测试版启用")
         _copy_remaining(source, stage, skip_oauth=oauth)
         _copy_entry(source / SECRET_DIRECTORY, stage / SECRET_DIRECTORY)
         if (source / LEGACY_RESTORE_KEY).is_file():
@@ -230,6 +235,26 @@ def copy_backup(source, destination, key_file, *, production=False, oauth=False)
                 _check_legacy_points(data, stage / LEGACY_RESTORE_KEY)
 
 
+def rollback_oauth(source, destination, key_file, *, runtime_root, production=False):
+    """Rebuild the previous OAuth layout from a stopped copy with current tokens."""
+    source, destination = _paths(source, destination)
+    ring = CredentialKeyring(key_file, data_dirs=(source, destination, runtime_root), production=production)
+    resources = ResourceDatabase(source, keyring=ring, read_only=True, oauth_encrypted=True)
+    with _stage(destination) as stage:
+        _copy_remaining(source, stage, skip_oauth=True)
+        output = create_resource_database(stage, keyring=ring)
+        for pool in FIELDS:
+            data = resources.load(pool)
+            if pool == "gmail_accounts.json":
+                _copy_oauth(source, stage, data, reader=OAuthFiles(source, ring), writer=None,
+                            rollback_root=runtime_root.resolve())
+            output.save(pool, data)
+            if output.load(pool) != data:
+                raise ValueError("回滚资源与源数据不一致")
+        with closing(output._connect()) as db:
+            _check_integrity(db)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("migrate", "rotate", "backup", "restore", "encrypt-oauth"))
@@ -239,9 +264,12 @@ def main():
     parser.add_argument("--old-key-file", type=Path)
     parser.add_argument("--production-key", action="store_true", help="use a production key on a stopped, isolated copy")
     parser.add_argument("--oauth", action="store_true", help="include encrypted OAuth files in the isolated copy")
+    parser.add_argument("--original-runtime", type=Path, help="original absolute root referenced by a copied snapshot")
     args = parser.parse_args()
     if (args.action == "rotate") != bool(args.old_key_file):
         parser.error("仅轮换需要 --old-key-file")
+    if args.original_runtime and args.action != "encrypt-oauth":
+        parser.error("仅加密现有 OAuth 副本可指定 --original-runtime")
     os.umask(0o077)
     try:
         if args.action in {"backup", "restore"}:
@@ -250,7 +278,8 @@ def main():
             enabling = args.action == "encrypt-oauth"
             rewrite(args.source, args.destination, args.key_file,
                     old_key_file=args.key_file if enabling else args.old_key_file,
-                    production=args.production_key, oauth=args.oauth or enabling, enable_oauth=enabling)
+                    production=args.production_key, oauth=args.oauth or enabling, enable_oauth=enabling,
+                    original_root=args.original_runtime)
     except CredentialCryptoError as error:
         parser.exit(1, f"{error}\n")
     except (OSError, sqlite3.Error, ValueError, KeyError, AttributeError, TypeError):

@@ -266,9 +266,9 @@ if KEY_FILE:
     if IS_TEST and EXTERNAL_WATCHERS:
         raise RuntimeError("凭据加密测试须关闭外部监听")
     CREDENTIAL_KEYRING = CredentialKeyring(KEY_FILE, data_dirs=(Path(DATA_DIR), _production_data), production=not IS_TEST)
-OAUTH_ENCRYPTED = IS_TEST and _parse_bool(os.getenv("TEST_OAUTH_ENCRYPTION", ""))
+OAUTH_ENCRYPTED = _parse_bool(_setting("MAILAPI_OAUTH_ENCRYPTION", "TEST_OAUTH_ENCRYPTION"))
 if OAUTH_ENCRYPTED and not CREDENTIAL_KEYRING:
-    raise RuntimeError("加密 OAuth 授权须配置独立的测试密钥")
+    raise RuntimeError("加密 OAuth 授权须配置对应环境的凭据密钥")
 if OAUTH_ENCRYPTED:
     DATA_DIR = str(Path(DATA_DIR).resolve())
 OAUTH_FILES = OAuthFiles(DATA_DIR, CREDENTIAL_KEYRING) if OAUTH_ENCRYPTED else None
@@ -2239,7 +2239,7 @@ def legacy_gmail_token_path(account_name: str) -> Optional[str]:
 
 
 def mail_auth_path(configured_path: str, default_path: str) -> str:
-    if not IS_TEST:
+    if not IS_TEST and not OAUTH_FILES:
         return configured_path
     data_dir = Path(DATA_DIR).resolve()
     source = Path(configured_path).expanduser()
@@ -2250,6 +2250,8 @@ def mail_auth_path(configured_path: str, default_path: str) -> str:
         source = (data_dir / source.relative_to(_production_data)).resolve()
     if source.is_relative_to(data_dir):
         return str(Path(DATA_DIR) / source.relative_to(data_dir))
+    if not IS_TEST:
+        raise CredentialCryptoError("正式 OAuth 文件路径须位于运行数据目录内")
     if not Path(default_path).resolve().is_relative_to(data_dir):
         raise RuntimeError("测试版授权文件必须位于测试数据目录内")
     return default_path
@@ -2361,7 +2363,8 @@ def load_accounts() -> List[AccountConfig]:
                 delivery_mode if delivery_mode in {"direct", "relay"} else "direct"
             )
             session_path = os.path.join(PROTON_SESSION_DIR, f"{name}.pickle")
-            cfg["session_file"] = mail_auth_path(str(item.get("session_file") or session_path), session_path)
+            configured_session = str(item.get("session_file") or session_path)
+            cfg["session_file"] = mail_auth_path(configured_session, session_path) if IS_TEST else configured_session
             cfg["config_file"] = os.path.expanduser(
                 str(item.get("config_file") or PROTON_CONFIG_FILE)
             )

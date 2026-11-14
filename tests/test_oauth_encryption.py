@@ -14,10 +14,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from mailapi_shared.credential_crypto import CredentialCryptoError, CredentialKeyring
 from mailapi_shared.oauth_files import OAuthFiles
-from mailapi_shared.resource_database import migrate_resources
+from mailapi_shared.resource_database import ResourceDatabase, migrate_resources
 from mailapi_shared.site_accounts import SiteAccountStore
 from mailapi_shared.site_database import migrate_site_accounts
-from mailapi_shared.test_credential_storage import copy_backup, rewrite
+from mailapi_shared.test_credential_storage import copy_backup, rewrite, rollback_oauth
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -263,3 +263,19 @@ main.start_watchers()
 assert main.CODEX_ACCOUNTS["codex-fixture"]["token"]["refresh_token"] == "codex-renewed-refresh"
 assert main.RESOURCE_DATABASE.load("codex_accounts.json")["items"][0]["token"]["refresh_token"] == "codex-renewed-refresh"
 """)
+
+    def test_production_rollback_rebuilds_files_with_latest_tokens(self):
+        config = json.loads(self.key.read_text())
+        config["environment"] = "production"
+        self.key.write_text(json.dumps(config))
+        rewrite(self.source, self.encrypted, self.key, production=True, oauth=True)
+        ring = CredentialKeyring(self.key, data_dirs=(self.encrypted,), production=True)
+        OAuthFiles(self.encrypted, ring).write_json(self.encrypted / GMAIL, {**self.gmail, "refresh_token": MARKERS[3]})
+        copy_backup(self.encrypted, self.backup, self.key, production=True, oauth=True)
+        runtime = self.root / "runtime"
+        rollback_oauth(self.backup, self.restored, self.key, runtime_root=runtime, production=True)
+        self.assertEqual(json.loads((self.restored / GMAIL).read_text())["refresh_token"], MARKERS[3])
+        db = ResourceDatabase(self.restored, keyring=ring)
+        items = db.load("gmail_accounts.json")["items"]
+        self.assertEqual(items[0]["token_file"], str(runtime / "token_account1.json"))
+        self.assertEqual(db.load("codex_accounts.json")["items"][0]["token"], self.codex["tokens"])
