@@ -46,11 +46,6 @@ from .mail_messages import (
     extract_verification_code as extract_code_from_mail,
     normalize_mail_conditions,
 )
-from .mail_providers.proton import (
-    ProtonAuthorizationRequired,
-    ProtonMailbox,
-    load_proton_credentials,
-)
 from .mail_providers.outlook import (
     OutlookAPIError,
     OutlookAuthorization,
@@ -60,13 +55,6 @@ from .mail_providers.outlook import (
     fetch_outlook_profile,
     load_outlook_settings,
     outlook_incoming_mail,
-)
-from .mail_relay import (
-    RelayAuthenticationError,
-    RelayValidationError,
-    ReplayGuard,
-    parse_message as parse_relay_message,
-    verify_request as verify_relay_request,
 )
 from .google_oauth_callback import (
     GoogleCallbackLink,
@@ -185,7 +173,7 @@ def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
     if path == _production_data:
         ignored.update({"test", LEGACY_NAME, DATABASE_NAME, DATABASE_NAME + "-journal",
                         DATABASE_NAME + "-wal", DATABASE_NAME + "-shm",
-                        "mail_relay_secret", "account_credentials.restore.key",
+                        "account_credentials.restore.key",
                         RESOURCE_DATABASE_NAME, RESOURCE_DATABASE_NAME + "-journal",
                         RESOURCE_DATABASE_NAME + "-wal", RESOURCE_DATABASE_NAME + "-shm",
                         RESOURCE_SECRET_DIRECTORY})
@@ -287,36 +275,14 @@ TOTP_SECRETS_FILE = os.path.join(DATA_DIR, "totp_secrets.json")
 GMAIL_TOKEN_DIR = os.path.join(DATA_DIR, "gmail_tokens")
 GMAIL_TOKEN_BACKUP_DIR = os.path.join(GMAIL_TOKEN_DIR, "backups")
 OUTLOOK_TOKEN_DIR = os.path.join(DATA_DIR, "outlook_tokens")
-PROTON_SESSION_DIR = os.path.join(DATA_DIR, "proton_sessions")
 MAIL_FILTERS_FILE = os.path.join(DATA_DIR, "mail_filters.json")
 CODING_PLANS_FILE = os.path.join(DATA_DIR, "coding_plans.json")
 RELAY_ACCOUNTS_FILE = os.path.join(DATA_DIR, "relay_accounts.json")
 CODEX_TIPS_FILE = os.path.join(DATA_DIR, "codex_tips.json")
 AUTH_ARTIFACT_VERSIONS_FILE = os.path.join(DATA_DIR, "auth_artifact_versions.json")
 AUTH_ARTIFACT_ARCHIVE_DIR = os.path.join(DATA_DIR, "auth_artifact_versions")
-PROTON_CONFIG_FILE = os.path.expanduser(
-    _setting(
-        "PROTON_CONFIG_FILE",
-        "TEST_PROTON_CONFIG_FILE",
-        os.path.join(DATA_DIR, "proton.env") if IS_TEST else "~/proton/.env",
-    )
-)
-PROTON_POLL_INTERVAL_SECONDS = int(os.getenv("PROTON_POLL_INTERVAL_SECONDS", "3"))
-PROTON_KEEPALIVE_SECONDS = int(os.getenv("PROTON_KEEPALIVE_SECONDS", "30"))
-PROTON_CATCHUP_LIMIT = int(os.getenv("PROTON_CATCHUP_LIMIT", "30"))
 OUTLOOK_POLL_INTERVAL_SECONDS = int(os.getenv("OUTLOOK_POLL_INTERVAL_SECONDS", "3"))
 OUTLOOK_CATCHUP_LIMIT = int(os.getenv("OUTLOOK_CATCHUP_LIMIT", "30"))
-PROTON_DELIVERY_MODE = os.getenv("PROTON_DELIVERY_MODE", "direct").strip().lower()
-if PROTON_DELIVERY_MODE not in {"direct", "relay"}:
-    PROTON_DELIVERY_MODE = "direct"
-MAIL_RELAY_SECRET_FILE = (
-    os.path.join(DATA_DIR, "mail_relay_secret")
-    if IS_TEST
-    else os.path.expanduser(os.getenv("MAIL_RELAY_SECRET_FILE", os.path.join(DATA_DIR, "mail_relay_secret")))
-)
-MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS = int(
-    os.getenv("MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS", "300")
-)
 ERROR_LOG_DIR = os.path.join(DATA_DIR, "logs")
 ERROR_LOG_FILE = os.path.join(ERROR_LOG_DIR, "errors.log")
 ERROR_LOG_MAX_BYTES = int(os.getenv("ERROR_LOG_MAX_BYTES", str(5 * 1024 * 1024)))
@@ -359,7 +325,6 @@ CODEX_LOGIN_SERVER_LOCK = threading.Lock()
 CODEX_LOGIN_SERVER: Optional[http.server.ThreadingHTTPServer] = None
 MAIL_ACCOUNTS_LOCK = threading.Lock()
 MAIL_WATCHERS_LOCK = threading.Lock()
-MAIL_RELAY_REPLAY_LOCK = threading.Lock()
 ERROR_LOGGER = logging.getLogger(f"mailapi.{APP_MODE}.errors")
 OPENAI_CODE_SENDERS = {
     item.strip().lower()
@@ -380,7 +345,7 @@ BEARER_LOG_PATTERN = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
 OAUTH_QUERY_LOG_PATTERN = re.compile(r"(?i)([?&](?:code|state)=)[^&\s]+")
 SECRET_LOG_PATTERN = re.compile(
     r'(?i)(access_token|refresh_token|id_token|authorization|client_secret|password|totp_secret|'
-    r'session_id|cookie|mail_relay_secret|signature)'
+    r'session_id|cookie|signature)'
     r'(\s*["\']?\s*[:=]\s*["\']?)([^"\',}\s]+)'
 )
 
@@ -391,9 +356,6 @@ class AccountConfig(TypedDict, total=False):
     provider: str
     token_file: str
     credential_file: str
-    session_file: str
-    config_file: str
-    delivery_mode: str
     enabled: bool
     resource_id: str
     listed: bool
@@ -598,42 +560,7 @@ ensure_private_directory(CODEX_AUTH_BACKUP_DIR)
 ensure_private_directory(GMAIL_TOKEN_DIR)
 ensure_private_directory(GMAIL_TOKEN_BACKUP_DIR)
 ensure_private_directory(OUTLOOK_TOKEN_DIR)
-os.makedirs(PROTON_SESSION_DIR, exist_ok=True)
 ensure_private_directory(ERROR_LOG_DIR)
-
-
-def load_or_create_mail_relay_secret() -> str:
-    configured = _setting("MAIL_RELAY_SECRET", "TEST_MAIL_RELAY_SECRET")
-    if configured:
-        if len(configured) < 32:
-            raise RuntimeError("MAIL_RELAY_SECRET 至少需要 32 个字符")
-        return configured
-
-    try:
-        with open(MAIL_RELAY_SECRET_FILE, "r", encoding="utf-8") as f:
-            saved = f.read().strip()
-        if len(saved) >= 32:
-            os.chmod(MAIL_RELAY_SECRET_FILE, 0o600)
-            return saved
-    except FileNotFoundError:
-        pass
-
-    secret = secrets.token_hex(32)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    descriptor = os.open(MAIL_RELAY_SECRET_FILE, flags, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as f:
-        f.write(secret)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(MAIL_RELAY_SECRET_FILE, 0o600)
-    return secret
-
-
-MAIL_RELAY_SECRET = load_or_create_mail_relay_secret()
-MAIL_RELAY_REPLAY_GUARD = ReplayGuard(
-    retention_seconds=max(60, MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS * 2)
-)
 
 
 def configure_error_logging() -> None:
@@ -2339,6 +2266,8 @@ def load_accounts() -> List[AccountConfig]:
             name = fallback_name
         used_names.add(name)
         provider = str(item.get("provider") or "gmail").strip().lower()
+        if provider not in {"gmail", "outlook"}:
+            continue
         cfg: AccountConfig = {
             "name": name,
             "email": str(item.get("email") or "未配置"),
@@ -2351,20 +2280,7 @@ def load_accounts() -> List[AccountConfig]:
         if not re.fullmatch(r"[0-9a-f]{32}", cfg["resource_id"]) or cfg["resource_id"] in used_resources:
             cfg["resource_id"] = secrets.token_hex(16)
         used_resources.add(cfg["resource_id"])
-        if provider == "proton":
-            delivery_mode = str(
-                item.get("delivery_mode") or PROTON_DELIVERY_MODE
-            ).strip().lower()
-            cfg["delivery_mode"] = (
-                delivery_mode if delivery_mode in {"direct", "relay"} else "direct"
-            )
-            session_path = os.path.join(PROTON_SESSION_DIR, f"{name}.pickle")
-            configured_session = str(item.get("session_file") or session_path)
-            cfg["session_file"] = mail_auth_path(configured_session, session_path) if IS_TEST else configured_session
-            cfg["config_file"] = os.path.expanduser(
-                str(item.get("config_file") or PROTON_CONFIG_FILE)
-            )
-        elif provider == "outlook":
+        if provider == "outlook":
             token_path = os.path.join(OUTLOOK_TOKEN_DIR, f"{name}.json")
             cfg["token_file"] = mail_auth_path(str(item.get("token_file") or token_path), token_path)
             secure_auth_file(cfg["token_file"])
@@ -2478,11 +2394,6 @@ MAIL_WATCHERS: Dict[str, Dict[str, Any]] = {}
 
 
 def ensure_mail_state(cfg: AccountConfig) -> None:
-    waiting_status = (
-        "等待本地中继"
-        if cfg.get("provider") == "proton" and cfg.get("delivery_mode") == "relay"
-        else "待启动"
-    )
     with STATE_LOCK:
         existing = STATE.get(cfg["name"], {})
         STATE[cfg["name"]] = {
@@ -2498,7 +2409,7 @@ def ensure_mail_state(cfg: AccountConfig) -> None:
             "subject": existing.get("subject"),
             "updated_at": existing.get("updated_at"),
             "status": existing.get("status")
-            or (waiting_status if cfg["enabled"] else "已停用"),
+            or ("待启动" if cfg["enabled"] else "已停用"),
         }
     with HISTORY_LOCK:
         CODE_HISTORY.setdefault(cfg["name"], [])
@@ -2694,13 +2605,13 @@ async def access_guard(request: FastAPIRequest, call_next):
     path = request.url.path
     request.state.site_user = request.app.state.site_accounts.session_user(request.cookies.get(SESSION_COOKIE, ""))
     callback = (
-        path in {"/auth/callback", "/api/admin/outlook/auth/callback", "/api/internal/mail-relay"}
+        path in {"/auth/callback", "/api/admin/outlook/auth/callback"}
         or path.startswith("/oauth2callback/")
         or (path == "/" and request.query_params.get("state") and (request.query_params.get("code") or request.query_params.get("error")))
     )
     # Microsoft form_post callbacks use the saved one-time state and MSAL flow validation.
     outlook_form_post = request.method == "POST" and path == "/api/admin/outlook/auth/callback"
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and path != "/api/internal/mail-relay" and not outlook_form_post:
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and not outlook_form_post:
         origin = request.headers.get("origin")
         fetch_site = request.headers.get("sec-fetch-site", "").lower()
         if fetch_site in {"cross-site", "same-site"} or (
@@ -3249,92 +3160,6 @@ def watch_outlook_account(
                 MAIL_WATCHERS.pop(name, None)
 
 
-def proton_incoming_mail(message: Any) -> IncomingMail:
-    sender = getattr(getattr(message, "sender", None), "address", "") or ""
-    return IncomingMail(
-        message_id=str(getattr(message, "id", "") or ""),
-        sender=str(sender),
-        subject=str(getattr(message, "subject", "") or ""),
-        body=str(getattr(message, "body", "") or ""),
-        received_at=int(getattr(message, "time", 0) or 0),
-    )
-
-
-def process_proton_message(
-    mailbox: ProtonMailbox,
-    cfg: AccountConfig,
-    message: Any,
-) -> Optional[Dict[str, str]]:
-    if getattr(message, "unread", True) is False:
-        return None
-    full_message = mailbox.read_message(message)
-    incoming = proton_incoming_mail(full_message)
-    extractor = globals().get("extract_configured_result")
-    if extractor:
-        return extractor(incoming)
-    code = extract_code_from_mail(incoming, OPENAI_CODE_SENDERS)
-    return {"code": code, "message_id": incoming.message_id, "subject": incoming.subject or "（无主题）"} if code else None
-
-
-def scan_proton_unread_once(mailbox: ProtonMailbox, cfg: AccountConfig) -> None:
-    messages = mailbox.get_recent_messages(limit=max(1, PROTON_CATCHUP_LIMIT))
-    for message in reversed(messages):
-        if getattr(message, "unread", True) is False:
-            continue
-        try:
-            result = process_proton_message(mailbox, cfg, message)
-            if result:
-                if store_code_result(cfg, result, status="已完成（补扫）"):
-                    mailbox.mark_as_read(result["message_id"])
-        except Exception as e:  # noqa: BLE001
-            log_exception(f"Proton 补扫 account={cfg['name']}", e)
-
-
-def watch_proton_account(
-    cfg: AccountConfig,
-    stop_event: Optional[threading.Event] = None,
-) -> None:
-    stop_event = stop_event or threading.Event()
-    name = cfg["name"]
-    mailbox = ProtonMailbox(str(cfg["session_file"]))
-    save_state(name, {"status": "启动中"})
-    try:
-        mailbox.connect()
-        scan_proton_unread_once(mailbox, cfg)
-        save_state(name, {"status": "监听中"})
-        while not stop_event.is_set():
-            try:
-                message = mailbox.wait_for_new_message(
-                    interval=max(1, PROTON_POLL_INTERVAL_SECONDS),
-                    timeout=max(10, PROTON_KEEPALIVE_SECONDS),
-                )
-                if message is None:
-                    save_state(name, {"status": "监听中"})
-                    continue
-                result = process_proton_message(mailbox, cfg, message)
-                if result:
-                    if store_code_result(cfg, result):
-                        mailbox.mark_as_read(result["message_id"])
-            except Exception as e:  # noqa: BLE001
-                log_exception(f"Proton 监听 account={name}", e)
-                save_state(name, {"status": "连接异常，正在重连"})
-                if stop_event.wait(5):
-                    break
-                mailbox.connect()
-                scan_proton_unread_once(mailbox, cfg)
-                save_state(name, {"status": "监听中"})
-    except ProtonAuthorizationRequired as e:
-        save_state(name, {"status": str(e)})
-    except Exception as e:  # noqa: BLE001
-        log_exception(f"启动 Proton 监听 account={name}", e)
-        save_state(name, {"status": f"启动失败: {e}"})
-    finally:
-        with MAIL_WATCHERS_LOCK:
-            current = MAIL_WATCHERS.get(name)
-            if current and current.get("thread") is threading.current_thread():
-                MAIL_WATCHERS.pop(name, None)
-
-
 def start_mail_watcher(cfg: AccountConfig) -> bool:
     if not cfg.get("enabled", True):
         save_state(cfg["name"], {"status": "已停用"})
@@ -3344,13 +3169,9 @@ def start_mail_watcher(cfg: AccountConfig) -> bool:
         save_state(cfg["name"], {"status": EXTERNAL_WATCHERS_DISABLED_STATUS})
         return False
     provider = cfg.get("provider", "gmail")
-    if provider == "proton" and cfg.get("delivery_mode") == "relay":
-        save_state(cfg["name"], {"status": "等待本地中继"})
-        return False
     targets = {
         "gmail": watch_gmail_account,
         "outlook": watch_outlook_account,
-        "proton": watch_proton_account,
     }
     target = targets.get(provider)
     if target is None:
@@ -3383,12 +3204,7 @@ def stop_mail_watcher(name: str, cancel_auth: bool = True) -> None:
         current["stop_event"].set()
         thread = current.get("thread")
         if thread and thread is not threading.current_thread():
-            timeout = (
-                max(10, PROTON_KEEPALIVE_SECONDS) + 2
-                if current.get("provider") == "proton"
-                else CHECK_INTERVAL_SECONDS + 2
-            )
-            thread.join(timeout=timeout)
+            thread.join(timeout=CHECK_INTERVAL_SECONDS + 2)
 
     if cancel_auth:
         with AUTH_SESSION_LOCK:
@@ -3548,16 +3364,12 @@ def complete_managed_outlook_auth(
 
 
 def account_auth_file(cfg: AccountConfig) -> str:
-    if cfg.get("provider", "gmail") == "proton":
-        return str(cfg.get("session_file") or "")
     return str(cfg.get("token_file") or "")
 
 
 def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
     with STATE_LOCK:
         state = dict(STATE.get(cfg["name"], {}))
-    delivery_mode = cfg.get("delivery_mode", "direct")
-    is_relay = cfg.get("provider") == "proton" and delivery_mode == "relay"
     auth_file = account_auth_file(cfg)
     return {
         "name": cfg["name"],
@@ -3565,13 +3377,8 @@ def sanitize_mail_account(cfg: AccountConfig) -> Dict[str, Any]:
         "listed": cfg.get("listed") is True,
         "email": cfg["email"],
         "provider": cfg.get("provider", "gmail"),
-        "delivery_mode": delivery_mode,
         "enabled": cfg.get("enabled", True),
-        "authorized": (
-            bool(MAIL_RELAY_SECRET)
-            if is_relay
-            else bool(auth_file and os.path.exists(auth_file))
-        ),
+        "authorized": bool(auth_file and os.path.exists(auth_file)),
         "token_updated_at": (
             datetime.fromtimestamp(os.path.getmtime(auth_file), timezone.utc).isoformat()
             if auth_file and os.path.exists(auth_file)
@@ -3600,7 +3407,6 @@ def start_watchers():
         app.state.site_accounts.check_admin_setup()
     print(f"{APP_MODE} 版已启用网站账号登录；最高管理员用户名：admin")
     print(f"异常日志：{os.path.abspath(ERROR_LOG_FILE)}")
-    print(f"邮件中继密钥：{os.path.abspath(MAIL_RELAY_SECRET_FILE)}（内容不会输出）")
     save_mail_accounts()
     load_histories()
     load_codex_accounts()
@@ -3699,61 +3505,6 @@ def get_mailbox_resources(request: FastAPIRequest):
         content={"items": [public_mailbox(cfg) for cfg in accounts if can_access_mailbox_resource(request, cfg)],
                  "updated_at": now_iso()},
         headers={"Cache-Control": "no-store, private"},
-    )
-
-
-@app.post("/api/internal/mail-relay")
-async def receive_mail_relay(request: FastAPIRequest):
-    body = await request.body()
-    if len(body) > 8192:
-        return JSONResponse(content={"detail": "邮件中继请求过大"}, status_code=413)
-
-    try:
-        timestamp = verify_relay_request(
-            MAIL_RELAY_SECRET,
-            request.headers.get("x-mail-relay-timestamp", ""),
-            request.headers.get("x-mail-relay-nonce", ""),
-            request.headers.get("x-mail-relay-signature", ""),
-            body,
-            max_clock_skew_seconds=max(30, MAIL_RELAY_MAX_CLOCK_SKEW_SECONDS),
-        )
-    except RelayAuthenticationError as error:
-        return JSONResponse(content={"detail": str(error)}, status_code=401)
-
-    try:
-        message = parse_relay_message(json.loads(body.decode("utf-8")))
-    except (UnicodeDecodeError, json.JSONDecodeError, RelayValidationError) as error:
-        return JSONResponse(content={"detail": str(error)}, status_code=400)
-
-    cfg = find_mail_account(message.account_name)
-    if not cfg or cfg.get("provider") != "proton":
-        return JSONResponse(
-            content={"detail": f"未找到 Proton 账号：{message.account_name}"},
-            status_code=404,
-        )
-    if cfg.get("delivery_mode") != "relay":
-        return JSONResponse(content={"detail": "该 Proton 账号未启用中继模式"}, status_code=409)
-    if not cfg.get("enabled", True):
-        return JSONResponse(content={"detail": "该 Proton 账号已停用"}, status_code=409)
-
-    nonce = request.headers.get("x-mail-relay-nonce", "")
-    with MAIL_RELAY_REPLAY_LOCK:
-        if not MAIL_RELAY_REPLAY_GUARD.consume(nonce, timestamp):
-            return JSONResponse(content={"detail": "邮件中继请求已处理"}, status_code=409)
-
-    inserted = store_code_result(
-        cfg,
-        {
-            "code": message.code,
-            "message_id": message.message_id,
-            "subject": message.subject,
-            "rule_id": "openai", "rule_name": "OpenAI 验证码",
-        },
-        status="已通过本地中继接收",
-    )
-    return JSONResponse(
-        content={"ok": True, "duplicate": not inserted, "updated_at": now_iso()},
-        status_code=201 if inserted else 200,
     )
 
 
@@ -4232,13 +3983,6 @@ def enable_mail_account(account_name: str):
     cfg = find_mail_account(account_name)
     if not cfg:
         return JSONResponse(content={"detail": f"未找到邮箱账号：{account_name}"}, status_code=404)
-    is_relay = (
-        cfg.get("provider") == "proton" and cfg.get("delivery_mode") == "relay"
-    )
-    if not is_relay:
-        auth_file = account_auth_file(cfg)
-        if not auth_file or not os.path.exists(auth_file):
-            return JSONResponse(content={"detail": "账号缺少授权，请先重新授权"}, status_code=409)
     cfg["enabled"] = True
     save_mail_accounts()
     start_mail_watcher(cfg)
@@ -4284,78 +4028,6 @@ def delete_mail_account(account_name: str):
             "totp_secret_deleted": credentials_deleted,
         }
     )
-
-
-@app.post("/api/admin/proton/accounts")
-def register_proton_account():
-    try:
-        credentials = load_proton_credentials(PROTON_CONFIG_FILE)
-    except Exception as e:  # noqa: BLE001
-        log_exception("读取 Proton 配置", e)
-        return JSONResponse(content={"detail": str(e)}, status_code=400)
-
-    with MAIL_ACCOUNTS_LOCK:
-        existing = next(
-            (
-                item
-                for item in ACCOUNTS
-                if item.get("provider") == "proton"
-                and item.get("email", "").lower() == credentials.username.lower()
-            ),
-            None,
-        )
-    if existing:
-        ensure_mail_state(existing)
-        return JSONResponse(content={"item": sanitize_mail_account(existing)})
-
-    name = next_account_name()
-    cfg: AccountConfig = {
-        "name": name,
-        "email": credentials.username,
-        "provider": "proton",
-        "delivery_mode": PROTON_DELIVERY_MODE,
-        "session_file": os.path.join(PROTON_SESSION_DIR, f"{name}.pickle"),
-        "config_file": PROTON_CONFIG_FILE,
-        "enabled": True,
-    }
-    with MAIL_ACCOUNTS_LOCK:
-        ACCOUNTS.append(cfg)
-    save_mail_accounts()
-    ensure_mail_state(cfg)
-    save_state(name, {"status": "等待 Proton 登录"})
-    return JSONResponse(content={"item": sanitize_mail_account(cfg)}, status_code=201)
-
-
-@app.post("/api/admin/proton/accounts/{account_name}/login")
-def login_proton_account(account_name: str):
-    cfg = find_mail_account(account_name)
-    if not cfg or cfg.get("provider") != "proton":
-        return JSONResponse(content={"detail": f"未找到 Proton 账号：{account_name}"}, status_code=404)
-    if cfg.get("delivery_mode") == "relay":
-        return JSONResponse(
-            content={"detail": "该账号使用本地中继模式，请在能访问 Proton 的电脑运行 proton_relay.py"},
-            status_code=409,
-        )
-    try:
-        credentials = load_proton_credentials(str(cfg.get("config_file") or PROTON_CONFIG_FILE))
-        if cfg.get("email", "").lower() != credentials.username.lower():
-            raise RuntimeError("Proton 配置邮箱与账号记录不一致")
-        stop_mail_watcher(account_name)
-        save_state(account_name, {"status": "正在登录 Proton"})
-        ProtonMailbox(str(cfg["session_file"])).login_fresh(credentials)
-    except Exception as e:  # noqa: BLE001
-        log_exception(f"Proton 登录 account={account_name}", e)
-        detail = redact_log_text(e)
-        save_state(account_name, {"status": f"登录失败: {detail}"})
-        return JSONResponse(
-            content={"detail": f"Proton 登录失败：{detail}。若触发 CAPTCHA，请先在终端完成登录。"},
-            status_code=400,
-        )
-    cfg["enabled"] = True
-    save_mail_accounts()
-    save_state(account_name, {"status": "登录完成，正在启动"})
-    start_mail_watcher(cfg)
-    return JSONResponse(content={"item": sanitize_mail_account(cfg)})
 
 
 def parse_codex_login_addr() -> tuple:

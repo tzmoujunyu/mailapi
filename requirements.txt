@@ -4,7 +4,6 @@ google-api-python-client
 google-auth
 google-auth-oauthlib
 msal>=1.31
-protonmail-api-client>=2.4.3
 python-multipart>=0.0.33
 pyotp>=2.9
 Pillow>=12.0.0

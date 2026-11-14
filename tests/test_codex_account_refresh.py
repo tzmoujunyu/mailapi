@@ -129,7 +129,6 @@ class CodexAccountRefreshTests(unittest.TestCase):
                     "MAILAPI_DATA_DIR": str(temporary_path / "runtime"),
                     "MAILAPI_EXTERNAL_WATCHERS": "0",
                     "MAILAPI_SITE_ACCOUNTS_BACKEND": "json",
-                    "MAIL_RELAY_SECRET": "test-mail-relay-secret-32-characters",
                 },
             ):
                 spec = importlib.util.spec_from_file_location(

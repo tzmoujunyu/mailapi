@@ -20,7 +20,7 @@ FIELDS = {
     "coding_plans.json": {"id", "name", "note", "provider"},
     "relay_accounts.json": {"id", "name", "note", "account", "url", "mailbox_key", "mail_rule_id"},
     "gmail_accounts.json": {"name", "email", "enabled", "listed", "note", "provider", "resource_id",
-                            "token_file", "credential_file", "config_file", "session_file", "delivery_mode"},
+                            "token_file", "credential_file"},
     "codex_accounts.json": {"id", "label", "email", "subject", "chatgpt_account_id", "workspace_id",
                             "chatgpt_plan_type", "account_id_hint", "auth_revision", "access_token_expires_at",
                             "created_at", "updated_at", "last_refresh_at", "status", "status_reason",

@@ -23,7 +23,7 @@ python3 code-receive.py
 正式版默认只监听本机。经外部反代对公网服务时，需要配置 HTTPS 站点地址和反代 IP，详见[迁移环境清单](docs/environment.md#正式版-env)。
 测试版默认使用独立 `.env.test` 和临时数据目录，可通过 SSH 转发本机端口访问。
 
-依赖可通过 `pip install -r requirements.txt` 安装。网页控制台当前支持 Gmail 和 Outlook；Proton 旧实现仍保留在代码中，但不再提供新增和登录入口。
+依赖可通过 `pip install -r requirements.txt` 安装。网页控制台支持 Gmail 和 Outlook。
 
 ## 缺少 Gmail Token 时授权
 
@@ -114,78 +114,6 @@ Outlook 没有需要为本项目打开的“接码 API”邮箱开关，也无�
 
 Graph 的时间排序查询遵循 [Microsoft 官方的 filter/orderby 约束](https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0#using-filter-and-orderby-in-the-same-query)。
 
-## Proton 旧实现
-
-Proton 接码代码、中继脚本和已有运行文件会继续保留，便于查看或回退，但账号控制台不再显示“添加 Proton”或“重新登录”。以下内容仅作为旧部署参考。
-
-Proton Free 没有官方 IMAP/API 接口，本项目通过 `protonmail-api-client` 复用 Proton 网页会话。默认从下列配置读取账号密码和 TOTP：
-
-```text
-~/proton/.env
-```
-
-也可以在项目 `.env` 中设置 `PROTON_CONFIG_FILE` 指向其他配置文件。旧版控制台创建的账号会使用独立会话文件：
-
-```text
-runtime/proton_sessions/account-4.pickle
-```
-
-如果网页登录触发 CAPTCHA，在项目目录运行：
-
-```bash
-/home/moujy/.conda/envs/gmail/bin/python scripts/proton_login.py --account account-4 --manual-captcha
-```
-
-登录完成后重启主程序。Proton 密码和 TOTP 不会写入账号列表；会话文件、配置文件和整个 `runtime/` 都不能上传或分享。
-
-### 本地中继模式
-
-服务器无法连接 Proton 时，将对应账号设置为 `delivery_mode: relay`。服务器会停止直连 Proton，改为接收本地电脑推送的验证码。项目当前的 `account-4` 已使用该模式。
-
-服务器首次启动新版程序时会生成专用密钥：
-
-```text
-runtime/mail_relay_secret
-```
-
-该文件权限为 `600`，不要通过聊天、网页或公开仓库传输。通过 SCP 等安全方式复制到本地电脑，并保持权限为 `600`。可以从 [proton-relay.env.example](proton-relay.env.example) 创建本地配置，其中必须设置：
-
-```bash
-MAIL_RELAY_URL=https://你的服务器/api/internal/mail-relay
-MAIL_RELAY_SECRET_FILE=mail_relay_secret
-MAIL_RELAY_ACCOUNT=account-4
-```
-
-公网服务器必须使用有效 HTTPS。中继请求使用独立密钥，通过 HMAC-SHA256、五分钟时间窗和一次性 nonce 验证。
-
-如果服务器没有 HTTPS，可在本地电脑建立 SSH 隧道：
-
-```bash
-ssh -N -L 18000:127.0.0.1:8000 服务器用户名@服务器地址
-```
-
-然后把本地配置改为：
-
-```bash
-MAIL_RELAY_URL=http://localhost:18000/api/internal/mail-relay
-```
-
-这种方式下 HTTP 只经过本机回环接口，实际跨网络流量由 SSH 加密。中继脚本不会允许向其他远程地址发送明文 HTTP。
-
-在能访问 Proton 的本地电脑安装依赖后，首次登录并启动监听：
-
-```bash
-python scripts/proton_relay.py --config proton-relay.env --login --manual-captcha
-```
-
-已有有效本地会话时直接运行：
-
-```bash
-python scripts/proton_relay.py --config proton-relay.env
-```
-
-本地程序复用与 Gmail 相同的 OpenAI 发件人和验证码规则。只有服务器确认接收成功后，邮件才会标为已读；服务器暂时不可用时会保留未读并重试。完成本地部署后，应从服务器 `.env` 删除 `PROTON_PASSWORD` 和 `PROTON_TOTP_SECRET`，凭据只留在本地电脑。
-
 ## 统一账号主页与控制台
 
 主页的“GPT账号”和 `/admin` 的“GPT账号池”均使用 `/api/accounts`。GPT 账号独立保存，登录名可以是任意用户名或邮箱；创建时不需要授权邮箱，密码、2FA 和监听邮箱均可选。登录名去除首尾空格后不区分大小写，修改登录名不会改变账号标识或分组授权。同一账号的多个 Codex 工作区仍分别保留。
@@ -235,7 +163,7 @@ node --test tests/test_account_ui.cjs
 
 ## 异常日志
 
-程序会把 Gmail/Outlook 监听、Google/Microsoft/Codex 授权、Codex 信息刷新、Proton 旧监听和未处理 Web 请求的异常写入：
+程序会把 Gmail/Outlook 监听、Google/Microsoft/Codex 授权、Codex 信息刷新和未处理 Web 请求的异常写入：
 
 ```text
 runtime/logs/errors.log

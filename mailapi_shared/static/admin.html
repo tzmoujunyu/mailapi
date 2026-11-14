@@ -316,7 +316,7 @@
             <div><h2>收件设置</h2><p class="muted">为已授权邮箱配置邮件验证码或登录链接的接收规则。OpenAI 固定规则始终保留，其他规则可独立修改或删除。</p></div>
             <button class="btn btn-primary" type="button" id="add-filter">新增收件箱</button>
           </div>
-          <p class="muted">每个收件箱先匹配发件人，再按主题、正文和高级条件筛选。条件留空表示不限；多个收件箱按列表顺序匹配，优先返回首个提取成功的结果。Gmail、Outlook 和 Proton 直连使用这些规则；旧版 Proton 本地中继仍只转发 OpenAI 验证码。</p>
+          <p class="muted">每个收件箱先匹配发件人，再按主题、正文和高级条件筛选。条件留空表示不限；多个收件箱按列表顺序匹配，优先返回首个提取成功的结果。Gmail 和 Outlook 使用相同的收件规则。</p>
           <div id="filter-message" class="message muted"></div>
           <div class="table-wrap">
             <table class="account-table filter-table">

@@ -63,7 +63,7 @@ class BodyLimitMiddleware:
         if scope["type"] != "http" or scope["method"] in {"GET", "HEAD", "OPTIONS"}:
             await self.app(scope, receive, send)
             return
-        limit = SMALL_BODY_LIMIT if scope["path"] in {"/login", "/api/auth/login", "/api/internal/mail-relay"} else BODY_LIMIT
+        limit = SMALL_BODY_LIMIT if scope["path"] in {"/login", "/api/auth/login"} else BODY_LIMIT
         if scope["path"] == "/api/admin/codex-tip-images":
             limit = 9 * 1024 * 1024
         length = Headers(scope=scope).get("content-length")

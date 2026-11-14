@@ -29,14 +29,14 @@ flowchart TD
 | `mailapi_shared/account_*`、`mailapi_shared/auth_storage.py` | 共享凭据、密码和授权文件操作 | 是 |
 | `mailapi_shared/subscription_dates.py` | ID Token 订阅到期日期解析与账号绑定 | 是 |
 | `mailapi_shared/codex_tip_content.py` | 提示图文格式校验、图片转 WebP 和私有图片路径 | 是 |
-| `mailapi_shared/mail_*`、`mail_providers/` | 邮件解析、Gmail/Outlook/Proton 和中继 | 是 |
+| `mailapi_shared/mail_*`、`mail_providers/` | 邮件解析与 Gmail/Outlook 授权 | 是 |
 | `mailapi_shared/resource_accounts.py` | Coding Plan 和中转站资源 | 是 |
 | `mailapi_shared/*_oauth_callback.py` | Google/Codex OAuth 返回链接解析与校验 | 是 |
 | `mailapi_shared/static/` | 正式版和测试版共用的 HTML/CSS/JS | 是 |
 | `code-receive.py`、`code-receive-test.py` | 正式/测试模式入口 | 只在模式选择变化时修改 |
 | 根目录同名模块 | 正式版历史导入路径的兼容别名 | 不放新业务逻辑 |
 | `test_app/services/`、`test_app/main.py` | 测试版历史导入路径的兼容别名 | 不放新业务逻辑 |
-| `scripts/` | 手工授权、Proton 和中继运维工具 | 按脚本职责修改 |
+| `scripts/` | 手工授权与运维工具 | 按脚本职责修改 |
 | `tests/` | Python 和前端回归测试 | 与功能改动一起更新 |
 
 根目录的兼容模块很短，真正实现应放在 `mailapi_shared/`。`static/` 和 `test_app/static/`
@@ -156,7 +156,7 @@ OAuth 授权、Codex 令牌缓存及其原有 Fernet 恢复点沿用现有文件
 
 ## 隔离测试版 OAuth 文件加密
 
-设置 `TEST_OAUTH_ENCRYPTION=1` 后，Gmail 授权、Outlook MSAL 缓存、Codex 授权和三类历史副本继续按原目录存放，文件内容使用 AES-256-GCM 加密。关联数据绑定相对路径，整个运行目录可备份恢复，单个文件归档或移动时会在内存解密后按新路径重新加密。资源库的私有文件同样加密，覆盖 Codex 令牌缓存与资源库内的历史恢复点。客户端配置和 Proton 文件按原方式管理。
+设置 `TEST_OAUTH_ENCRYPTION=1` 后，Gmail 授权、Outlook MSAL 缓存、Codex 授权和三类历史副本继续按原目录存放，文件内容使用 AES-256-GCM 加密。关联数据绑定相对路径，整个运行目录可备份恢复，单个文件归档或移动时会在内存解密后按新路径重新加密。资源库的私有文件同样加密，覆盖 Codex 令牌缓存与资源库内的历史恢复点。客户端配置独立管理。
 
 Gmail 和 Outlook 从内存加载授权，续期后保存加密结果。Codex 刷新先保存包含前一令牌指纹的文件，再持久化资源库。如进程在两步间中断，重启时可以补回本次轮换。操作步骤见[隔离测试版 OAuth 加密演练](environment.md#隔离测试版-oauth-加密演练)。
 

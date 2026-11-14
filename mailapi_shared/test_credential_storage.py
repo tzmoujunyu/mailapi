@@ -24,9 +24,9 @@ from .site_accounts import SiteAccountStore
 
 
 REMAINING_DATA = {
-    "codex_auth", "codex_auth.json", "gmail_tokens", "outlook_tokens", "proton_sessions", "proton.env",
+    "codex_auth", "codex_auth.json", "gmail_tokens", "outlook_tokens",
     "auth_artifact_versions", "auth_artifact_versions.json", "codex_tips.json", "codex_tip_images",
-    "history", "history_id", "mail_filters.json", "mail_relay_secret", "credentials.json",
+    "history", "history_id", "mail_filters.json", "credentials.json",
 }
 LEGACY_RESTORE_KEY = "account_credentials.restore.key"
 OAUTH_DIRECTORIES = {"gmail_tokens", "outlook_tokens", "codex_auth"}

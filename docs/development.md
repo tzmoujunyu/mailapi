@@ -53,7 +53,7 @@ runtime/                    正式运行数据（不提交）
 
 测试版从根目录 `.env.test` 加载环境配置。默认复制 `runtime/` 中的资源、邮箱、Codex、凭据、
 历史和规则数据，跳过网站登录控制数据、`runtime/test/`、正式邮件中继密钥和符号链接。
-Gmail、Outlook 的 token 和 Proton 会话文件使用测试目录内的路径。配置指向快照之外时，
+Gmail 和 Outlook 的 token使用测试目录内的路径。配置指向快照之外时，
 测试版使用自己的默认授权文件路径。测试版首次启动自己的 admin，默认关闭外部监听。
 设置 `TEST_EXTERNAL_WATCHERS=1` 时请使用独立测试账号。正式版默认
 使用 `runtime/`，也可通过 `MAILAPI_DATA_DIR` 指定独立目录；正式外部监听默认开启，使用

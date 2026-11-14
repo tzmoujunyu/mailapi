@@ -19,7 +19,7 @@
 
 生产和测试服务都安装 `requirements.txt`，开发和测试环境再安装 `requirements-dev.txt`。
 
-`requirements.txt` 当前包含 FastAPI、Uvicorn、Google API/OAuth、MSAL、Proton API client、python-multipart、pyotp、Pillow 和 pillow-heif。`requirements-dev.txt` 当前额外包含 httpx，用于 FastAPI `TestClient`。
+`requirements.txt` 当前包含 FastAPI、Uvicorn、Google API/OAuth、MSAL、python-multipart、pyotp、Pillow 和 pillow-heif。`requirements-dev.txt` 当前额外包含 httpx，用于 FastAPI `TestClient`。
 
 Codex 图文提示需要 Pillow 的 WebP/AVIF 支持及 pillow-heif 的 HEIC 解码支持。本次验证版本为 Pillow 13.0.0、pillow-heif 1.8.1，
 macOS arm64 和 Linux x86_64 均使用预编译 wheel，无需另建 Node.js 运行服务。Tiptap 和 PhotoSwipe 静态文件已包含在仓库中。
@@ -77,9 +77,7 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 | `APP_BASE_URL` | 网站基地址，通过反代公开时填写 HTTPS 域名 |
 | `GMAIL_OAUTH_REDIRECT_BASE` | Gmail OAuth 回调基地址 |
 | `CODEX_OAUTH_REDIRECT_BASE`、`CODEX_LOGIN_ADDR` | Codex OAuth 回调配置 |
-| `MAIL_RELAY_SECRET_FILE` | 邮件中继密钥文件 |
 | `OUTLOOK_CLIENT_ID`、`OUTLOOK_CLIENT_SECRET`、`OUTLOOK_TENANT`、`OUTLOOK_OAUTH_REDIRECT_URI` | Outlook Graph OAuth |
-| `PROTON_CONFIG_FILE` | Proton 配置文件路径 |
 
 公网反代需保留站点 `Host`，覆盖客户端传入的 `X-Forwarded-Proto` 和 `X-Forwarded-For`，
 分别传入 `https` 与代理确认的客户端地址。源站网络层应只对反代开放服务端口，反代访问日志应省略
@@ -97,7 +95,6 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 | `TEST_EXTERNAL_WATCHERS` | 是否连接真实邮箱和 Codex，默认关闭 |
 | `TEST_APP_BASE_URL`、`TEST_GMAIL_OAUTH_REDIRECT_BASE` | 测试版网站和 Gmail 回调地址 |
 | `TEST_CODEX_LOGIN_ADDR` | 测试版 Codex 回调地址 |
-| `TEST_PROTON_CONFIG_FILE` | 测试版 Proton 配置路径 |
 | `TEST_GMAIL_ACCOUNTS` | 测试版没有账号文件时的可选账号配置 |
 
 测试版不读取正式版网站登录口令。测试外部监听时必须使用独立邮箱、OAuth 回调和授权文件。
@@ -115,12 +112,10 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 | `runtime/outlook_tokens/` | Outlook OAuth token | 目录 700，文件 600 |
 | `runtime/codex_auth/` | Codex 授权文件 | 目录 700，文件 600 |
 | `runtime/codex_tips.json`、`runtime/codex_tip_images/` | Codex 图文提示及其 WebP 图片，必须配套备份 | 目录 700，文件 600 |
-| `runtime/mail_relay_secret` | 邮件中继共享密钥 | 600 |
-| Proton 配置和 session 文件 | Proton 登录和会话 | 仅复制到需要 Proton 的机器 |
 
-正式运行数据至少包括 `gmail_accounts.json`、`codex_accounts.json`、`account_credentials.json`、`site_accounts.json`，以及 token、auth、历史和日志目录。
+正式运行数据包括两个 SQLite 库、`resource_secrets/` 及配套的 OAuth、接码历史和图文目录。完整归档还需备份运行配置与目录外的客户端配置。正式凭据密钥单独保管。
 
-测试版默认从正式 `runtime/` 创建临时快照，但会跳过正式账户 JSON、SQLite 及其日志文件、正式中继密钥和 `runtime/test/`。测试账号和分组不是正式迁移数据。
+测试版默认从正式 `runtime/` 创建临时快照，但会跳过正式账户 JSON、SQLite 及其日志文件、以及 `runtime/test/`。测试账号和分组不是正式迁移数据。
 
 ### 网站账户迁移到 SQLite
 
@@ -191,7 +186,7 @@ python -m mailapi_shared.test_credential_storage restore --oauth \
 
 如果源副本仍是旧版 SQLite 明文授权布局，可用 `migrate --oauth` 一次迁移。密钥轮换用 `rotate --oauth`，附上 `--old-key-file` 和新密钥路径。启动时在原测试配置基础上设 `TEST_OAUTH_ENCRYPTION=1`、`TEST_DATA_DIR=/path/test-oauth`。备份和恢复须保留相同的相对目录结构，密钥另行保存。
 
-迁移保留 OAuth token 和 MSAL 缓存内容。服务商可撤销令牌，或者在续期时使旧 refresh token 失效，因此恢复旧备份时仍要核对当时的令牌是否有效。演练用合成凭据验证读取、模拟续期和加密写回。Google OAuth 客户端配置、Outlook 应用凭据和 Proton 文件沿用现有管理方式。
+迁移保留 OAuth token 和 MSAL 缓存内容。服务商可撤销令牌，或者在续期时使旧 refresh token 失效，因此恢复旧备份时仍要核对当时的令牌是否有效。演练用合成凭据验证读取、模拟续期和加密写回。Google 和 Outlook 客户端配置沿用现有管理方式。
 
 ### 正式版 OAuth 加密
 
@@ -206,8 +201,6 @@ python -m mailapi_shared.test_credential_storage restore --oauth \
 | Gmail | `credentials.json`、Google Cloud OAuth 客户端和可访问 Google 的网络 |
 | Outlook | Microsoft Graph 应用、客户端密钥、HTTPS 回调地址和 `msal` |
 | Codex | OAuth/用量接口网络和回调端口 1455 或自定义地址 |
-| Proton | `protonmail-api-client`、Proton 配置，必要时手工 CAPTCHA 登录 |
-| 本地邮件中继 | 发送端配置、目标 URL 和双方一致的中继密钥 |
 
 只做网站账号、资源权限和页面开发时，测试版保持 `TEST_EXTERNAL_WATCHERS=0` 即可。
 
