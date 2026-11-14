@@ -160,11 +160,20 @@ class AuthArtifactVersionTests(unittest.TestCase):
                 runtime / "auth_artifact_versions",
                 oauth_files=oauth_files,
             )
+            recovery_root = runtime / "auth_artifact_restore_points"
+            recovery_root.mkdir(mode=0o700)
+            for index, age in enumerate([5, 10, 15, 20, 25, 29, 31, 32]):
+                point = recovery_root / f"fixture-{index}"
+                point.mkdir(mode=0o700)
+                timestamp = (now - timedelta(days=age)).timestamp()
+                os.utime(point, (timestamp, timestamp))
 
             result = store.prune(now=now)
 
             self.assertEqual(result["removed_entries"], 13)
             self.assertEqual(result["removed_files"], 7)
+            self.assertEqual(result["removed_recovery_points"], 2)
+            self.assertEqual(len(list(recovery_root.iterdir())), 7)
             kept = store.list_public(provider="codex", resource_id="account-1")
             self.assertEqual(len(kept), 8)
             self.assertTrue(kept[-1]["active"])

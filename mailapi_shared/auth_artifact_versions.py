@@ -138,6 +138,36 @@ class AuthArtifactVersionStore:
                 self.oauth_files.copy(source, target)
         return recovery
 
+    def _prune_recovery_points(self, *, keep_history, max_age_days, now):
+        recovery_root = self.archive_directory.parent / "auth_artifact_restore_points"
+        if not recovery_root.is_dir() or recovery_root.is_symlink():
+            return 0
+        cutoff = now - timedelta(days=max_age_days)
+        points = []
+        for path in recovery_root.iterdir():
+            if path.is_symlink() or not path.is_dir():
+                continue
+            if any(child.is_symlink() for child in path.rglob("*")):
+                continue
+            try:
+                timestamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            except OSError:
+                continue
+            points.append((path, timestamp))
+        ranked = sorted(points, key=lambda item: (item[1], item[0].name), reverse=True)
+        keep = {path for path, _ in ranked[:keep_history]}
+        keep.update(path for path, timestamp in points if timestamp >= cutoff)
+        removed = 0
+        for path, _ in points:
+            if path in keep:
+                continue
+            try:
+                shutil.rmtree(path)
+            except OSError:
+                continue
+            removed += 1
+        return removed
+
     def prune(self, *, keep_history=5, max_age_days=30, now=None, extra_directories=()):
         """Create an encrypted restore point, then prune stale archive versions.
 
@@ -163,6 +193,7 @@ class AuthArtifactVersionStore:
             removed_archive_files = set()
             removed_extra_files = set()
             removed_entries = 0
+            removed_recovery_points = 0
             try:
                 for key, entries in self._data["artifacts"].items():
                     historical = [
@@ -259,6 +290,11 @@ class AuthArtifactVersionStore:
                         directory.rmdir()
                     except OSError:
                         pass
+                removed_recovery_points = self._prune_recovery_points(
+                    keep_history=keep_history,
+                    max_age_days=max_age_days,
+                    now=current,
+                )
             except Exception:
                 self._data = original
                 self._restore_recovery_point(recovery, extra_directories)
@@ -268,6 +304,7 @@ class AuthArtifactVersionStore:
                 "recovery_point": str(recovery),
                 "removed_entries": removed_entries,
                 "removed_files": len(removed_archive_files) + len(removed_extra_files),
+                "removed_recovery_points": removed_recovery_points,
                 "remaining_entries": sum(len(entries) for entries in kept.values()),
             }
 

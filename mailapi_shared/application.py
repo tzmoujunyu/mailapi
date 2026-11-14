@@ -3458,7 +3458,8 @@ def start_watchers():
         )
         print(
             "测试版授权归档清理完成："
-            f"删除 {cleanup['removed_files']} 个文件，保留 {cleanup['remaining_entries']} 条记录，"
+            f"删除 {cleanup['removed_files']} 个文件和 {cleanup['removed_recovery_points']} 个恢复点，"
+            f"保留 {cleanup['remaining_entries']} 条记录，"
             f"加密恢复点 {cleanup['recovery_point']}"
         )
     CREDENTIAL_STORE.migrate(
