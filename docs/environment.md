@@ -117,6 +117,33 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 
 测试版默认从正式 `runtime/` 创建临时快照，跳过正式账户 JSON、SQLite 及其日志文件和 `runtime/test/`。正式 OAuth 加密启用后，测试版必须使用独立数据目录和测试密钥。
 
+### 混合存储边界
+
+正式版的两个 SQLite 文件是结构化业务数据的主存储。
+
+- `site_accounts.sqlite3` 保存网站账户、密码哈希、会话摘要、分组、成员和资源授权。
+- `resources.sqlite3` 保存 GPT 资料、Coding Plan、中转站、邮箱池、Codex 元数据、GPT 修改记录和恢复点。
+- GPT 密码、2FA、API Key 和恢复点在 SQLite 中保存为带版本、密钥 ID、随机 nonce 和鉴别数据的密文。
+- `gmail_tokens/`、`outlook_tokens/`、`codex_auth/` 和 `auth_artifact_versions/` 保存加密 OAuth 文件及其历史副本。
+- `oauth_clients.json` 保存加密的 Google 和 Outlook 客户端配置。
+- `resource_secrets/` 保存资源库中的加密私有数据。`mail_filters.json`、接码历史、历史游标、Codex 图文提示、图片和错误日志继续使用独立文件。
+
+数据库中的资源记录可以引用 OAuth 文件和其他文件的相对路径。路径、资源 ID、文件版本和加密状态属于关联元数据，不能替代文件本身。正式版不再从旧账户 JSON 或旧资源 JSON 读取运行数据。
+
+### 正式备份、恢复与回滚
+
+备份必须在服务停写后进行，或使用 SQLite Backup API 生成一致副本。一次完整备份至少包含下面几类内容。
+
+1. 两个 SQLite 数据库及其 `-wal`、`-shm` 文件处理结果。完成备份后应执行 `PRAGMA integrity_check` 和外键检查。
+2. `resource_secrets/`、OAuth 加密目录、`oauth_clients.json`、接码历史、图文提示、图片和日志。
+3. `.env`、测试配置、客户端回调配置和外部配置路径。OAuth 客户端配置已经集中加密时，不再需要保留旧明文客户端文件作为运行文件。
+4. 正式凭据密钥、OAuth 加密密钥、旧恢复密钥和归档解密密钥。密钥与数据分开存放，并保留每个备份对应的密钥版本。
+5. 代码提交哈希和工作区补丁。服务器工作区不应包含未记录的运行代码改动。
+
+恢复时必须把匹配的一组代码、两个数据库、`resource_secrets/`、OAuth 文件、客户端配置和密钥放入新的隔离目录。先以只读方式核对数据库完整性、账户数量、分组授权、OAuth 文件解密和密钥版本，再启动测试入口验证登录、权限和授权读取。正式切换前应停止旧进程，原子替换完整数据组，启动后检查登录页、`/api/auth/me`、资源列表和授权状态。
+
+回滚时保留当前运行目录和新密钥，避免丢失已经轮换的 OAuth token。恢复旧版本时必须同时恢复与旧代码匹配的两个数据库、加密文件、密钥和配置。只回退代码或只替换一个数据库都不安全。切换前的旧 JSON、未加密授权和历史快照只能作为受保护的加密归档，不能直接重新放回运行目录。
+
 ### 网站账户迁移到 SQLite
 
 先停写，备份运行目录、配置和目录外授权文件，并记录代码提交。把备份恢复到私有的独立目录，使用对应的 Python 环境执行迁移。
@@ -141,7 +168,7 @@ TEST_DATA_DIR=/path/to/isolated-data TEST_RESOURCE_BACKEND=sqlite TEST_EXTERNAL_
 
 离线迁移校验资源 ID、顺序和导入结果，生成 `resources.sqlite3` 和 `resource_secrets/`，原 JSON 保留为切换前基线。正式版迁移使用停写后的实时数据，在 `.env` 设置 `MAILAPI_RESOURCE_BACKEND=sqlite` 后启动。网站账户数据库独立切换。审核和恢复点沿用原事件 ID 与恢复密钥。SQLite 事务引用已落盘的 JSON 凭据版本，提交后清理旧版本。
 
-备份和恢复时须配套保存资源库、`resource_secrets/`、`account_credentials.restore.key` 以及授权和图片文件。切换后如需回退，停写后用 `python -m mailapi_shared.resource_database --data-dir runtime --export-to /path/to/empty-private-directory` 重建当前版本的五份资源 JSON，再替换对应文件并切回 JSON 后端。已切换后产生的更新只会写入新存储。
+备份和恢复时须配套保存资源库、`resource_secrets/`、`account_credentials.restore.key` 以及授权和图片文件。加密资源库禁止直接导出明文 JSON。切换后如需回退，应恢复同一备份中的代码、两个 SQLite 库、加密文件和密钥，或使用专门的离线回滚工具在隔离目录重建旧版布局。已切换后产生的更新只会写入新存储。
 
 ### 测试版凭据加密演练
 
