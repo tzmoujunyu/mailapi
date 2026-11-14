@@ -74,6 +74,8 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 | `MAILAPI_TRUSTED_PROXY_IPS` | 反代连接源站时使用的确切 IP，逗号分隔 |
 | `MAILAPI_DATA_DIR` | 正式运行数据目录，默认 `runtime` |
 | `MAILAPI_EXTERNAL_WATCHERS` | 外部邮箱和 Codex 监听，默认开启 |
+| `MAILAPI_AUTH_ARTIFACT_CLEANUP` | 设为 `1` 后正式版启动时清理授权归档和旧恢复点，要求启用 OAuth 加密 |
+| `MAILAPI_AUTH_ARTIFACT_KEEP_HISTORY`、`MAILAPI_AUTH_ARTIFACT_MAX_AGE_DAYS` | 正式版授权归档与恢复点保留数量和天数，默认 `5` 和 `30` |
 | `APP_BASE_URL` | 网站基地址，通过反代公开时填写 HTTPS 域名 |
 | `GMAIL_OAUTH_REDIRECT_BASE` | Gmail OAuth 回调基地址 |
 | `CODEX_OAUTH_REDIRECT_BASE`、`CODEX_LOGIN_ADDR` | Codex OAuth 回调配置 |
@@ -127,7 +129,7 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 - `resources.sqlite3` 保存 GPT 资料、Coding Plan、中转站、邮箱池、Codex 元数据、GPT 修改记录和恢复点。
 - GPT 密码、2FA、API Key 和恢复点在 SQLite 中保存为带版本、密钥 ID、随机 nonce 和鉴别数据的密文。
 - `gmail_tokens/`、`outlook_tokens/`、`codex_auth/` 和 `auth_artifact_versions/` 保存加密 OAuth 文件及其历史副本。
-- 活动授权文件会原子覆盖。测试版启用 `TEST_AUTH_ARTIFACT_CLEANUP=1` 后，每次启动先在 `auth_artifact_restore_points/` 创建加密恢复点，再按“当前版本 + 最近 N 个历史版本 + N 天内版本”的并集清理授权归档和旧恢复点；正式版默认不自动执行清理。恢复点清理不会递归创建新的恢复点。
+- 活动授权文件会原子覆盖。测试版启用 `TEST_AUTH_ARTIFACT_CLEANUP=1`，或正式版启用 `MAILAPI_AUTH_ARTIFACT_CLEANUP=1` 后，每次启动先在 `auth_artifact_restore_points/` 创建加密恢复点，再按“当前版本 + 最近 N 个历史版本 + N 天内版本”的并集清理授权归档和旧恢复点。恢复点清理不会递归创建新的恢复点。
 - `oauth_clients.json` 保存加密的 Google 和 Outlook 客户端配置。
 - `resource_secrets/` 保存资源库中的加密私有数据。`mail_filters.json`、接码历史、历史游标、Codex 图文提示、图片和错误日志继续使用独立文件。
 

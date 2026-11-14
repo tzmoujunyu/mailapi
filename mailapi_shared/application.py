@@ -289,6 +289,17 @@ RELAY_ACCOUNTS_FILE = os.path.join(DATA_DIR, "relay_accounts.json")
 CODEX_TIPS_FILE = os.path.join(DATA_DIR, "codex_tips.json")
 AUTH_ARTIFACT_VERSIONS_FILE = os.path.join(DATA_DIR, "auth_artifact_versions.json")
 AUTH_ARTIFACT_ARCHIVE_DIR = os.path.join(DATA_DIR, "auth_artifact_versions")
+AUTH_ARTIFACT_CLEANUP = _parse_bool(
+    _setting("MAILAPI_AUTH_ARTIFACT_CLEANUP", "TEST_AUTH_ARTIFACT_CLEANUP")
+)
+AUTH_ARTIFACT_KEEP_HISTORY = int(
+    _setting("MAILAPI_AUTH_ARTIFACT_KEEP_HISTORY", "TEST_AUTH_ARTIFACT_KEEP_HISTORY", "5") or "5"
+)
+AUTH_ARTIFACT_MAX_AGE_DAYS = int(
+    _setting("MAILAPI_AUTH_ARTIFACT_MAX_AGE_DAYS", "TEST_AUTH_ARTIFACT_MAX_AGE_DAYS", "30") or "30"
+)
+if AUTH_ARTIFACT_CLEANUP and not OAUTH_FILES:
+    raise RuntimeError("授权归档清理须启用 OAuth 加密存储")
 OUTLOOK_POLL_INTERVAL_SECONDS = int(os.getenv("OUTLOOK_POLL_INTERVAL_SECONDS", "3"))
 OUTLOOK_CATCHUP_LIMIT = int(os.getenv("OUTLOOK_CATCHUP_LIMIT", "30"))
 ERROR_LOG_DIR = os.path.join(DATA_DIR, "logs")
@@ -3450,14 +3461,14 @@ def start_watchers():
     prune_code_histories()
     load_codex_accounts()
     register_existing_auth_artifacts()
-    if IS_TEST and _parse_bool(os.getenv("TEST_AUTH_ARTIFACT_CLEANUP", "")):
+    if AUTH_ARTIFACT_CLEANUP:
         cleanup = AUTH_ARTIFACT_VERSIONS.prune(
-            keep_history=int(os.getenv("TEST_AUTH_ARTIFACT_KEEP_HISTORY", "5")),
-            max_age_days=int(os.getenv("TEST_AUTH_ARTIFACT_MAX_AGE_DAYS", "30")),
+            keep_history=AUTH_ARTIFACT_KEEP_HISTORY,
+            max_age_days=AUTH_ARTIFACT_MAX_AGE_DAYS,
             extra_directories=(GMAIL_TOKEN_BACKUP_DIR, CODEX_AUTH_BACKUP_DIR),
         )
         print(
-            "测试版授权归档清理完成："
+            f"{APP_MODE} 版授权归档清理完成："
             f"删除 {cleanup['removed_files']} 个文件和 {cleanup['removed_recovery_points']} 个恢复点，"
             f"保留 {cleanup['remaining_entries']} 条记录，"
             f"加密恢复点 {cleanup['recovery_point']}"
