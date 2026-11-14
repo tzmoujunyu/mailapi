@@ -89,7 +89,7 @@ from .auth_storage import (
 )
 from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore, AccountRestoreError
 from .credential_crypto import CredentialCryptoError, CredentialKeyring
-from .oauth_files import OAuthFiles
+from .oauth_files import OAuthFiles, codex_token_version
 from .configuration import dotenv_entries
 from .auth_artifact_versions import AuthArtifactVersionStore
 from .gpt_history import SOURCE_LABELS, describe_change
@@ -1004,10 +1004,6 @@ def migrate_codex_auth_layout() -> None:
         path = os.path.join(CODEX_AUTH_DIR, filename)
         if os.path.isfile(path) and filename.endswith(".json"):
             secure_auth_file(path)
-
-
-def codex_token_version(token):
-    return hashlib.sha256(json.dumps(token, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def save_codex_record_auth_file(record: Dict[str, Any], *, previous_token=None) -> None:

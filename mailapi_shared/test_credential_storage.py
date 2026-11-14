@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 from .account_credentials import open_legacy_restore_point
 from .configuration import dotenv_entries
 from .credential_crypto import CredentialCryptoError, CredentialKeyring
-from .oauth_files import OAuthFiles
+from .oauth_files import OAuthFiles, codex_token_version
 from .resource_database import DATABASE_NAME as RESOURCE_NAME
 from .resource_database import ENCRYPTED_RESTORE_FIELDS, FIELDS, GPT, SECRET_DIRECTORY
 from .resource_database import ResourceDatabase, create_resource_database
@@ -250,6 +250,16 @@ def rollback_oauth(source, destination, key_file, *, runtime_root, production=Fa
             if pool == "gmail_accounts.json":
                 _copy_oauth(source, stage, data, reader=OAuthFiles(source, ring), writer=None,
                             rollback_root=runtime_root.resolve())
+            if pool == "codex_accounts.json" and data:
+                by_id = {item["id"]: item for item in data["items"]}
+                for path in sorted((stage / "codex_auth").glob("*.json"), key=lambda p: p.stat().st_mtime_ns):
+                    payload = json.loads(path.read_bytes())
+                    record = by_id.get(payload.get("account_id")) if isinstance(payload, dict) else None
+                    if (record and payload.get("refresh_of") == codex_token_version(record.get("token"))
+                            and payload.get("auth_revision") == record.get("auth_revision", "")):
+                        record["token"] = payload["tokens"]
+                        record["access_token_expires_at"] = payload.get("access_token_expires_at")
+                        record["reauth_required"] = False
             output.save(pool, data)
             if output.load(pool) != data:
                 raise ValueError("回滚资源与源数据不一致")

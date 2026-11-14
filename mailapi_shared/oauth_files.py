@@ -1,5 +1,6 @@
 """Encrypted OAuth artifacts stored under the isolated runtime directory."""
 from base64 import b64decode, b64encode
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,10 @@ import tempfile
 
 from .auth_storage import ensure_private_directory
 from .credential_crypto import CredentialCryptoError
+
+
+def codex_token_version(token):
+    return hashlib.sha256(json.dumps(token, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class OAuthFiles:
