@@ -281,10 +281,10 @@ class SiteAccountStore:
         with self._lock:
             return self._administrator(self._data, actor_id, admin_only=True)
 
-    def get_user(self, user_id):
+    def get_user(self, user_id, *, include_note=False):
         with self._lock:
             user = self._data["users"].get(user_id)
-            return self._public(user) if user else None
+            return self._public(user, include_note=include_note) if user else None
 
     def preferences(self, user_id):
         with self._lock:

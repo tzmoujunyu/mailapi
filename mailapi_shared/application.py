@@ -2665,7 +2665,8 @@ async def access_guard(request: FastAPIRequest, call_next):
             origin is not None and not same_origin(origin, request.url.scheme, request.headers.get("host", ""))
         ):
             return JSONResponse({"detail": "不允许跨站请求"}, status_code=403)
-    public = callback or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
+    test_api2api = IS_TEST and path.startswith("/api2api/v1/")
+    public = callback or test_api2api or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
     role = request_access_role(request)
     if not public and (role is None or (requires_admin_access(request) and role != "admin")):
         if path.startswith("/api/"):
@@ -3512,6 +3513,7 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
     page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     role = request_access_role(request)
     admin_link = '<a class="small-btn" href="/admin">账号控制台</a>'
+    test_features_link = '<a class="small-btn" href="/test-features">测试版 API 与财务</a>' if IS_TEST else ""
     preview_banner = (
         '<div class="preview-banner" role="status">用户账户主页预览：仅显示所选账户分组中已分配且上架的资源。请在账户管理中选择预览对象。'
         '<a href="/admin">返回账号控制台</a></div>'
@@ -3530,6 +3532,7 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
         .replace('data-performance-monitor="disabled"', f'data-performance-monitor="{performance_mode}"', 1)
         .replace("<!-- PERFORMANCE_MONITOR_SCRIPT -->", performance_script, 1)
         .replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if role == "admin" and not preview else "")
+        .replace("<!-- TEST_FEATURES_LINK -->", test_features_link)
         .replace("<!-- PREVIEW_BANNER -->", preview_banner)
         .replace("<!-- PREVIEW_SCRIPT -->", preview_script),
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
@@ -3541,10 +3544,12 @@ def admin_page(request: FastAPIRequest):
     page = (STATIC_DIR / "admin.html").read_text(encoding="utf-8")
     performance_mode = "test" if IS_TEST else "disabled"
     performance_script = '<script src="/static/performance-monitor.js"></script>' if IS_TEST else ""
+    test_features_link = '<a class="btn" href="/test-features">测试版 API 与财务</a>' if IS_TEST else ""
     return HTMLResponse(
         themed_page(page, request)
         .replace('data-performance-monitor="disabled"', f'data-performance-monitor="{performance_mode}"', 1)
-        .replace("<!-- PERFORMANCE_MONITOR_SCRIPT -->", performance_script, 1),
+        .replace("<!-- PERFORMANCE_MONITOR_SCRIPT -->", performance_script, 1)
+        .replace("<!-- TEST_FEATURES_LINK -->", test_features_link, 1),
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
@@ -5033,6 +5038,13 @@ def resource_catalog() -> List[Dict[str, Any]]:
 
 def log_admin_login_failure(reason: str) -> None:
     ERROR_LOGGER.error("admin_login_failure %s", reason)
+
+
+TEST_FEATURE_STORE = None
+if IS_TEST:
+    from .test_features import install_test_features
+
+    TEST_FEATURE_STORE = install_test_features(app, STATIC_DIR, DATA_DIR, CREDENTIAL_KEYRING)
 
 
 app.include_router(create_account_router(STATIC_DIR, resource_catalog, on_admin_failure=log_admin_login_failure))
