@@ -3500,8 +3500,12 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
         subject_id = request.state.site_user["id"]
     preview_script = ("<script>window.__USER_PREVIEW__ = true;window.__PREVIEW_USER_ID__ = "
                       + json.dumps(subject_id) + ";</script>") if preview else ""
+    performance_mode = "test" if IS_TEST else "disabled"
+    performance_script = '<script src="/static/performance-monitor.js"></script>' if IS_TEST else ""
     return HTMLResponse(
         themed_page(page, request)
+        .replace('data-performance-monitor="disabled"', f'data-performance-monitor="{performance_mode}"', 1)
+        .replace("<!-- PERFORMANCE_MONITOR_SCRIPT -->", performance_script, 1)
         .replace("<!-- ADMIN_CONSOLE_LINK -->", admin_link if role == "admin" and not preview else "")
         .replace("<!-- PREVIEW_BANNER -->", preview_banner)
         .replace("<!-- PREVIEW_SCRIPT -->", preview_script),
@@ -3511,8 +3515,13 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
 
 @app.get("/admin")
 def admin_page(request: FastAPIRequest):
+    page = (STATIC_DIR / "admin.html").read_text(encoding="utf-8")
+    performance_mode = "test" if IS_TEST else "disabled"
+    performance_script = '<script src="/static/performance-monitor.js"></script>' if IS_TEST else ""
     return HTMLResponse(
-        themed_page((STATIC_DIR / "admin.html").read_text(encoding="utf-8"), request),
+        themed_page(page, request)
+        .replace('data-performance-monitor="disabled"', f'data-performance-monitor="{performance_mode}"', 1)
+        .replace("<!-- PERFORMANCE_MONITOR_SCRIPT -->", performance_script, 1),
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 
