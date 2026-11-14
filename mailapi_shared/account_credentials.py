@@ -15,6 +15,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from .account_passwords import AccountPasswordError, MAX_PASSWORD_LENGTH, normalize_totp_secret
 from .gpt_history import describe_change, event, history_page, restore_label
+from .resource_database import ENCRYPTED_RESTORE_FIELDS
 
 
 ACCOUNT_FIELDS = {"login", "password", "secret", "subscription_started_on", "subscription_expires_on"}
@@ -25,12 +26,23 @@ class AccountRestoreError(AccountPasswordError):
     pass
 
 
+def open_legacy_restore_point(cipher, key, field, event_id, sealed):
+    try:
+        account, slot, revision, snapshot = json.loads(cipher.decrypt(sealed))
+        if (account, slot, revision) != (key, field, event_id):
+            raise InvalidToken
+        return snapshot
+    except (InvalidToken, ValueError, TypeError):
+        raise AccountRestoreError("无法解密该字段的恢复数据") from None
+
+
 class AccountCredentialStore:
     def __init__(self, path, *, fresh_restore_points=False, database=None):
         self.path = Path(path)
         self.restore_key_path = self.path.with_suffix(".restore.key")
         self._lock = threading.RLock()
         self._database = database
+        self._encrypted = database is not None and database.keyring is not None
         self._data = {"version": 1, "migrated": False, "items": {}}
         saved = database.load(self.path.name) if database is not None else (
             json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else None
@@ -69,7 +81,8 @@ class AccountCredentialStore:
 
     def _restore_cipher(self, *, create=False):
         if create and not self.restore_key_path.exists():
-            if self._data.get("restore_points"):
+            if any("sealed" in point for points in self._data.get("restore_points", {}).values()
+                   for point in points.values()):
                 raise AccountRestoreError("缺少恢复密钥，请还原服务端密钥后再修改")
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             descriptor, temporary = tempfile.mkstemp(dir=self.path.parent)
@@ -102,12 +115,16 @@ class AccountCredentialStore:
         if key and snapshots and (entry or key in data.get("restore_points", {})):
             all_points = dict(data.get("restore_points", {}))
             points = dict(all_points.get(key, {}))
-            cipher = self._restore_cipher(create=True) if entry else None
             for field, snapshot in snapshots.items():
                 points.pop(field, None)
                 if entry:
-                    envelope = json.dumps([key, field, entry["id"], snapshot]).encode()
-                    points[field] = {"event_id": entry["id"], "sealed": cipher.encrypt(envelope).decode("ascii")}
+                    point = {"event_id": entry["id"]}
+                    if self._encrypted and field in ENCRYPTED_RESTORE_FIELDS:
+                        point["snapshot"] = snapshot
+                    else:
+                        envelope = json.dumps([key, field, entry["id"], snapshot]).encode()
+                        point["sealed"] = self._restore_cipher(create=True).encrypt(envelope).decode("ascii")
+                    points[field] = point
             if points:
                 all_points[key] = points
             else:
@@ -159,7 +176,9 @@ class AccountCredentialStore:
     def history(self, key, query="", source="", offset=0, limit=50):
         with self._lock:
             entries = self._data.get("history", {}).get(key, [])
-            points = self._data.get("restore_points", {}).get(key, {}) if self.restore_key_path.is_file() else {}
+            has_legacy_key = self.restore_key_path.is_file()
+            points = {field: point for field, point in self._data.get("restore_points", {}).get(key, {}).items()
+                      if has_legacy_key or (self._encrypted and field in ENCRYPTED_RESTORE_FIELDS)}
         return history_page(entries, query, source, offset, limit, points)
 
     def restore_snapshot(self, key, event_id, field):
@@ -167,13 +186,9 @@ class AccountCredentialStore:
             point = self._data.get("restore_points", {}).get(key, {}).get(field)
             if not point or point["event_id"] != event_id:
                 raise AccountRestoreError("该字段已有后续修改，或这条记录没有可恢复的旧值")
-            try:
-                account, slot, revision, snapshot = json.loads(self._restore_cipher().decrypt(point["sealed"]))
-                if (account, slot, revision) != (key, field, event_id):
-                    raise InvalidToken
-                return snapshot
-            except (InvalidToken, ValueError):
-                raise AccountRestoreError("无法解密该字段的恢复数据") from None
+            if self._encrypted and field in ENCRYPTED_RESTORE_FIELDS:
+                return dict(point["snapshot"])
+            return open_legacy_restore_point(self._restore_cipher(), key, field, event_id, point["sealed"])
 
     def record_codex_change(self, key, actor, field, snapshot, description, *, restore_of=None):
         with self._lock:

@@ -87,6 +87,8 @@ from .auth_storage import (
     secure_auth_file,
 )
 from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore, AccountRestoreError
+from .credential_crypto import CredentialKeyring
+from .configuration import dotenv_entries
 from .auth_artifact_versions import AuthArtifactVersionStore
 from .gpt_history import SOURCE_LABELS, describe_change
 from .subscription_dates import public_subscription, read_subscription_claims
@@ -108,34 +110,12 @@ from .resource_database import DATABASE_NAME as RESOURCE_DATABASE_NAME, SECRET_D
 from .resource_database import FIELDS as RESOURCE_POOLS, ResourceDatabase
 
 
-def dotenv_entries(path: str | Path):
-    if not os.path.exists(path):
-        return
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if line.startswith("export "):
-                    line = line[len("export ") :].strip()
-                if "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                    value = value[1:-1]
-                yield key, value
-    except Exception as e:  # noqa: BLE001
-        print(f".env 加载失败：{e}")
-
-
 def load_dotenv_file(path: str | Path = ".env") -> None:
-    for key, value in dotenv_entries(path):
-        os.environ.setdefault(key, value)
+    try:
+        for key, value in dotenv_entries(path):
+            os.environ.setdefault(key, value)
+    except (OSError, UnicodeError) as error:
+        print(f".env 加载失败：{error}")
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -218,6 +198,9 @@ def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, b
         path.mkdir(parents=True, exist_ok=True)
         return None, path, False
 
+    if os.getenv("TEST_CREDENTIAL_KEY_FILE"):
+        raise RuntimeError("凭据加密须显式指定独立的 TEST_DATA_DIR")
+
     owner = tempfile.TemporaryDirectory(prefix="mailapi-test-")
     path = Path(owner.name)
     if _production_data.is_dir():
@@ -266,6 +249,14 @@ EXTERNAL_WATCHERS = _parse_bool(
 )
 # Compatibility name retained for the test-version integration checks.
 TEST_EXTERNAL_WATCHERS = EXTERNAL_WATCHERS
+SITE_BACKEND = _setting("MAILAPI_SITE_ACCOUNTS_BACKEND", "TEST_SITE_ACCOUNTS_BACKEND", "json")
+RESOURCE_BACKEND = _setting("MAILAPI_RESOURCE_BACKEND", "TEST_RESOURCE_BACKEND", "json")
+TEST_KEY_FILE = os.getenv("TEST_CREDENTIAL_KEY_FILE") if IS_TEST else None
+CREDENTIAL_KEYRING = None
+if TEST_KEY_FILE:
+    if SITE_BACKEND != "sqlite" or RESOURCE_BACKEND != "sqlite" or EXTERNAL_WATCHERS:
+        raise RuntimeError("凭据加密测试须启用两个 SQLite 后端并关闭外部监听")
+    CREDENTIAL_KEYRING = CredentialKeyring(TEST_KEY_FILE, data_dirs=(Path(DATA_DIR), _production_data))
 EXTERNAL_WATCHERS_DISABLED_STATUS = (
     "测试模式：未启动外部监听" if IS_TEST else "外部监听未启用"
 )
@@ -2397,19 +2388,16 @@ def next_outlook_account_config() -> AccountConfig:
 
 
 app.state.site_accounts = open_site_accounts(
-    DATA_DIR,
-    backend=_setting("MAILAPI_SITE_ACCOUNTS_BACKEND", "TEST_SITE_ACCOUNTS_BACKEND", "json"),
-    require_admin_mfa=not IS_TEST,
+    DATA_DIR, backend=SITE_BACKEND, require_admin_mfa=not IS_TEST, keyring=CREDENTIAL_KEYRING,
 )
 app.state.auth_artifact_versions = AuthArtifactVersionStore(
     AUTH_ARTIFACT_VERSIONS_FILE, AUTH_ARTIFACT_ARCHIVE_DIR
 )
 AUTH_ARTIFACT_VERSIONS = app.state.auth_artifact_versions
 
-RESOURCE_BACKEND = _setting("MAILAPI_RESOURCE_BACKEND", "TEST_RESOURCE_BACKEND", "json")
 if RESOURCE_BACKEND not in {"json", "sqlite"}:
     raise ValueError("资源存储须为 json 或 sqlite")
-RESOURCE_DATABASE = ResourceDatabase(DATA_DIR) if RESOURCE_BACKEND == "sqlite" else None
+RESOURCE_DATABASE = ResourceDatabase(DATA_DIR, keyring=CREDENTIAL_KEYRING) if RESOURCE_BACKEND == "sqlite" else None
 if RESOURCE_DATABASE is not None:
     RESOURCE_DATABASE.prune_private_files()
 ACCOUNTS = load_accounts()

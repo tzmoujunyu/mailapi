@@ -148,6 +148,28 @@ TEST_DATA_DIR=/path/to/isolated-data TEST_RESOURCE_BACKEND=sqlite TEST_EXTERNAL_
 
 备份和恢复时须配套保存资源库、`resource_secrets/`、`account_credentials.restore.key` 以及授权和图片文件。切换后如需回退，停写后用 `python -m mailapi_shared.resource_database --data-dir runtime --export-to /path/to/empty-private-directory` 重建当前版本的五份资源 JSON，再替换对应文件并切回 JSON 后端。已切换后产生的更新只会写入新存储。
 
+### 测试版凭据加密演练
+
+使用项目目录和正式数据目录以外的私有目录。源目录应是使用两个 SQLite 后端的独立测试副本，演练时先停止测试进程。准备两个独立的测试密钥文件，由服务用户持有，权限设为 `0600`，放在项目和数据目录外。密钥文件是 JSON，`namespace` 标识测试环境，`active` 是当前密钥 ID，`keys` 按密钥 ID 保存 Base64 编码的 32 字节随机密钥。轮换使用相同的 `namespace`、新的 ID 和新生成的密钥。
+
+以下命令中的路径需替换为隔离测试目录与密钥的绝对路径。各目标目录须尚未存在。
+
+```bash
+python -m mailapi_shared.test_credential_storage migrate \
+  --source /path/test-source --destination /path/test-v1 --key-file /keys/test-v1.json
+python -m mailapi_shared.test_credential_storage backup \
+  --source /path/test-v1 --destination /path/test-backup --key-file /keys/test-v1.json
+python -m mailapi_shared.test_credential_storage rotate \
+  --source /path/test-v1 --destination /path/test-v2 \
+  --old-key-file /keys/test-v1.json --key-file /keys/test-v2.json
+python -m mailapi_shared.test_credential_storage restore \
+  --source /path/test-backup --destination /path/test-restored --key-file /keys/test-v1.json
+```
+
+启动测试版时设置 `TEST_DATA_DIR` 为选中的目录、`TEST_CREDENTIAL_KEY_FILE` 为对应的密钥路径，同时设置 `TEST_SITE_ACCOUNTS_BACKEND=sqlite`、`TEST_RESOURCE_BACKEND=sqlite` 和 `TEST_EXTERNAL_WATCHERS=0`。加密版拒绝明文 JSON 导出。指定测试目录时，演练结束后需清理临时测试库和测试密钥。
+
+备份包括两个 SQLite 库及配套的运行文件，例如 `resource_secrets/`、OAuth 文件、图文和已有 OAuth 恢复点的 Fernet 密钥。配置与数据目录外的授权文件应单独备份。SQLite 加密密钥单独保管，并在旧备份的保留期内保存对应版本。回滚前保留较新的数据副本，再启动已恢复的目录。恢复后的数据对应备份时点，之后的修改仍保存在较新的副本中。迁移前的 SQLite 和 JSON 副本仍按含明文凭据的数据保护。
+
 ## 可选外部服务
 
 | 功能 | 额外条件 |

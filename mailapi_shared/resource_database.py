@@ -9,6 +9,8 @@ import sqlite3
 import tempfile
 from urllib.parse import urlsplit
 
+from .credential_crypto import CredentialCryptoError, check_database_crypto
+
 
 DATABASE_NAME = "resources.sqlite3"
 SECRET_DIRECTORY = "resource_secrets"
@@ -25,6 +27,8 @@ FIELDS = {
                             "usage_status", "reauth_required", "reset_credits_last_refresh_at"},
 }
 GPT = "account_credentials.json"
+ENCRYPTED_FIELDS = {GPT: {"password", "secret"}, "coding_plans.json": {"api_key"}, "relay_accounts.json": {"password"}}
+ENCRYPTED_RESTORE_FIELDS = {"login", "password", "secret", "subscription"}
 SCHEMA = """
 PRAGMA user_version = 1;
 CREATE TABLE pools (
@@ -93,23 +97,31 @@ def _split(pool, document):
     return header, records, private, history
 
 
+def _credential_scope(pool, record_id, record, field):
+    # Legacy GPT records can exist before a resource key has been assigned.
+    return ("resource", pool, "id" if record.get("key") else "record", record.get("key") or record_id, field)
+
+
 class ResourceDatabase:
-    def __init__(self, directory):
+    def __init__(self, directory, *, keyring=None, read_only=False):
         directory = Path(directory)
         self.path = directory / DATABASE_NAME
         self.secrets = directory / SECRET_DIRECTORY
+        self.keyring = keyring
+        self._read_only = read_only
         if self.path.is_symlink() or not self.path.is_file() or self.secrets.is_symlink() or not self.secrets.is_dir():
             raise ValueError("找不到完整的资源数据库，请先执行离线迁移")
-        self.path.chmod(0o600)
-        self.secrets.chmod(0o700)
+        if not read_only:
+            self.path.chmod(0o600)
+            self.secrets.chmod(0o700)
         with closing(self._connect()) as db:
-            if db.execute("PRAGMA user_version").fetchone() != (1,) or {
-                row[0] for row in db.execute("SELECT name FROM pools")
-            } != FIELDS.keys():
-                raise ValueError("资源数据库版本或资源池不完整")
+            check_database_crypto(db, keyring, "resources")
+            if {row[0] for row in db.execute("SELECT name FROM pools")} != FIELDS.keys():
+                raise ValueError("资源数据库的资源池不完整")
 
     def _connect(self):
-        db = sqlite3.connect(self.path.absolute().as_uri() + "?mode=rw", uri=True)
+        mode = "ro" if self._read_only else "rw"
+        db = sqlite3.connect(self.path.absolute().as_uri() + "?mode=" + mode, uri=True)
         db.execute("PRAGMA foreign_keys = ON")
         return db
 
@@ -123,7 +135,8 @@ class ResourceDatabase:
         path = self.secrets / filename
         if path.is_symlink():
             raise ValueError("资源凭据文件不能为符号链接")
-        path.chmod(0o600)
+        if not self._read_only:
+            path.chmod(0o600)
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _load(self, db, pool):
@@ -135,7 +148,15 @@ class ResourceDatabase:
         values = private.pop("items", {})
         records = {}
         for record_id, record in db.execute("SELECT record_id, data FROM records WHERE pool = ? ORDER BY position", (pool,)):
-            records[record_id] = {**json.loads(record), **values.pop(record_id, {})}
+            fields = json.loads(record)
+            hidden = values.pop(record_id, {})
+            if self.keyring:
+                for field in ENCRYPTED_FIELDS.get(pool, ()):
+                    if field in hidden:
+                        raise CredentialCryptoError("在旧资源文件中发现未迁移的凭据")
+                    if field in fields:
+                        fields[field] = self.keyring.open(fields[field], *_credential_scope(pool, record_id, fields, field))
+            records[record_id] = {**fields, **hidden}
         if values:
             raise ValueError("资源与文件中的凭据记录不一致")
         if pool == GPT and "history_keys" in data:
@@ -143,12 +164,21 @@ class ResourceDatabase:
             for key, event in db.execute("SELECT account_key, data FROM gpt_history ORDER BY position"):
                 history[key].append(json.loads(event))
             data["history"] = history
+        if pool == GPT and self.keyring:
+            points = private.get("restore_points", {})
+            if any(points_by_field.keys() & ENCRYPTED_RESTORE_FIELDS for points_by_field in points.values()):
+                raise CredentialCryptoError("在旧资源文件中发现未迁移的恢复点")
+            for key, field, event_id, value in db.execute("SELECT account_key, field, event_id, value FROM encrypted_restore_points"):
+                snapshot = self.keyring.open(json.loads(value), "restore", key, field, event_id)
+                points.setdefault(key, {})[field] = {"event_id": event_id, "snapshot": snapshot}
+            if points:
+                private["restore_points"] = points
         return {**private, **data, "items": records if pool == GPT else list(records.values())}
 
     def load(self, pool):
         with closing(self._connect()) as db, db:
             # Block a writer from retiring a credential revision while it is read.
-            db.execute("BEGIN IMMEDIATE")
+            db.execute("BEGIN" if self._read_only else "BEGIN IMMEDIATE")
             return self._load(db, pool)
 
     def _write_private(self, private):
@@ -176,12 +206,61 @@ class ResourceDatabase:
                 if path.name not in active and path.is_file() and not path.is_symlink():
                     path.unlink()
 
+    def _seal_credentials(self, db, pool, records, private):
+        # Keep existing envelopes when writing unchanged credentials.
+        slots = ENCRYPTED_FIELDS.get(pool, ())
+        if slots:
+            existing = {key: json.loads(record) for key, record in
+                        db.execute("SELECT record_id, data FROM records WHERE pool = ?", (pool,))}
+            items = private.get("items", {})
+            for key, data in records:
+                hidden = items.get(key, {})
+                old = existing.get(key, {})
+                for field in hidden.keys() & slots:
+                    value = hidden.pop(field)
+                    scope = _credential_scope(pool, key, data, field)
+                    envelope = old.get(field)
+                    if (envelope is None or scope != _credential_scope(pool, key, old, field)
+                            or self.keyring.open(envelope, *scope) != value):
+                        envelope = self.keyring.seal(value, *scope)
+                    data[field] = envelope
+                if not hidden:
+                    items.pop(key, None)
+            if not items:
+                private.pop("items", None)
+
+        if pool != GPT:
+            return
+        existing = {(key, field): (event_id, value) for key, field, event_id, value in
+                    db.execute("SELECT account_key, field, event_id, value FROM encrypted_restore_points")}
+        if "restore_points" in private:
+            private["restore_points"] = {
+                key: dict(fields) for key, fields in private["restore_points"].items()
+            }
+        points = private.get("restore_points", {})
+        for key, fields in list(points.items()):
+            for field in fields.keys() & ENCRYPTED_RESTORE_FIELDS:
+                point = fields.pop(field)
+                event_id, snapshot = point["event_id"], point["snapshot"]
+                previous = existing.pop((key, field), None)
+                scope = ("restore", key, field, event_id)
+                if previous and previous[0] == event_id and self.keyring.open(json.loads(previous[1]), *scope) == snapshot:
+                    continue
+                db.execute("""INSERT INTO encrypted_restore_points VALUES (?, ?, ?, ?)
+                              ON CONFLICT(account_key, field) DO UPDATE SET event_id=excluded.event_id, value=excluded.value""",
+                           (key, field, event_id, _json(self.keyring.seal(snapshot, *scope))))
+            if not fields:
+                points.pop(key)
+        db.executemany("DELETE FROM encrypted_restore_points WHERE account_key = ? AND field = ?", existing)
+
     def save(self, pool, document):
         header, records, private, history = _split(pool, document)
         if len({key for key, _ in records}) != len(records):
             raise ValueError("资源 ID 重复")
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
+            if self.keyring:
+                self._seal_credentials(db, pool, records, private)
             old_file, = db.execute("SELECT credential_file FROM pools WHERE name = ?", (pool,)).fetchone()
             new_file = old_file
             if private != self._read_private(old_file):
@@ -209,6 +288,8 @@ class ResourceDatabase:
                 pass
 
     def export_json(self, destination, *, include_restore_points=True):
+        if self.keyring:
+            raise CredentialCryptoError("加密资源库仅支持加密备份，禁止导出明文 JSON")
         destination = Path(destination)
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -226,6 +307,21 @@ class ResourceDatabase:
         _sync_directory(destination)
 
 
+def create_resource_database(directory, *, keyring=None):
+    (directory / SECRET_DIRECTORY).mkdir(mode=0o700)
+    path = directory / DATABASE_NAME
+    path.touch(mode=0o600, exist_ok=False)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.executescript(SCHEMA)
+        if keyring:
+            keyring.initialize_database(db, "resources")
+            db.execute("""CREATE TABLE encrypted_restore_points (
+                           account_key TEXT NOT NULL, field TEXT NOT NULL, event_id TEXT NOT NULL,
+                           value TEXT NOT NULL, PRIMARY KEY (account_key, field))""")
+        db.executemany("INSERT INTO pools (name) VALUES (?)", ((name,) for name in FIELDS))
+    return ResourceDatabase(directory, keyring=keyring)
+
+
 def migrate_resources(directory):
     directory = Path(directory).resolve()
     db_path = directory / DATABASE_NAME
@@ -234,13 +330,8 @@ def migrate_resources(directory):
         raise ValueError("资源数据库或凭据目录已存在")
     with tempfile.TemporaryDirectory(prefix=".resource-import-", dir=directory) as temporary:
         stage = Path(temporary)
-        (stage / SECRET_DIRECTORY).mkdir(mode=0o700)
         staged_db = stage / DATABASE_NAME
-        staged_db.touch(mode=0o600, exist_ok=False)
-        with closing(sqlite3.connect(staged_db)) as db, db:
-            db.executescript(SCHEMA)
-            db.executemany("INSERT INTO pools (name) VALUES (?)", ((name,) for name in FIELDS))
-        store = ResourceDatabase(stage)
+        store = create_resource_database(stage)
         counts = {}
         for pool in FIELDS:
             path = directory / pool

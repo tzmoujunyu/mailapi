@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 
 from .site_accounts import SiteAccountError, SiteAccountStore
+from .credential_crypto import check_database_crypto
 
 
 DATABASE_NAME = "site_accounts.sqlite3"
@@ -40,11 +41,12 @@ CREATE TABLE sessions (
 
 
 class SQLiteSiteAccountStore(SiteAccountStore):
-    def __init__(self, path, *, require_admin_mfa=False):
+    def __init__(self, path, *, require_admin_mfa=False, keyring=None):
         path = Path(path)
         if path.is_symlink() or not path.is_file():
             raise SiteAccountError("找不到 SQLite 网站账户库，请先执行离线迁移")
         path.chmod(0o600)
+        self._keyring = keyring
         super().__init__(path, require_admin_mfa=require_admin_mfa)
 
     def _connect(self):
@@ -53,35 +55,16 @@ class SQLiteSiteAccountStore(SiteAccountStore):
         return connection
 
     def _read_snapshot(self):
-        with closing(self._connect()) as db, db:
-            if db.execute("PRAGMA user_version").fetchone() != (1,):
-                raise SiteAccountError("SQLite 网站账户库版本不受支持")
-            db.execute("BEGIN")
-            users = {}
-            for user_id, username, details in db.execute("SELECT id, username, details FROM users ORDER BY position"):
-                users[user_id] = {**json.loads(details), "id": user_id, "username": username}
-            groups = {
-                group_id: {"id": group_id, "name": name, "member_ids": [], "resource_keys": []}
-                for group_id, name in db.execute("SELECT id, name FROM groups ORDER BY position")
-            }
-            for table, column, field in (("group_members", "user_id", "member_ids"),
-                                         ("group_resources", "resource_key", "resource_keys")):
-                for group_id, value in db.execute(f"SELECT group_id, {column} FROM {table} ORDER BY position"):
-                    groups[group_id][field].append(value)
-            sessions = {}
-            for digest, user_id, expiry, mfa in db.execute("SELECT digest, user_id, expires_at, mfa_verified FROM sessions"):
-                sessions[digest] = {"user_id": user_id, "expires_at": expiry}
-                if mfa is not None:
-                    sessions[digest]["mfa_verified"] = bool(mfa)
-            return {"version": 1, "users": users, "groups": groups, "sessions": sessions}
+        with closing(self._connect()) as db:
+            return read_site_snapshot(db, keyring=self._keyring)
 
     def _write_snapshot(self, data):
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            self._write_changes(db, self._data, data)
+            self._write_changes(db, self._data, data, keyring=self._keyring)
 
     @staticmethod
-    def _write_changes(db, old, new):
+    def _write_changes(db, old, new, *, keyring=None):
         for table, column in (("sessions", "digest"), ("groups", "id"), ("users", "id")):
             db.executemany(f"DELETE FROM {table} WHERE {column} = ?",
                            ((key,) for key in old[table].keys() - new[table].keys()))
@@ -90,6 +73,8 @@ class SQLiteSiteAccountStore(SiteAccountStore):
             if old["users"].get(user_id) == user and old_positions[user_id] == position:
                 continue
             details = {key: value for key, value in user.items() if key not in {"id", "username"}}
+            if keyring and "totp_secret" in details:
+                details["totp_secret"] = keyring.seal(details["totp_secret"], "site", user_id, "totp_secret")
             db.execute("""INSERT INTO users VALUES (?, ?, ?, ?)
                           ON CONFLICT(id) DO UPDATE SET username=excluded.username,
                           position=excluded.position, details=excluded.details""",
@@ -117,27 +102,45 @@ class SQLiteSiteAccountStore(SiteAccountStore):
                        (digest, session["user_id"], session["expires_at"], session.get("mfa_verified")))
 
 
-def open_site_accounts(directory, *, backend="json", require_admin_mfa=False):
+def read_site_snapshot(db, *, keyring=None):
+    with db:
+        db.execute("BEGIN")
+        check_database_crypto(db, keyring, "site")
+        users = {}
+        for user_id, username, details in db.execute("SELECT id, username, details FROM users ORDER BY position"):
+            users[user_id] = {**json.loads(details), "id": user_id, "username": username}
+            if keyring and "totp_secret" in users[user_id]:
+                users[user_id]["totp_secret"] = keyring.open(users[user_id]["totp_secret"], "site", user_id, "totp_secret")
+        groups = {
+            group_id: {"id": group_id, "name": name, "member_ids": [], "resource_keys": []}
+            for group_id, name in db.execute("SELECT id, name FROM groups ORDER BY position")
+        }
+        for table, column, field in (("group_members", "user_id", "member_ids"),
+                                     ("group_resources", "resource_key", "resource_keys")):
+            for group_id, value in db.execute(f"SELECT group_id, {column} FROM {table} ORDER BY position"):
+                groups[group_id][field].append(value)
+        sessions = {}
+        for digest, user_id, expiry, mfa in db.execute("SELECT digest, user_id, expires_at, mfa_verified FROM sessions"):
+            sessions[digest] = {"user_id": user_id, "expires_at": expiry}
+            if mfa is not None:
+                sessions[digest]["mfa_verified"] = bool(mfa)
+        return {"version": 1, "users": users, "groups": groups, "sessions": sessions}
+
+
+def open_site_accounts(directory, *, backend="json", require_admin_mfa=False, keyring=None):
     directory = Path(directory)
     if backend == "sqlite":
-        return SQLiteSiteAccountStore(directory / DATABASE_NAME, require_admin_mfa=require_admin_mfa)
+        return SQLiteSiteAccountStore(directory / DATABASE_NAME, require_admin_mfa=require_admin_mfa, keyring=keyring)
     if backend != "json":
         raise SiteAccountError("网站账户存储须为 json 或 sqlite")
     return SiteAccountStore(directory / LEGACY_NAME, require_admin_mfa=require_admin_mfa)
 
 
-def migrate_site_accounts(directory):
-    """Create a verified database from the offline JSON snapshot without changing the source."""
-    directory = Path(directory).resolve()
-    source = directory / LEGACY_NAME
-    destination = directory / DATABASE_NAME
-    if destination.exists() or destination.is_symlink():
-        raise SiteAccountError("SQLite 网站账户库已存在")
-    data = json.loads(source.read_text(encoding="utf-8"))
+def write_site_database(destination, data, *, keyring=None):
     SiteAccountStore.validate_snapshot(data)
     for user in data["users"].values():
         SiteAccountStore._normalize_user(user)
-    descriptor, name = tempfile.mkstemp(prefix=".site-accounts-", dir=directory)
+    descriptor, name = tempfile.mkstemp(prefix=".site-accounts-", dir=destination.parent)
     os.close(descriptor)
     temporary = Path(name)
     try:
@@ -146,20 +149,32 @@ def migrate_site_accounts(directory):
             db.execute("PRAGMA foreign_keys = ON")
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                SQLiteSiteAccountStore._write_changes(db, {"users": {}, "groups": {}, "sessions": {}}, data)
+                if keyring:
+                    keyring.initialize_database(db, "site")
+                SQLiteSiteAccountStore._write_changes(db, {"users": {}, "groups": {}, "sessions": {}}, data, keyring=keyring)
             if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)] or db.execute("PRAGMA foreign_key_check").fetchall():
                 raise SiteAccountError("SQLite 网站账户库完整性检查失败")
-        restored = SQLiteSiteAccountStore(temporary)._data
+        restored = SQLiteSiteAccountStore(temporary, keyring=keyring)._data
         if restored != data or any(list(restored[key]) != list(data[key]) for key in ("users", "groups")):
             raise SiteAccountError("SQLite 数据与源文件不一致")
         os.link(temporary, destination)
-        descriptor = os.open(directory, os.O_RDONLY)
+        descriptor = os.open(destination.parent, os.O_RDONLY)
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
     finally:
         temporary.unlink()
+
+
+def migrate_site_accounts(directory):
+    """Create a verified database from the offline JSON snapshot without changing the source."""
+    directory = Path(directory).resolve()
+    destination = directory / DATABASE_NAME
+    if destination.exists() or destination.is_symlink():
+        raise SiteAccountError("SQLite 网站账户库已存在")
+    data = json.loads((directory / LEGACY_NAME).read_text(encoding="utf-8"))
+    write_site_database(destination, data)
     return {
         "users": len(data["users"]), "groups": len(data["groups"]), "sessions": len(data["sessions"]),
         "memberships": sum(len(group["member_ids"]) for group in data["groups"].values()),
