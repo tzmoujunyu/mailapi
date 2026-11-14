@@ -207,6 +207,7 @@
       }
     </style>
     <link rel="stylesheet" href="/static/session.css">
+    <link rel="stylesheet" href="/static/help-hints.css">
     <link rel="stylesheet" href="/static/management-tabs.css">
     <link rel="stylesheet" href="/static/management-search.css">
     <link rel="stylesheet" href="/static/quota.css">
@@ -216,6 +217,7 @@
     <link rel="stylesheet" href="/static/theme.css">
     <script src="/static/theme.js" defer></script>
     <script src="/static/session.js" defer></script>
+    <script src="/static/help-hints.js" defer></script>
     <script src="/static/management-tabs.js" defer></script>
     <script src="/static/management-search.js" defer></script>
   </head>
@@ -390,7 +392,12 @@
         <h2 id="gpt-account-title">添加 GPT 账号</h2>
         <label>登录账号（邮箱或用户名）<input id="gpt-login" autocomplete="off" maxlength="120" required /></label>
         <label>GPT 密码（选填）<input id="gpt-initial-password" type="password" autocomplete="new-password" maxlength="4096" /></label>
-        <label id="gpt-password-backfill-field" class="checkbox-label" hidden><input id="gpt-password-backfill" type="checkbox" />标记为外部密码回填</label>
+        <div id="gpt-password-backfill-field" hidden>
+          <div class="actions">
+            <label class="checkbox-label"><input id="gpt-password-backfill" type="checkbox" />标记为外部密码回填</label>
+            <span class="help-hint"><button type="button" class="help-hint-trigger" aria-label="外部密码回填说明" aria-expanded="false" aria-pressed="false" aria-controls="gpt-backfill-help" aria-describedby="gpt-backfill-help">?</button><span id="gpt-backfill-help" class="help-hint-content" role="tooltip" popover="manual" hidden>在 ChatGPT 等外部平台修改密码后，把新密码填回本站时勾选。</span></span>
+          </div>
+        </div>
         <label>身份验证器密钥（选填）<input id="gpt-initial-secret" autocomplete="off" spellcheck="false" maxlength="4096" /></label>
         <div id="gpt-subscription-status"></div>
         <label>手填订阅到期日（选填）<input id="gpt-subscription-end" type="date" /><small class="muted">授权文件提供有效到期日时优先显示自动日期。清空可移除手填日期。</small></label>
@@ -466,8 +473,10 @@
           GPT 密码
           <input id="password-input" type="password" autocomplete="new-password" maxlength="4096" required />
         </label>
-        <label class="checkbox-label"><input id="password-external-backfill" type="checkbox" />标记为外部密码回填</label>
-        <p class="muted">仅在外部 GPT 账号密码已变更、现在把新密码同步回网站时勾选。</p>
+        <div class="actions">
+          <label class="checkbox-label"><input id="password-external-backfill" type="checkbox" />标记为外部密码回填</label>
+          <span class="help-hint"><button type="button" class="help-hint-trigger" aria-label="外部密码回填说明" aria-expanded="false" aria-pressed="false" aria-controls="password-backfill-help" aria-describedby="password-backfill-help">?</button><span id="password-backfill-help" class="help-hint-content" role="tooltip" popover="manual" hidden>在 ChatGPT 等外部平台修改密码后，把新密码填回本站时勾选。</span></span>
+        </div>
         <div class="dialog-actions">
           <button id="password-cancel" class="btn" type="button">取消</button>
           <button id="password-save" class="btn btn-primary" type="submit">保存</button>
