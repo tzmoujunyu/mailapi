@@ -51,18 +51,23 @@ def unique_archive_path(directory: Path, filename: str) -> Path:
         counter += 1
 
 
-def archive_auth_file(source: str | Path, archive_directory: str | Path) -> MigrationResult:
+def archive_auth_file(source: str | Path, archive_directory: str | Path, *, storage=None) -> MigrationResult:
     source_path = Path(source)
     if not source_path.is_file():
         return "missing"
     archive_dir = ensure_private_directory(archive_directory)
     target = archive_dir / source_path.name
-    if target.exists() and files_are_identical(source_path, target):
+    identical = storage.identical if storage else files_are_identical
+    if target.exists() and identical(source_path, target):
         source_path.unlink()
         secure_auth_file(target)
         return "deduplicated"
     target = unique_archive_path(archive_dir, source_path.name)
-    source_path.replace(target)
+    if storage:
+        storage.copy(source_path, target)
+        source_path.unlink()
+    else:
+        source_path.replace(target)
     secure_auth_file(target)
     return "archived"
 
@@ -71,6 +76,8 @@ def migrate_auth_file(
     source: str | Path,
     target: str | Path,
     conflict_archive_directory: str | Path,
+    *,
+    storage=None,
 ) -> MigrationResult:
     source_path = Path(source)
     target_path = Path(target)
@@ -82,13 +89,25 @@ def migrate_auth_file(
         return "missing"
 
     ensure_private_directory(target_path.parent)
+    if storage:
+        # Authenticate the input before moving a current authorization aside.
+        storage.read_bytes(source_path)
     if target_path.exists():
-        if files_are_identical(source_path, target_path):
+        identical = storage.identical if storage else files_are_identical
+        if identical(source_path, target_path):
             source_path.unlink()
             secure_auth_file(target_path)
             return "deduplicated"
-        archive_auth_file(target_path, conflict_archive_directory)
+        if storage:
+            archive = unique_archive_path(ensure_private_directory(conflict_archive_directory), target_path.name)
+            storage.copy(target_path, archive)
+        else:
+            archive_auth_file(target_path, conflict_archive_directory)
 
-    source_path.replace(target_path)
+    if storage:
+        storage.copy(source_path, target_path)
+        source_path.unlink()
+    else:
+        source_path.replace(target_path)
     secure_auth_file(target_path)
     return "moved"

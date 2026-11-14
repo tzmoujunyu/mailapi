@@ -176,6 +176,23 @@ python -m mailapi_shared.test_credential_storage restore \
 
 若切换后需回退，先停写并保留当前加密库、凭据目录和当前密钥，再恢复切换前的代码、配置和数据库。备份之后的更新仍在切换后的副本中，应核对后再决定如何补回。
 
+### 隔离测试版 OAuth 加密演练
+
+沿用上述独立测试目录和密钥要求。停止测试进程后，对已启用小型凭据加密的测试副本执行下列命令。邮箱记录中的令牌路径应指向该副本内的 `gmail_tokens/`、`outlook_tokens/` 或旧版 `token_accountN.json`。迁移会保存相对路径并逐个核对解密结果。
+
+```bash
+python -m mailapi_shared.test_credential_storage encrypt-oauth \
+  --source /path/test-source --destination /path/test-oauth --key-file /keys/test.json
+python -m mailapi_shared.test_credential_storage backup --oauth \
+  --source /path/test-oauth --destination /path/test-backup --key-file /keys/test.json
+python -m mailapi_shared.test_credential_storage restore --oauth \
+  --source /path/test-backup --destination /path/test-restored --key-file /keys/test.json
+```
+
+如果源副本仍是旧版 SQLite 明文授权布局，可用 `migrate --oauth` 一次迁移。密钥轮换用 `rotate --oauth`，附上 `--old-key-file` 和新密钥路径。启动时在原测试配置基础上设 `TEST_OAUTH_ENCRYPTION=1`、`TEST_DATA_DIR=/path/test-oauth`。备份和恢复须保留相同的相对目录结构，密钥另行保存。
+
+迁移保留 OAuth token 和 MSAL 缓存内容。服务商可撤销令牌，或者在续期时使旧 refresh token 失效，因此恢复旧备份时仍要核对当时的令牌是否有效。演练用合成凭据验证读取、模拟续期和加密写回。Google OAuth 客户端配置、Outlook 应用凭据和 Proton 文件沿用现有管理方式。
+
 ## 可选外部服务
 
 | 功能 | 额外条件 |

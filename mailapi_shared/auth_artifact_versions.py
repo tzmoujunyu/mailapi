@@ -25,9 +25,10 @@ def _digest(path: Path):
 
 
 class AuthArtifactVersionStore:
-    def __init__(self, manifest_path, archive_directory):
+    def __init__(self, manifest_path, archive_directory, *, oauth_files=None):
         self.path = Path(manifest_path)
         self.archive_directory = Path(archive_directory)
+        self.oauth_files = oauth_files
         self._lock = threading.RLock()
         self._data = {"version": 1, "artifacts": {}}
         if self.path.exists():
@@ -72,6 +73,12 @@ class AuthArtifactVersionStore:
     def _next_version(self, entries):
         return max((int(item.get("version", 0)) for item in entries), default=0) + 1
 
+    def _metadata(self, path, provider):
+        if self.oauth_files and provider in {"gmail", "outlook", "codex"}:
+            raw = self.oauth_files.read_bytes(path)
+            return hashlib.sha256(raw).hexdigest(), len(raw)
+        return _digest(path), path.stat().st_size
+
     def write_json(self, path, value, *, provider, resource_id, source, writer=None):
         """Archive the current file, atomically write JSON, and record metadata."""
         target = Path(path)
@@ -88,16 +95,20 @@ class AuthArtifactVersionStore:
                 while archive_path.exists():
                     archive_path = archive_dir / f"v{next_version}-before-{counter}.json"
                     counter += 1
-                shutil.copy2(target, archive_path)
+                if self.oauth_files and provider in {"gmail", "outlook", "codex"}:
+                    self.oauth_files.copy(target, archive_path)
+                else:
+                    shutil.copy2(target, archive_path)
                 os.chmod(archive_path, 0o600)
+                digest, size = self._metadata(archive_path, provider)
                 entries.append({
                     "provider": str(provider),
                     "resource_id": str(resource_id),
                     "version": next_version,
                     "file_name": target.name,
                     "archive_file": str(archive_path.relative_to(self.archive_directory)),
-                    "sha256": _digest(archive_path),
-                    "size": archive_path.stat().st_size,
+                    "sha256": digest,
+                    "size": size,
                     "created_at": _timestamp(),
                     "source": "legacy-existing" if not entries else "replaced",
                     "active": False,
@@ -105,7 +116,9 @@ class AuthArtifactVersionStore:
                 })
                 next_version += 1
 
-            if writer is not None:
+            if self.oauth_files and provider in {"gmail", "outlook", "codex"}:
+                self.oauth_files.write_json(target, value)
+            elif writer is not None:
                 writer(str(target), value)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -126,13 +139,14 @@ class AuthArtifactVersionStore:
             for item in entries:
                 item["active"] = False
                 item.setdefault("replaced_at", _timestamp())
+            digest, size = self._metadata(target, provider)
             entries.append({
                 "provider": str(provider),
                 "resource_id": str(resource_id),
                 "version": next_version,
                 "file_name": target.name,
-                "sha256": _digest(target),
-                "size": target.stat().st_size,
+                "sha256": digest,
+                "size": size,
                 "created_at": _timestamp(),
                 "source": str(source),
                 "active": True,
@@ -146,7 +160,7 @@ class AuthArtifactVersionStore:
         if not target.is_file():
             return None
         key = self._key(provider, resource_id)
-        digest = _digest(target)
+        digest, size = self._metadata(target, provider)
         with self._lock:
             entries = self._data["artifacts"].setdefault(key, [])
             active = next((item for item in reversed(entries) if item.get("active")), None)
@@ -161,7 +175,7 @@ class AuthArtifactVersionStore:
                 "version": self._next_version(entries),
                 "file_name": target.name,
                 "sha256": digest,
-                "size": target.stat().st_size,
+                "size": size,
                 "created_at": _timestamp(),
                 "source": str(source),
                 "active": True,

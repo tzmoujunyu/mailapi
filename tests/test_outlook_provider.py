@@ -24,6 +24,7 @@ from mail_messages import extract_verification_code
 class OutlookProviderTests(unittest.TestCase):
     def test_reads_latest_unread_from_inbox_and_junk_in_time_order(self):
         mailbox = object.__new__(OutlookMailbox)
+        mailbox._write_cache = None
         mailbox.email = "test@example.com"
         mailbox.authorization = Mock()
         mailbox.authorization.acquire_silent.return_value = "access-token"
@@ -152,6 +153,7 @@ class OutlookProviderTests(unittest.TestCase):
 
     def test_marks_matching_message_as_read_through_graph(self):
         mailbox = object.__new__(OutlookMailbox)
+        mailbox._write_cache = None
         mailbox.access_token = "access-token"
         with patch("mail_providers.outlook.graph_request") as request:
             mailbox.mark_as_read("message/id")
@@ -183,7 +185,7 @@ class OutlookWatcherTests(unittest.TestCase):
             OUTLOOK_CATCHUP_LIMIT=30, OUTLOOK_POLL_INTERVAL_SECONDS=3,
             APP_BASE_URL="https://mail.example.com", MAIL_WATCHERS={},
             MAIL_WATCHERS_LOCK=threading.Lock(),
-            save_state=Mock(), log_exception=Mock(), write_json_atomic=Mock(),
+            save_state=Mock(), log_exception=Mock(), write_oauth_json=Mock(), OAUTH_FILES=None,
             load_outlook_settings=Mock(), OutlookMailbox=Mock(), store_code_result=Mock(return_value=True),
         )
         exec(compile(functions, str(source), "exec", flags=__future__.annotations.compiler_flag), self.env)

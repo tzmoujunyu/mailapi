@@ -90,14 +90,15 @@ def _msal_types() -> tuple:
 
 
 class OutlookAuthorization:
-    def __init__(self, settings: OutlookSettings, token_file: str) -> None:
+    def __init__(self, settings: OutlookSettings, token_file: str, *, oauth_files=None) -> None:
         ConfidentialClientApplication, SerializableTokenCache = _msal_types()
         self.settings = settings
         self.token_file = token_file
         self.cache = SerializableTokenCache()
         token_path = Path(token_file)
         if token_path.is_file():
-            self.cache.deserialize(token_path.read_text(encoding="utf-8"))
+            raw = oauth_files.read_bytes(token_path) if oauth_files else token_path.read_bytes()
+            self.cache.deserialize(raw.decode("utf-8"))
         self.app = ConfidentialClientApplication(
             settings.client_id,
             authority=settings.authority,
@@ -245,21 +246,30 @@ def outlook_incoming_mail(message: Dict[str, Any]) -> IncomingMail:
 
 
 class OutlookMailbox:
-    def __init__(self, settings: OutlookSettings, token_file: str, email: str) -> None:
-        self.authorization = OutlookAuthorization(settings, token_file)
+    def __init__(self, settings: OutlookSettings, token_file: str, email: str, *, oauth_files=None) -> None:
+        self.authorization = OutlookAuthorization(settings, token_file, oauth_files=oauth_files)
+        self._write_cache = (lambda value: oauth_files.write_json(token_file, value)) if oauth_files else None
         self.email = email
         self.access_token = ""
 
     def connect(self) -> Dict[str, str]:
         self.access_token = self.authorization.acquire_silent(self.email)
+        if self._write_cache:
+            self.save_refreshed_cache(self._write_cache)
         return fetch_outlook_profile(self.access_token)
 
     def save_refreshed_cache(self, writer: Any) -> None:
         if self.authorization.cache.has_state_changed:
-            writer(self.authorization.serialized_cache())
+            try:
+                writer(self.authorization.serialized_cache())
+            except Exception:
+                self.authorization.cache.has_state_changed = True
+                raise
 
     def get_unread_messages(self, limit: int = 30) -> List[Dict[str, Any]]:
         self.access_token = self.authorization.acquire_silent(self.email)
+        if self._write_cache:
+            self.save_refreshed_cache(self._write_cache)
         query = urllib.parse.urlencode(
             {
                 # Graph requires orderby properties first in the filter.

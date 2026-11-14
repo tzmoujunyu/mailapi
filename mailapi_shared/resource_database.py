@@ -103,12 +103,13 @@ def _credential_scope(pool, record_id, record, field):
 
 
 class ResourceDatabase:
-    def __init__(self, directory, *, keyring=None, read_only=False):
+    def __init__(self, directory, *, keyring=None, read_only=False, oauth_encrypted=False):
         directory = Path(directory)
         self.path = directory / DATABASE_NAME
         self.secrets = directory / SECRET_DIRECTORY
         self.keyring = keyring
         self._read_only = read_only
+        self.oauth_encrypted = oauth_encrypted
         if self.path.is_symlink() or not self.path.is_file() or self.secrets.is_symlink() or not self.secrets.is_dir():
             raise ValueError("找不到完整的资源数据库，请先执行离线迁移")
         if not read_only:
@@ -116,6 +117,13 @@ class ResourceDatabase:
             self.secrets.chmod(0o700)
         with closing(self._connect()) as db:
             check_database_crypto(db, keyring, "resources")
+            marker = db.execute("SELECT 1 FROM sqlite_schema WHERE name='oauth_storage' AND type='table'").fetchone()
+            if bool(marker) != oauth_encrypted or (oauth_encrypted and not keyring):
+                raise CredentialCryptoError("资源数据库与 OAuth 加密配置不匹配")
+            if oauth_encrypted:
+                row = db.execute("SELECT marker FROM oauth_storage").fetchone()
+                if not row or keyring.open(json.loads(row[0]), "oauth-profile") != "encrypted":
+                    raise CredentialCryptoError("OAuth 加密标记无效")
             if {row[0] for row in db.execute("SELECT name FROM pools")} != FIELDS.keys():
                 raise ValueError("资源数据库的资源池不完整")
 
@@ -125,7 +133,7 @@ class ResourceDatabase:
         db.execute("PRAGMA foreign_keys = ON")
         return db
 
-    def _read_private(self, filename):
+    def _read_private(self, pool, filename):
         if filename is None:
             return {}
         if len(filename) != 37 or not filename.endswith(".json") or any(
@@ -137,14 +145,17 @@ class ResourceDatabase:
             raise ValueError("资源凭据文件不能为符号链接")
         if not self._read_only:
             path.chmod(0o600)
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if self.oauth_encrypted:
+            return self.keyring.open(value, "resource-private", pool, filename)
+        return value
 
     def _load(self, db, pool):
         header, filename = db.execute("SELECT header, credential_file FROM pools WHERE name = ?", (pool,)).fetchone()
         if header is None:
             return None
         data = json.loads(header)
-        private = self._read_private(filename)
+        private = self._read_private(pool, filename)
         values = private.pop("items", {})
         records = {}
         for record_id, record in db.execute("SELECT record_id, data FROM records WHERE pool = ? ORDER BY position", (pool,)):
@@ -181,8 +192,10 @@ class ResourceDatabase:
             db.execute("BEGIN" if self._read_only else "BEGIN IMMEDIATE")
             return self._load(db, pool)
 
-    def _write_private(self, private):
+    def _write_private(self, pool, private):
         filename = secrets.token_hex(16) + ".json"
+        if self.oauth_encrypted:
+            private = self.keyring.seal(private, "resource-private", pool, filename)
         path = self.secrets / filename
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
@@ -263,8 +276,8 @@ class ResourceDatabase:
                 self._seal_credentials(db, pool, records, private)
             old_file, = db.execute("SELECT credential_file FROM pools WHERE name = ?", (pool,)).fetchone()
             new_file = old_file
-            if private != self._read_private(old_file):
-                new_file = self._write_private(private) if private else None
+            if private != self._read_private(pool, old_file):
+                new_file = self._write_private(pool, private) if private else None
             db.execute("UPDATE pools SET header = ?, credential_file = ? WHERE name = ?",
                        (None if header is None else _json(header), new_file, pool))
             existing = {row[0] for row in db.execute("SELECT record_id FROM records WHERE pool = ?", (pool,))}
@@ -307,7 +320,7 @@ class ResourceDatabase:
         _sync_directory(destination)
 
 
-def create_resource_database(directory, *, keyring=None):
+def create_resource_database(directory, *, keyring=None, oauth_encrypted=False):
     (directory / SECRET_DIRECTORY).mkdir(mode=0o700)
     path = directory / DATABASE_NAME
     path.touch(mode=0o600, exist_ok=False)
@@ -318,8 +331,11 @@ def create_resource_database(directory, *, keyring=None):
             db.execute("""CREATE TABLE encrypted_restore_points (
                            account_key TEXT NOT NULL, field TEXT NOT NULL, event_id TEXT NOT NULL,
                            value TEXT NOT NULL, PRIMARY KEY (account_key, field))""")
+        if oauth_encrypted:
+            db.execute("CREATE TABLE oauth_storage (marker TEXT NOT NULL)")
+            db.execute("INSERT INTO oauth_storage VALUES (?)", (_json(keyring.seal("encrypted", "oauth-profile")),))
         db.executemany("INSERT INTO pools (name) VALUES (?)", ((name,) for name in FIELDS))
-    return ResourceDatabase(directory, keyring=keyring)
+    return ResourceDatabase(directory, keyring=keyring, oauth_encrypted=oauth_encrypted)
 
 
 def migrate_resources(directory):

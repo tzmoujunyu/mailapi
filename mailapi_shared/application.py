@@ -85,9 +85,11 @@ from .auth_storage import (
     files_are_identical,
     migrate_auth_file,
     secure_auth_file,
+    unique_archive_path,
 )
 from .account_credentials import ACCOUNT_FIELDS, AccountCredentialStore, AccountRestoreError
-from .credential_crypto import CredentialKeyring
+from .credential_crypto import CredentialCryptoError, CredentialKeyring
+from .oauth_files import OAuthFiles
 from .configuration import dotenv_entries
 from .auth_artifact_versions import AuthArtifactVersionStore
 from .gpt_history import SOURCE_LABELS, describe_change
@@ -198,7 +200,7 @@ def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, b
         path.mkdir(parents=True, exist_ok=True)
         return None, path, False
 
-    if os.getenv("TEST_CREDENTIAL_KEY_FILE"):
+    if os.getenv("TEST_CREDENTIAL_KEY_FILE") or _parse_bool(os.getenv("TEST_OAUTH_ENCRYPTION", "")):
         raise RuntimeError("凭据加密须显式指定独立的 TEST_DATA_DIR")
 
     if os.getenv("MAILAPI_CREDENTIAL_KEY_FILE") or any(
@@ -264,6 +266,12 @@ if KEY_FILE:
     if IS_TEST and EXTERNAL_WATCHERS:
         raise RuntimeError("凭据加密测试须关闭外部监听")
     CREDENTIAL_KEYRING = CredentialKeyring(KEY_FILE, data_dirs=(Path(DATA_DIR), _production_data), production=not IS_TEST)
+OAUTH_ENCRYPTED = IS_TEST and _parse_bool(os.getenv("TEST_OAUTH_ENCRYPTION", ""))
+if OAUTH_ENCRYPTED and not CREDENTIAL_KEYRING:
+    raise RuntimeError("加密 OAuth 授权须配置独立的测试密钥")
+if OAUTH_ENCRYPTED:
+    DATA_DIR = str(Path(DATA_DIR).resolve())
+OAUTH_FILES = OAuthFiles(DATA_DIR, CREDENTIAL_KEYRING) if OAUTH_ENCRYPTED else None
 EXTERNAL_WATCHERS_DISABLED_STATUS = (
     "测试模式：未启动外部监听" if IS_TEST else "外部监听未启用"
 )
@@ -827,6 +835,20 @@ def write_json_atomic(path: str, value: Any) -> None:
             os.remove(temporary)
 
 
+def read_oauth_json(path):
+    if OAUTH_FILES:
+        return OAUTH_FILES.read_json(path)
+    with open(path, encoding="utf-8") as source:
+        return json.load(source)
+
+
+def write_oauth_json(path, value):
+    if OAUTH_FILES:
+        OAUTH_FILES.write_json(path, value)
+    else:
+        write_json_atomic(path, value)
+
+
 MAIL_FILTERS_LOCK = threading.Lock()
 
 
@@ -958,8 +980,7 @@ def migrate_codex_auth_layout() -> None:
     ensure_private_directory(CODEX_AUTH_BACKUP_DIR)
     if os.path.isfile(LEGACY_CODEX_AUTH_FILE):
         try:
-            with open(LEGACY_CODEX_AUTH_FILE, "r", encoding="utf-8") as f:
-                value = json.load(f)
+            value = read_oauth_json(LEGACY_CODEX_AUTH_FILE)
             target_name = (
                 safe_codex_auth_filename(value)
                 if isinstance(value, dict)
@@ -969,23 +990,27 @@ def migrate_codex_auth_layout() -> None:
                 LEGACY_CODEX_AUTH_FILE,
                 os.path.join(CODEX_AUTH_DIR, target_name),
                 CODEX_AUTH_BACKUP_DIR,
+                storage=OAUTH_FILES,
             )
         except Exception as error:  # noqa: BLE001
+            if OAUTH_FILES:
+                raise
             log_exception("迁移旧 Codex auth 文件", error)
             archive_auth_file(LEGACY_CODEX_AUTH_FILE, CODEX_AUTH_BACKUP_DIR)
 
     for backup in glob.glob(f"{LEGACY_CODEX_AUTH_FILE}.bak.*"):
-        archive_auth_file(backup, CODEX_AUTH_BACKUP_DIR)
+        archive_auth_file(backup, CODEX_AUTH_BACKUP_DIR, storage=OAUTH_FILES)
     for filename in os.listdir(CODEX_AUTH_DIR):
         path = os.path.join(CODEX_AUTH_DIR, filename)
         if os.path.isfile(path) and filename.endswith(".json"):
             secure_auth_file(path)
 
 
-migrate_codex_auth_layout()
+def codex_token_version(token):
+    return hashlib.sha256(json.dumps(token, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
+def save_codex_record_auth_file(record: Dict[str, Any], *, previous_token=None) -> None:
     token = record.get("token") if isinstance(record.get("token"), dict) else {}
     payload = {
         "tokens": {
@@ -1003,6 +1028,10 @@ def save_codex_record_auth_file(record: Dict[str, Any]) -> None:
         "chatgpt_plan_type": record.get("chatgpt_plan_type"),
         "access_token_expires_at": record.get("access_token_expires_at"),
     }
+    if previous_token is not None:
+        # A rotated token must survive a crash between the file write and the database commit.
+        payload["refresh_of"] = codex_token_version(previous_token)
+        payload["auth_revision"] = record.get("auth_revision", "")
     path = os.path.join(CODEX_AUTH_DIR, safe_codex_auth_filename(payload))
     AUTH_ARTIFACT_VERSIONS.write_json(
         path,
@@ -1027,8 +1056,7 @@ def delete_codex_record_auth_files(record: Dict[str, Any], *, strict: bool = Fal
     record_workspace = str(record.get("workspace_id") or "")
     for path in paths:
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
+            payload = read_oauth_json(path)
             if not isinstance(payload, dict):
                 continue
             same_id = str(payload.get("account_id") or "") == record_id
@@ -1042,7 +1070,7 @@ def delete_codex_record_auth_files(record: Dict[str, Any], *, strict: bool = Fal
         except FileNotFoundError:
             continue
         except Exception as e:  # noqa: BLE001
-            if strict and isinstance(e, OSError):
+            if isinstance(e, CredentialCryptoError) or (strict and isinstance(e, OSError)):
                 raise
             log_exception(f"删除 Codex auth 文件 {path}", e)
             print(f"Codex auth 文件删除失败：{path}: {e}")
@@ -1058,13 +1086,14 @@ def load_codex_auth_files() -> List[Dict[str, Any]]:
 
     for path in paths:
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                value = json.load(f)
+            value = read_oauth_json(path)
             items = value if isinstance(value, list) else [value]
             for item in items:
                 if isinstance(item, dict):
                     entries.append((os.path.getmtime(path), path, item))
         except Exception as e:  # noqa: BLE001
+            if OAUTH_FILES:
+                raise
             log_exception(f"加载 Codex auth 文件 {path}", e)
             print(f"Codex auth 文件加载失败：{path}: {e}")
 
@@ -1938,8 +1967,7 @@ def register_existing_auth_artifacts() -> None:
             continue
         path = os.path.join(CODEX_AUTH_DIR, filename)
         try:
-            with open(path, "r", encoding="utf-8") as source:
-                payload = json.load(source)
+            payload = read_oauth_json(path)
             if isinstance(payload, dict):
                 AUTH_ARTIFACT_VERSIONS.register_existing(
                     path,
@@ -1947,6 +1975,8 @@ def register_existing_auth_artifacts() -> None:
                     resource_id=payload.get("account_id") or payload.get("email") or filename,
                 )
         except (OSError, ValueError, TypeError) as error:
+            if OAUTH_FILES:
+                raise
             log_exception(f"记录现有授权文件版本 {path}", error)
 
 
@@ -2085,6 +2115,10 @@ def import_codex_auth_json(
             existing = CODEX_ACCOUNTS.get(str(candidate.get("id") or ""))
         if existing and not overwrite_existing_tokens:
             record = dict(existing)
+            if (OAUTH_FILES and item.get("refresh_of") == codex_token_version(existing.get("token"))
+                    and item.get("auth_revision") == existing.get("auth_revision", "")
+                    and item.get("account_id") == existing["id"]):
+                record = build_codex_account_record(payload, existing)
             record["subscription"] = id_token_subscription(record, payload.get("id_token") or "")
             record["subscription_error"] = None
             record.pop("subscription_last_refresh_at", None)
@@ -2161,10 +2195,16 @@ def refresh_codex_quota_once(account_id: str, *, manual: bool = False):
             if CODEX_ACCOUNTS.get(account_id) is not record:
                 return CODEX_ACCOUNTS.get(account_id)
             if record.get("token") != updated.get("token"):
-                save_codex_record_auth_file(updated)
+                if OAUTH_FILES:
+                    save_codex_record_auth_file(updated, previous_token=record.get("token"))
+                else:
+                    save_codex_record_auth_file(updated)
             CODEX_ACCOUNTS[account_id] = updated
+            if OAUTH_FILES:
+                save_codex_accounts()
             record_codex_changes(record, updated)
-        save_codex_accounts()
+        if not OAUTH_FILES:
+            save_codex_accounts()
         return updated
     finally:
         CODEX_QUOTA_SCHEDULE.finish(account_id, window)
@@ -2202,7 +2242,10 @@ def mail_auth_path(configured_path: str, default_path: str) -> str:
     if not IS_TEST:
         return configured_path
     data_dir = Path(DATA_DIR).resolve()
-    source = Path(configured_path).expanduser().resolve()
+    source = Path(configured_path).expanduser()
+    if OAUTH_FILES and not source.is_absolute():
+        source = data_dir / source
+    source = source.resolve()
     if TEST_DATA_EPHEMERAL and source.is_relative_to(_production_data):
         source = (data_dir / source.relative_to(_production_data)).resolve()
     if source.is_relative_to(data_dir):
@@ -2239,21 +2282,22 @@ def migrate_gmail_token_layout(account_name: str, configured_path: str) -> str:
         authoritative = next((path for path in candidates if os.path.isfile(path)), None)
 
     if authoritative:
-        result = migrate_auth_file(authoritative, target, backup_dir)
+        result = migrate_auth_file(authoritative, target, backup_dir, storage=OAUTH_FILES)
         if result in {"moved", "deduplicated"}:
             print(f"[{account_name}] Gmail token 已归档到 {target}")
 
     for candidate in candidates:
         if candidate in {target, authoritative} or not os.path.isfile(candidate):
             continue
-        if os.path.isfile(target) and files_are_identical(Path(candidate), Path(target)):
+        identical = OAUTH_FILES.identical if OAUTH_FILES else files_are_identical
+        if os.path.isfile(target) and identical(Path(candidate), Path(target)):
             os.remove(candidate)
         else:
-            archive_auth_file(candidate, backup_dir)
+            archive_auth_file(candidate, backup_dir, storage=OAUTH_FILES)
 
     for candidate in candidates:
         for backup in glob.glob(f"{candidate}.bak.*"):
-            archive_auth_file(backup, backup_dir)
+            archive_auth_file(backup, backup_dir, storage=OAUTH_FILES)
 
     secure_auth_file(target)
     return target
@@ -2341,6 +2385,10 @@ def save_mail_accounts() -> None:
         for item in ACCOUNTS:
             mailbox_resource_key(item)
         items = [dict(item) for item in ACCOUNTS]
+        if OAUTH_FILES:
+            for item in items:
+                if item["provider"] in {"gmail", "outlook"} and item.get("token_file"):
+                    item["token_file"] = Path(item["token_file"]).relative_to(DATA_DIR).as_posix()
         if RESOURCE_DATABASE is not None:
             RESOURCE_DATABASE.save(Path(GMAIL_ACCOUNTS_FILE).name, {"items": items})
         else:
@@ -2398,15 +2446,19 @@ app.state.site_accounts = open_site_accounts(
     DATA_DIR, backend=SITE_BACKEND, require_admin_mfa=not IS_TEST, keyring=CREDENTIAL_KEYRING,
 )
 app.state.auth_artifact_versions = AuthArtifactVersionStore(
-    AUTH_ARTIFACT_VERSIONS_FILE, AUTH_ARTIFACT_ARCHIVE_DIR
+    AUTH_ARTIFACT_VERSIONS_FILE, AUTH_ARTIFACT_ARCHIVE_DIR, oauth_files=OAUTH_FILES
 )
 AUTH_ARTIFACT_VERSIONS = app.state.auth_artifact_versions
 
 if RESOURCE_BACKEND not in {"json", "sqlite"}:
     raise ValueError("资源存储须为 json 或 sqlite")
-RESOURCE_DATABASE = ResourceDatabase(DATA_DIR, keyring=CREDENTIAL_KEYRING) if RESOURCE_BACKEND == "sqlite" else None
+RESOURCE_DATABASE = (
+    ResourceDatabase(DATA_DIR, keyring=CREDENTIAL_KEYRING, oauth_encrypted=OAUTH_ENCRYPTED)
+    if RESOURCE_BACKEND == "sqlite" else None
+)
 if RESOURCE_DATABASE is not None:
     RESOURCE_DATABASE.prune_private_files()
+migrate_codex_auth_layout()
 ACCOUNTS = load_accounts()
 MAIL_FILTERS = load_mail_filters()
 GPT_PASSWORD_STORE = AccountPasswordStore(GPT_PASSWORDS_FILE)
@@ -2745,11 +2797,23 @@ def oauth2_callback(account_name: str, request: FastAPIRequest):
     return complete_oauth_callback(request)
 
 
+class EncryptedGmailCredentials(Credentials):
+    def refresh(self, request):
+        super().refresh(request)
+        if self.stop_event.is_set():
+            raise GmailAuthCancelled
+        write_oauth_json(self.token_file, json.loads(self.to_json()))
+
+
 def get_gmail_service(cfg: AccountConfig, stop_event: threading.Event):
     creds = None
     token_file = cfg["token_file"]
     if os.path.exists(token_file):
-        creds = Credentials.from_authorized_user_file(token_file, SCOPES)
+        if OAUTH_FILES:
+            creds = EncryptedGmailCredentials.from_authorized_user_info(read_oauth_json(token_file), SCOPES)
+            creds.token_file, creds.stop_event = token_file, stop_event
+        else:
+            creds = Credentials.from_authorized_user_file(token_file, SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -2773,7 +2837,11 @@ def get_gmail_service(cfg: AccountConfig, stop_event: threading.Event):
             creds = request_gmail_browser_auth(cfg, stop_event)
         if stop_event.is_set():
             raise GmailAuthCancelled
-        write_json_atomic(token_file, json.loads(creds.to_json()))
+        if not isinstance(creds, EncryptedGmailCredentials):
+            write_oauth_json(token_file, json.loads(creds.to_json()))
+            if OAUTH_FILES:
+                creds = EncryptedGmailCredentials.from_authorized_user_info(json.loads(creds.to_json()), SCOPES)
+                creds.token_file, creds.stop_event = token_file, stop_event
 
     return build("gmail", "v1", credentials=creds)
 
@@ -2789,6 +2857,11 @@ def backup_token_file(token_file: str) -> Optional[str]:
         f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
     )
     backup_path = os.path.join(backup_dir, filename)
+    if OAUTH_FILES:
+        backup_path = str(unique_archive_path(Path(backup_dir), filename))
+        OAUTH_FILES.copy(token_file, backup_path)
+        os.remove(token_file)
+        return backup_path
     os.replace(token_file, backup_path)
     secure_auth_file(backup_path)
     return backup_path
@@ -3088,7 +3161,7 @@ def process_outlook_message(
 
 def save_outlook_cache(mailbox: OutlookMailbox, cfg: AccountConfig) -> None:
     mailbox.save_refreshed_cache(
-        lambda value: write_json_atomic(str(cfg["token_file"]), value)
+        lambda value: write_oauth_json(str(cfg["token_file"]), value)
     )
 
 
@@ -3125,7 +3198,7 @@ def watch_outlook_account(
         settings = load_outlook_settings(
             f"{APP_BASE_URL}/api/admin/outlook/auth/callback"
         )
-        mailbox = OutlookMailbox(settings, str(cfg["token_file"]), cfg["email"])
+        mailbox = OutlookMailbox(settings, str(cfg["token_file"]), cfg["email"], oauth_files=OAUTH_FILES)
         connected = False
         first_scan = True
         while not stop_event.is_set():
@@ -3980,7 +4053,8 @@ def start_outlook_admin_auth(account_name: Optional[str] = None):
             f"{APP_BASE_URL}/api/admin/outlook/auth/callback"
         )
         state = base64_url_no_pad(secrets.token_bytes(32))
-        authorization = OutlookAuthorization(settings, str(cfg["token_file"]))
+        storage = {"oauth_files": OAUTH_FILES} if OAUTH_FILES else {}
+        authorization = OutlookAuthorization(settings, str(cfg["token_file"]), **storage)
         flow = authorization.start(state)
         session = {
             "state": state,
