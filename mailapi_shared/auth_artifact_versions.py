@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 
 
@@ -78,6 +78,155 @@ class AuthArtifactVersionStore:
             raw = self.oauth_files.read_bytes(path)
             return hashlib.sha256(raw).hexdigest(), len(raw)
         return _digest(path), path.stat().st_size
+
+    @staticmethod
+    def _entry_time(entry):
+        for name in ("created_at", "replaced_at"):
+            value = entry.get(name)
+            if not value:
+                continue
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _archive_path(self, relative):
+        archive_root = self.archive_directory.resolve()
+        raw_candidate = self.archive_directory / str(relative)
+        if raw_candidate.is_symlink():
+            raise ValueError("授权归档不能使用符号链接")
+        candidate = raw_candidate.resolve()
+        if candidate != archive_root and not candidate.is_relative_to(archive_root):
+            raise ValueError("授权归档路径超出归档目录")
+        return candidate
+
+    def _create_recovery_point(self):
+        if self.oauth_files is None:
+            raise ValueError("授权清理需要已启用的加密 OAuth 存储")
+        recovery_root = self.archive_directory.parent / "auth_artifact_restore_points"
+        recovery_root.mkdir(parents=True, exist_ok=True)
+        os.chmod(recovery_root, 0o700)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        recovery = recovery_root / stamp
+        counter = 1
+        while recovery.exists():
+            recovery = recovery_root / f"{stamp}-{counter}"
+            counter += 1
+        recovery.mkdir(mode=0o700)
+        self.oauth_files.write_json(recovery / "manifest.json", self._data)
+        for source in self.archive_directory.rglob("*"):
+            if source.is_dir():
+                continue
+            if source.is_symlink() or not source.is_file():
+                raise ValueError("授权归档包含不受支持的文件")
+            target = recovery / "archives" / source.relative_to(self.archive_directory)
+            self.oauth_files.copy(source, target)
+        return recovery
+
+    def prune(self, *, keep_history=5, max_age_days=30, now=None):
+        """Create an encrypted restore point, then prune stale archive versions.
+
+        The current entry is always kept. Historical entries are retained when
+        they are among the newest ``keep_history`` entries for that resource or
+        were created within ``max_age_days``. The two retention rules are a
+        union, so a recent entry is never removed just because the count is full.
+        """
+        if not isinstance(keep_history, int) or keep_history < 0:
+            raise ValueError("授权历史保留数量无效")
+        if not isinstance(max_age_days, int) or max_age_days < 0:
+            raise ValueError("授权历史保留天数无效")
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        cutoff = current - timedelta(days=max_age_days)
+
+        with self._lock:
+            recovery = self._create_recovery_point()
+            original = deepcopy(self._data)
+            kept = {}
+            removed_archive_files = set()
+            removed_entries = 0
+            try:
+                for key, entries in self._data["artifacts"].items():
+                    historical = [
+                        (index, item) for index, item in enumerate(entries)
+                        if not item.get("active")
+                    ]
+                    ranked = sorted(
+                        historical,
+                        key=lambda pair: (
+                            self._entry_time(pair[1]) or datetime.min.replace(tzinfo=timezone.utc),
+                            int(pair[1].get("version", 0)),
+                        ),
+                        reverse=True,
+                    )
+                    keep_indexes = {index for index, _ in ranked[:keep_history]}
+                    for index, item in historical:
+                        timestamp = self._entry_time(item)
+                        if timestamp is None or timestamp >= cutoff:
+                            keep_indexes.add(index)
+                    selected = []
+                    for index, item in enumerate(entries):
+                        if item.get("active") or index in keep_indexes:
+                            selected.append(item)
+                        else:
+                            removed_entries += 1
+                            if item.get("archive_file"):
+                                removed_archive_files.add(item["archive_file"])
+                    kept[key] = selected
+
+                referenced = {
+                    item["archive_file"]
+                    for entries in kept.values()
+                    for item in entries
+                    if item.get("archive_file")
+                }
+                for path in self.archive_directory.rglob("*"):
+                    if path.is_file() and not path.is_symlink():
+                        relative = path.relative_to(self.archive_directory).as_posix()
+                        if relative not in referenced:
+                            removed_archive_files.add(relative)
+
+                self._data["artifacts"] = kept
+                self._write_manifest()
+                for relative in sorted(removed_archive_files):
+                    path = self._archive_path(relative)
+                    if path.is_file():
+                        path.unlink()
+                for directory in sorted(
+                    (path for path in self.archive_directory.rglob("*") if path.is_dir()),
+                    key=lambda path: len(path.parts), reverse=True,
+                ):
+                    try:
+                        directory.rmdir()
+                    except OSError:
+                        pass
+            except Exception:
+                self._data = original
+                self._restore_recovery_point(recovery)
+                raise
+
+            return {
+                "recovery_point": str(recovery),
+                "removed_entries": removed_entries,
+                "removed_files": len(removed_archive_files),
+                "remaining_entries": sum(len(entries) for entries in kept.values()),
+            }
+
+    def _restore_recovery_point(self, recovery):
+        manifest = self.oauth_files.read_json(recovery / "manifest.json")
+        for path in self.archive_directory.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                path.unlink()
+        for source in (recovery / "archives").rglob("*"):
+            if source.is_dir():
+                continue
+            target = self.archive_directory / source.relative_to(recovery / "archives")
+            self.oauth_files.copy(source, target)
+        self._data = manifest
+        self._write_manifest()
 
     def write_json(self, path, value, *, provider, resource_id, source, writer=None):
         """Archive the current file, atomically write JSON, and record metadata."""

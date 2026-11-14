@@ -3450,6 +3450,16 @@ def start_watchers():
     prune_code_histories()
     load_codex_accounts()
     register_existing_auth_artifacts()
+    if IS_TEST and _parse_bool(os.getenv("TEST_AUTH_ARTIFACT_CLEANUP", "")):
+        cleanup = AUTH_ARTIFACT_VERSIONS.prune(
+            keep_history=int(os.getenv("TEST_AUTH_ARTIFACT_KEEP_HISTORY", "5")),
+            max_age_days=int(os.getenv("TEST_AUTH_ARTIFACT_MAX_AGE_DAYS", "30")),
+        )
+        print(
+            "测试版授权归档清理完成："
+            f"删除 {cleanup['removed_files']} 个文件，保留 {cleanup['remaining_entries']} 条记录，"
+            f"加密恢复点 {cleanup['recovery_point']}"
+        )
     CREDENTIAL_STORE.migrate(
         list(ACCOUNTS) + [{"name": f"codex:{item['id']}", "email": item.get("email") or ""} for item in CODEX_ACCOUNTS.values()],
         GPT_PASSWORD_STORE, TOTP_SECRET_STORE, {} if IS_TEST else os.environ,

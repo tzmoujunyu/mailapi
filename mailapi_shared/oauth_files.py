@@ -21,9 +21,12 @@ class OAuthFiles:
 
     def _scope(self, path):
         path = Path(path)
+        resolved = path.resolve()
         try:
-            relative = path.absolute().relative_to(self.directory)
-            if path.resolve() != self.directory / relative or ".." in relative.parts:
+            if path.is_symlink():
+                raise ValueError
+            relative = resolved.relative_to(self.directory)
+            if resolved != self.directory / relative or ".." in relative.parts:
                 raise ValueError
         except ValueError:
             raise CredentialCryptoError("OAuth 文件须位于隔离数据目录内，且不能使用符号链接") from None

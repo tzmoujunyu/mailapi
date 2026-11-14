@@ -1,12 +1,18 @@
 import json
 import hashlib
+from base64 import b64encode
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 from mailapi_shared.auth_artifact_versions import AuthArtifactVersionStore
 from mailapi_shared.account_credentials import AccountCredentialStore
+from mailapi_shared.credential_crypto import CredentialKeyring
+from mailapi_shared.oauth_files import OAuthFiles
 from mailapi_shared import site_accounts
 from mailapi_shared.site_accounts import SiteAccountStore
 
@@ -110,6 +116,69 @@ class AuthArtifactVersionTests(unittest.TestCase):
             self.assertNotIn("refresh_token", json.dumps(entries))
             self.assertTrue((root / "archive/gmail/account-1/v2-before.json").is_file())
             self.assertEqual(json.loads(target.read_text())["refresh_token"], "second")
+
+    def test_prune_keeps_recent_union_and_creates_encrypted_restore_point(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.json"
+            key_file.write_text(json.dumps({
+                "namespace": "auth-prune-test",
+                "active": "v1",
+                "keys": {"v1": b64encode(AESGCM.generate_key(bit_length=256)).decode()},
+            }))
+            key_file.chmod(0o600)
+            runtime = root / "runtime"
+            runtime.mkdir(mode=0o700)
+            keyring = CredentialKeyring(key_file, data_dirs=(runtime,))
+            oauth_files = OAuthFiles(runtime, keyring)
+            store = AuthArtifactVersionStore(
+                runtime / "auth_artifact_versions.json",
+                runtime / "auth_artifact_versions",
+                oauth_files=oauth_files,
+            )
+            target = runtime / "codex_auth" / "account.json"
+            for index in range(11):
+                store.write_json(
+                    target,
+                    {"secret_marker": f"secret-{index}"},
+                    provider="codex",
+                    resource_id="account-1",
+                    source="refresh",
+                )
+
+            manifest = json.loads((runtime / "auth_artifact_versions.json").read_text())
+            entries = manifest["artifacts"]["codex:account-1"]
+            now = datetime(2026, 11, 14, tzinfo=timezone.utc)
+            historical = [item for item in entries if not item.get("active")]
+            for index, item in enumerate(historical):
+                age = [5, 10, 15, 20, 25, 29, 29][index] if index < 7 else 31 + index
+                item["created_at"] = (now - timedelta(days=age)).isoformat().replace("+00:00", "Z")
+            (runtime / "auth_artifact_versions.json").write_text(json.dumps(manifest))
+            store = AuthArtifactVersionStore(
+                runtime / "auth_artifact_versions.json",
+                runtime / "auth_artifact_versions",
+                oauth_files=oauth_files,
+            )
+
+            result = store.prune(now=now)
+
+            self.assertEqual(result["removed_entries"], 13)
+            self.assertEqual(result["removed_files"], 7)
+            kept = store.list_public(provider="codex", resource_id="account-1")
+            self.assertEqual(len(kept), 8)
+            self.assertTrue(kept[-1]["active"])
+            self.assertEqual(oauth_files.read_json(target)["secret_marker"], "secret-10")
+
+            recovery = Path(result["recovery_point"])
+            self.assertEqual(recovery.stat().st_mode & 0o777, 0o700)
+            recovery_manifest = recovery / "manifest.json"
+            self.assertEqual(recovery_manifest.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn(b"secret-", recovery_manifest.read_bytes())
+            recovered = oauth_files.read_json(recovery_manifest)
+            self.assertEqual(len(recovered["artifacts"]["codex:account-1"]), 21)
+            recovered_archives = list((recovery / "archives").rglob("*.json"))
+            self.assertEqual(len(recovered_archives), 10)
+            self.assertTrue(all("secret_marker" in oauth_files.read_json(path) for path in recovered_archives))
 
 
 class SecurityAuditTests(unittest.TestCase):

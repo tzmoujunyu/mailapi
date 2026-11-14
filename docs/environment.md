@@ -96,6 +96,8 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 | `TEST_APP_BASE_URL`、`TEST_GMAIL_OAUTH_REDIRECT_BASE` | 测试版网站和 Gmail 回调地址 |
 | `TEST_CODEX_LOGIN_ADDR` | 测试版 Codex 回调地址 |
 | `TEST_GMAIL_ACCOUNTS` | 测试版没有账号文件时的可选账号配置 |
+| `TEST_AUTH_ARTIFACT_CLEANUP` | 设为 `1` 时，测试版启动后创建加密恢复点并清理授权历史归档，需要同时配置独立测试密钥和 OAuth 加密 |
+| `TEST_AUTH_ARTIFACT_KEEP_HISTORY`、`TEST_AUTH_ARTIFACT_MAX_AGE_DAYS` | 测试版授权归档保留数量和天数，默认 `5` 和 `30`，两条规则取并集 |
 
 测试版不读取正式版网站登录口令。测试外部监听时必须使用独立邮箱、OAuth 回调和授权文件。
 
@@ -125,6 +127,7 @@ OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求�
 - `resources.sqlite3` 保存 GPT 资料、Coding Plan、中转站、邮箱池、Codex 元数据、GPT 修改记录和恢复点。
 - GPT 密码、2FA、API Key 和恢复点在 SQLite 中保存为带版本、密钥 ID、随机 nonce 和鉴别数据的密文。
 - `gmail_tokens/`、`outlook_tokens/`、`codex_auth/` 和 `auth_artifact_versions/` 保存加密 OAuth 文件及其历史副本。
+- 活动授权文件会原子覆盖。测试版启用 `TEST_AUTH_ARTIFACT_CLEANUP=1` 后，每次启动先在 `auth_artifact_restore_points/` 创建加密恢复点，再按“当前版本 + 最近 N 个历史版本 + N 天内版本”的并集清理归档；正式版默认不自动执行清理。
 - `oauth_clients.json` 保存加密的 Google 和 Outlook 客户端配置。
 - `resource_secrets/` 保存资源库中的加密私有数据。`mail_filters.json`、接码历史、历史游标、Codex 图文提示、图片和错误日志继续使用独立文件。
 
