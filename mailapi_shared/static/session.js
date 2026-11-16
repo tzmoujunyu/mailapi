@@ -14,10 +14,14 @@
     const bar = document.createElement('nav');
     bar.className = 'site-session';
     bar.setAttribute('aria-label', '网站会话');
-    bar.innerHTML = '<strong>账户中心</strong><span data-identity></span><span data-groups></span><a href="/admin/access" data-management hidden>网站账户与分组</a><div class="site-session-actions"><span data-theme-control></span><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>';
+    const managementLink = document.body.classList.contains('test-ui-page')
+      ? ''
+      : '<a href="/admin/access" data-management hidden>网站账户与分组</a>';
+    bar.innerHTML = `<strong>账户中心</strong><span data-identity></span><span data-groups></span>${managementLink}<div class="site-session-actions"><span data-theme-control></span><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>`;
     bar.querySelector('[data-identity]').textContent = `${user.username} · ${roleNames[user.role]}`;
     bar.querySelector('[data-groups]').textContent = groups.length ? `分组：${groups.map(group => group.name).join('、')}` : '暂未加入分组';
-    bar.querySelector('[data-management]').hidden = user.role === 'user';
+    const management = bar.querySelector('[data-management]');
+    if (management) management.hidden = user.role === 'user';
     document.body.prepend(bar);
     window.SiteTheme?.mount(bar.querySelector('[data-theme-control]'));
     bar.querySelector('[data-logout]').addEventListener('click', async event => {
@@ -59,7 +63,10 @@
       } catch (error) { dialog.querySelector('[role="alert"]').textContent = error.message; }
       finally { submit.disabled = false; }
     });
-    if (user.must_change_password && location.pathname === '/') openPasswordDialog();
+    const passwordLanding = document.body.classList.contains('test-ui-page')
+      ? location.pathname === '/test-features'
+      : location.pathname === '/';
+    if (user.must_change_password && passwordLanding) openPasswordDialog();
   }
   start().catch(() => {});
 })();

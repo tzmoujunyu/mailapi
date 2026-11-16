@@ -121,6 +121,8 @@ body.test-ui-page .site-session a:hover {
 }
 
 body.test-ui-page .home-directory {
+  position: sticky;
+  top: 0;
   left: var(--test-sidebar);
   height: 64px;
   border-bottom-color: var(--test-line);
@@ -152,7 +154,7 @@ body.test-ui-page .home-directory a[aria-current="location"] {
 }
 
 body.test-ui-page.home-page {
-  padding-top: 76px;
+  padding-top: 0;
 }
 
 body.test-ui-page.home-page .container {
@@ -472,15 +474,8 @@ body.test-ui-page.test-ui-login .login-main input {
 }
 
 body.test-ui-features {
-  padding-left: 0;
+  padding-left: var(--test-sidebar);
   background: var(--theme-page-bg, #f3f5f7);
-}
-
-body.test-ui-features .site-session {
-  margin-left: 0;
-  padding-left: 30px;
-  border-bottom-color: var(--theme-border, #e6e8ec);
-  background: var(--theme-surface, #fff);
 }
 
 body.test-ui-features .workspace {
@@ -488,19 +483,14 @@ body.test-ui-features .workspace {
   background: var(--theme-page-bg, #f3f5f7);
 }
 
-body.test-ui-features .sidebar {
-  border-right: 1px solid var(--theme-border, #e6e8ec);
-  background: var(--theme-surface, #fff);
-  color: var(--theme-text, #202327);
-}
-
-body.test-ui-features .brand { color: var(--theme-text, #202327); }
-body.test-ui-features .brand small { color: var(--theme-muted, #6e737b); }
-body.test-ui-features .nav button { color: var(--theme-muted, #6e737b); }
-body.test-ui-features .nav button:hover,
-body.test-ui-features .nav button.active { background: var(--test-purple-soft); color: var(--test-purple); }
-body.test-ui-features .sidebar-note { border-color: var(--theme-border, #e6e8ec); color: var(--theme-muted, #6e737b); }
+body.test-ui-features .workspace > .sidebar { display: none; }
 body.test-ui-features .main { background: var(--theme-page-bg, #f3f5f7); }
+body.test-ui-features .main { padding: 0 30px 48px; }
+body.test-ui-features .topbar { min-height: 76px; }
+body.test-ui-features .content { max-width: 1480px; }
+body.test-ui-features .workspace-view { padding-top: 24px; }
+body.test-ui-features .card,
+body.test-ui-features .stat { border-radius: var(--test-radius); box-shadow: 0 8px 28px #26324a08; }
 body.test-ui-features .topbar { border-bottom-color: var(--theme-border, #e6e8ec); }
 body.test-ui-features .stat,
 body.test-ui-features .card { background: var(--theme-surface, #fff); border-color: var(--theme-border, #e6e8ec); }
@@ -511,6 +501,8 @@ body.test-ui-features button,
 body.test-ui-features .btn { border-color: var(--theme-border-strong, #cbd5e1); background: var(--theme-surface, #fff); color: var(--theme-text, #202327); }
 body.test-ui-features button.primary,
 body.test-ui-features .btn.primary { border-color: var(--test-purple); background: var(--test-purple); color: #fff; }
+body.test-ui-access > header { display: none; }
+body.test-ui-admin .topbar .actions > a:not(.btn-primary) { display: none; }
 
 @media (max-width: 920px) {
   body.test-ui-page.home-page .test-ui-home-summary {
@@ -528,6 +520,8 @@ body.test-ui-features .btn.primary { border-color: var(--test-purple); backgroun
     padding-left: 82px;
   }
   body.test-ui-page .home-directory {
+    position: sticky;
+    top: 0;
     left: var(--test-sidebar);
   }
   body.test-ui-page .home-directory-inner {
@@ -551,6 +545,7 @@ body.test-ui-features .btn.primary { border-color: var(--test-purple); backgroun
   body.test-ui-page.test-ui-access main {
     padding: 12px 12px 36px;
   }
+  body.test-ui-features .main { padding: 0 12px 24px; }
   body.test-ui-page.test-ui-admin .section,
   body.test-ui-page.test-ui-access section {
     padding: 16px;

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MailAPI 测试版工作台</title>
+    <title>MailAPI 测试版</title>
     <link rel="stylesheet" href="/static/session.css" />
     <link rel="stylesheet" href="/static/theme.css" />
     <style>
@@ -95,9 +95,6 @@
       .announcement-admin-item .actions { flex: 0 0 auto; }
       .hidden { display: none !important; }
       code { color: #1d4ed8; font-size: 11px; }
-      .settings-list { display: grid; gap: 10px; margin: 0; }
-      .settings-item { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--theme-border, var(--lab-border)); font-size: 13px; }
-      .settings-item:last-child { border-bottom: 0; }
       @media (max-width: 980px) { .sidebar { width: 190px; flex-basis: 190px; } .main { padding: 0 20px 28px; } .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       @media (max-width: 720px) { .workspace { display: block; } .sidebar { width: 100%; padding: 13px 12px 10px; } .brand { padding: 0 8px 12px; } .sidebar-note, .nav-label { display: none; } .nav { display: flex; overflow-x: auto; gap: 5px; } .nav button { min-width: max-content; } .main { padding: 0 12px 24px; } .topbar { min-height: 68px; } .topbar h1 { font-size: 18px; } .grid { grid-template-columns: 1fr; } .view-head { align-items: flex-start; } .finance-toolbar { align-items: flex-start; flex-direction: column; } .announcement-admin-item { flex-direction: column; } }
       @media (max-width: 440px) { .stats { grid-template-columns: 1fr 1fr; gap: 8px; } .stat { padding: 13px; } .stat-value { font-size: 20px; } .topbar-actions { gap: 5px; } .env-badge { padding: 5px 8px; } }
@@ -107,27 +104,15 @@
   </head>
   <body>
     <div class="workspace">
-      <aside class="sidebar" aria-label="测试版导航">
-        <div class="brand"><span class="brand-mark">M</span><div><strong>MailAPI Lab</strong><small>测试版工作台</small></div></div>
-        <p class="nav-label">Workspace</p>
-        <nav class="nav">
-          <button type="button" class="active" data-view-target="overview"><span class="nav-icon">▦</span>总览</button>
-          <button type="button" data-view-target="api2api"><span class="nav-icon">⌁</span>API</button>
-          <button type="button" data-view-target="finance"><span class="nav-icon">¥</span>财务</button>
-          <button type="button" data-view-target="settings"><span class="nav-icon">⚙</span>设置</button>
-        </nav>
-        <div class="sidebar-note">这是隔离的测试环境。API 与财务数据使用测试数据目录，停止测试进程后可整体清理。</div>
-      </aside>
-
       <main class="main">
         <header class="topbar">
-          <div><h1>测试版工作台</h1><p>API 与财务系统概念界面</p></div>
-          <div class="topbar-actions"><span class="env-badge">隔离环境</span><a class="top-link" href="/">返回主页</a><a class="top-link" href="/admin">控制台</a></div>
+          <div><h1 id="workspace-title">主页</h1><p id="workspace-subtitle">测试版资源与服务总览</p></div>
+          <div class="topbar-actions"><span class="env-badge">测试版 · 临时快照</span></div>
         </header>
 
         <div class="content">
           <section id="view-overview" class="workspace-view active" data-view="overview" aria-labelledby="overview-title">
-            <div class="view-head"><div><h2 id="overview-title">总览</h2><p>快速查看测试版的调用、密钥与报销状态。</p></div><span class="tag">实时读取测试数据</span></div>
+            <div class="view-head"><div><h2 id="overview-title">主页</h2><p>快速查看测试版的调用、密钥与报销状态。</p></div><span class="tag">实时读取测试数据</span></div>
             <div class="stats">
               <article class="stat"><div class="stat-label">API 请求</div><div id="dashboard-requests" class="stat-value">—</div><div class="stat-foot">当前账户累计</div></article>
               <article class="stat"><div class="stat-label">总 Token</div><div id="dashboard-tokens" class="stat-value">—</div><div class="stat-foot">输入与输出合计</div></article>
@@ -205,10 +190,6 @@
             </section>
           </section>
 
-          <section id="view-settings" class="workspace-view" data-view="settings" aria-labelledby="settings-title">
-            <div class="view-head"><div><h2 id="settings-title">设置</h2><p>测试版运行信息与界面说明。</p></div></div>
-            <div class="card"><div class="card-head"><h3>环境信息</h3><span class="tag">只读</span></div><div class="settings-list"><div class="settings-item"><span>运行模式</span><strong>测试版</strong></div><div class="settings-item"><span>数据策略</span><strong>独立测试数据目录</strong></div><div class="settings-item"><span>API 风格</span><strong>OpenAI 兼容</strong></div><div class="settings-item"><span>界面参考</span><strong>统一工作台布局</strong></div></div></div>
-          </section>
         </div>
       </main>
     </div>
@@ -217,9 +198,17 @@
       (() => {
         const buttons = [...document.querySelectorAll('[data-view-target]')];
         const views = [...document.querySelectorAll('.workspace-view')];
+        const titles = {
+          overview: ['主页', '测试版资源与服务总览'],
+          api2api: ['API', '测试版 API 管理与调用记录'],
+          finance: ['财务', '测试版报销申请与审核'],
+        };
         function showView(name) {
           views.forEach(view => view.classList.toggle('active', view.dataset.view === name));
           buttons.forEach(button => button.classList.toggle('active', button.dataset.viewTarget === name));
+          const title = titles[name] || titles.overview;
+          document.getElementById('workspace-title').textContent = title[0];
+          document.getElementById('workspace-subtitle').textContent = title[1];
           window.scrollTo({ top: 0, behavior: 'smooth' });
         }
         buttons.forEach(button => button.addEventListener('click', () => {

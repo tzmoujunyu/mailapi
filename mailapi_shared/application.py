@@ -3586,12 +3586,14 @@ def admin_page(request: FastAPIRequest):
     page = (STATIC_DIR / "admin.html").read_text(encoding="utf-8")
     performance_mode = "test" if IS_TEST else "disabled"
     performance_script = '<script src="/static/performance-monitor.js"></script>' if IS_TEST else ""
-    test_features_link = '<a class="btn" href="/test-features">测试版 API 与财务</a>' if IS_TEST else ""
+    test_features_link = ""
+    return_resource_link = '<a class="btn" href="/">返回账号主页</a>' if not IS_TEST else ""
     return HTMLResponse(
         themed_page(page, request)
         .replace('data-performance-monitor="disabled"', f'data-performance-monitor="{performance_mode}"', 1)
         .replace("<!-- PERFORMANCE_MONITOR_SCRIPT -->", performance_script, 1)
-        .replace("<!-- TEST_FEATURES_LINK -->", test_features_link, 1),
+        .replace("<!-- TEST_FEATURES_LINK -->", test_features_link, 1)
+        .replace("<!-- RETURN_RESOURCE_LINK -->", return_resource_link, 1),
         headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
     )
 

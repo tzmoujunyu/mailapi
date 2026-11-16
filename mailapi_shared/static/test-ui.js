@@ -1,22 +1,56 @@
 (() => {
   const path = location.pathname;
-  const pageName = path === '/' ? 'home' : path === '/admin' ? 'admin' : path === '/admin/access' ? 'access' : path === '/login' ? 'login' : '';
-  if (!pageName || document.querySelector('.workspace')) return;
+  const pageName = path === '/' ? 'home' : path === '/admin' ? 'admin' : path === '/admin/access' ? 'access' : path === '/login' ? 'login' : path === '/test-features' ? 'features' : '';
+  if (!pageName) return;
 
   document.body.classList.add('test-ui-page', `test-ui-${pageName}`);
 
-  function buildSidebar() {
+  function buildSidebar({showAccount = true, showConsole = true} = {}) {
     const aside = document.createElement('aside');
     aside.className = 'test-ui-sidebar';
     aside.setAttribute('aria-label', '测试版导航');
     const links = [
-      ['⌂', '主页', '/'],
-      ['▦', '账户', '/admin/access'],
-      ['◈', '资源', '/admin'],
-      ['¥', '财务', '/test-features'],
+      ['▦', '主页', '/test-features#view-overview'],
+      ['◈', '资源', '/'],
+      ['⌁', 'API', '/test-features#view-api2api'],
+      ['¥', '财务', '/test-features#view-finance'],
     ];
-    aside.innerHTML = `<div class="test-ui-logo" aria-label="MailAPI 测试版">M</div><nav class="test-ui-nav">${links.map(([icon, label, href]) => `<a href="${href}" aria-label="${label}" title="${label}" ${href === path ? 'aria-current="page"' : ''}><span aria-hidden="true">${icon}</span><span class="test-ui-nav-label">${label}</span></a>`).join('')}</nav><div class="test-ui-sidebar-footer"><a href="/login" aria-label="退出并重新登录" title="登录">↻</a></div>`;
+    if (showConsole) links.splice(2, 0, ['⚙', '控制台', '/admin']);
+    if (showAccount) links.splice(showConsole ? 2 : 2, 0, ['▦', '账户', '/admin/access']);
+    aside.innerHTML = `<div class="test-ui-logo" aria-label="MailAPI 测试版">M</div><nav class="test-ui-nav">${links.map(([icon, label, href]) => `<a href="${href}" aria-label="${label}" title="${label}"><span aria-hidden="true">${icon}</span><span class="test-ui-nav-label">${label}</span></a>`).join('')}</nav><div class="test-ui-sidebar-footer"><a href="/login" aria-label="退出并重新登录" title="登录">↻</a></div>`;
     document.body.prepend(aside);
+  }
+
+  async function ensureSidebar() {
+    const existing = document.querySelector('.test-ui-sidebar');
+    if (existing?.querySelector('a[href="/test-features#view-overview"]')) return;
+    let showAccount = existing ? Boolean(existing.querySelector('a[href="/admin/access"]')) : null;
+    let showConsole = existing ? Boolean(existing.querySelector('a[href="/admin"]')) : null;
+    existing?.remove();
+    if (showAccount === null || showConsole === null) {
+      try {
+        const response = await fetch('/api/auth/me', {cache: 'no-store'});
+        const data = response.ok ? await response.json() : {};
+        showAccount = ['admin', 'manager'].includes(data.user?.role);
+        showConsole = data.user?.role === 'admin';
+      } catch {
+        showAccount = false;
+        showConsole = false;
+      }
+    }
+    buildSidebar({showAccount, showConsole});
+    syncCurrentNav();
+  }
+
+  function syncCurrentNav() {
+    const target = path === '/test-features'
+      ? (location.hash === '#view-api2api' ? '/test-features#view-api2api' : location.hash === '#view-finance' ? '/test-features#view-finance' : '/test-features#view-overview')
+      : path;
+    document.querySelectorAll('.test-ui-nav a').forEach(link => {
+      const current = link.getAttribute('href') === target;
+      if (current) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
   }
 
   function buildLoginBrand() {
@@ -75,10 +109,12 @@
     document.querySelector('.site-session')?.classList.add('test-ui-session-ready');
   }
 
-  if (!document.querySelector('.test-ui-sidebar')) buildSidebar();
+  ensureSidebar();
   if (pageName === 'login') buildLoginBrand();
   if (pageName === 'home') buildHomeSummary();
   markSessionReady();
+  syncCurrentNav();
+  window.addEventListener('hashchange', syncCurrentNav);
 
   const observer = new MutationObserver(() => {
     markSessionReady();

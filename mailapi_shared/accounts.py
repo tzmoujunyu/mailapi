@@ -36,20 +36,21 @@ def themed_page(page, request):
                 return f"<body{attrs}>"
 
             page = re.sub(r"<body([^>]*)>", add_body_classes, page, count=1)
-        if page_name in {"home", "admin", "access"}:
+        if page_name in {"home", "admin", "access", "features"}:
             management_link = (
                 '<a href="/admin/access" aria-label="账户" title="账户"><span aria-hidden="true">▦</span><span class="test-ui-nav-label">账户</span></a>'
                 if user and user.get("role") in {"admin", "manager"} else ""
             )
             resource_link = (
-                '<a href="/admin" aria-label="资源" title="资源"><span aria-hidden="true">◈</span><span class="test-ui-nav-label">资源</span></a>'
+                '<a href="/admin" aria-label="控制台" title="控制台"><span aria-hidden="true">⚙</span><span class="test-ui-nav-label">控制台</span></a>'
                 if user and user.get("role") == "admin" else ""
             )
             sidebar = (
                 '<aside class="test-ui-sidebar" aria-label="测试版导航">'
                 '<div class="test-ui-logo" aria-label="MailAPI 测试版">M</div>'
                 '<nav class="test-ui-nav">'
-                '<a href="/" aria-label="主页" title="主页"><span aria-hidden="true">⌂</span><span class="test-ui-nav-label">主页</span></a>'
+                '<a href="/test-features#view-overview" aria-label="主页" title="主页"><span aria-hidden="true">▦</span><span class="test-ui-nav-label">主页</span></a>'
+                '<a href="/" aria-label="资源" title="资源"><span aria-hidden="true">◈</span><span class="test-ui-nav-label">资源</span></a>'
                 + management_link + resource_link +
                 '<a href="/test-features#view-api2api" aria-label="API" title="API"><span aria-hidden="true">⌁</span><span class="test-ui-nav-label">API</span></a>'
                 '<a href="/test-features#view-finance" aria-label="财务" title="财务"><span aria-hidden="true">¥</span><span class="test-ui-nav-label">财务</span></a>'
@@ -108,7 +109,8 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
         if result is None:
             return login_error(request, browser, "用户名、密码或动态验证码错误", 401)
         token, user = result
-        response = RedirectResponse("/", status_code=303) if browser else JSONResponse({"user": user})
+        landing = "/test-features#view-overview" if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test" else "/"
+        response = RedirectResponse(landing, status_code=303) if browser else JSONResponse({"user": user})
         response.set_cookie(SESSION_COOKIE, token, httponly=True, max_age=SESSION_SECONDS,
                             samesite="lax", secure=request.url.scheme == "https")
         return response
