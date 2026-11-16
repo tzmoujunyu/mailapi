@@ -1,0 +1,547 @@
+:root {
+  --test-ink: #202327;
+  --test-muted: #6e737b;
+  --test-page: #f3f5f7;
+  --test-card: #ffffff;
+  --test-line: #e6e8ec;
+  --test-purple: #4f24ea;
+  --test-purple-soft: #eeeaff;
+  --test-green: #52b87a;
+  --test-sidebar: 86px;
+  --test-radius: 22px;
+}
+
+body.test-ui-page {
+  min-height: 100vh;
+  padding-left: var(--test-sidebar);
+  background: var(--test-page);
+  color: var(--test-ink);
+  font-family: Inter, "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.test-ui-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 80;
+  display: flex;
+  width: var(--test-sidebar);
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 12px 18px;
+  border-right: 1px solid var(--test-line);
+  background: #fff;
+}
+
+.test-ui-logo {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  margin-bottom: 18px;
+  border-radius: 14px;
+  background: var(--test-purple);
+  color: #fff;
+  font-size: 27px;
+  font-weight: 800;
+  box-shadow: 0 8px 18px #4f24ea33;
+}
+
+.test-ui-nav {
+  display: grid;
+  width: 100%;
+  gap: 8px;
+}
+
+.test-ui-nav a {
+  display: grid;
+  min-height: 45px;
+  place-items: center;
+  border-radius: 14px;
+  color: #69707a;
+  font-size: 20px;
+  text-decoration: none;
+  transition: background .16s ease, color .16s ease, transform .16s ease;
+}
+
+.test-ui-nav a:hover,
+.test-ui-nav a:focus-visible,
+.test-ui-nav a[aria-current="page"] {
+  background: var(--test-purple-soft);
+  color: var(--test-purple);
+  transform: translateY(-1px);
+}
+
+.test-ui-nav-label {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.test-ui-sidebar-footer {
+  display: grid;
+  width: 100%;
+  gap: 8px;
+  margin-top: auto;
+}
+
+body.test-ui-page .site-session {
+  min-height: 58px;
+  margin-left: calc(var(--test-sidebar) * -1);
+  padding: 10px 30px 10px 112px;
+  border-bottom: 1px solid var(--test-line);
+  background: #fff;
+  color: #5d636c;
+}
+
+body.test-ui-page .site-session strong {
+  border-radius: 8px;
+  background: var(--test-purple-soft);
+  color: var(--test-purple);
+}
+
+body.test-ui-page .site-session .site-session-actions {
+  gap: 8px;
+}
+
+body.test-ui-page .site-session button,
+body.test-ui-page .site-session a {
+  border-color: var(--test-line);
+  border-radius: 10px;
+  background: #fff;
+  color: #4d535c;
+}
+
+body.test-ui-page .site-session button:hover,
+body.test-ui-page .site-session a:hover {
+  background: #f6f3ff;
+  color: var(--test-purple);
+}
+
+body.test-ui-page .home-directory {
+  left: var(--test-sidebar);
+  height: 64px;
+  border-bottom-color: var(--test-line);
+  background: #ffffffed;
+}
+
+body.test-ui-page .home-directory-inner {
+  max-width: 1480px;
+  padding: 0 30px;
+}
+
+body.test-ui-page .home-directory-label {
+  color: #8a9098;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+body.test-ui-page .home-directory a {
+  border-radius: 12px;
+  color: #5e646d;
+}
+
+body.test-ui-page .home-directory a[aria-current="location"] {
+  border-color: transparent;
+  background: var(--test-purple-soft);
+  color: var(--test-purple);
+}
+
+body.test-ui-page.home-page {
+  padding-top: 76px;
+}
+
+body.test-ui-page.home-page .container {
+  width: min(1480px, calc(100% - 44px));
+  min-height: auto;
+  margin: 20px auto 48px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body.test-ui-page.home-page #chatgpt-accounts,
+body.test-ui-page.home-page .resource-section {
+  margin-top: 18px;
+  padding: 24px;
+  border: 1px solid var(--test-line);
+  border-radius: var(--test-radius);
+  background: var(--test-card);
+  box-shadow: 0 8px 28px #26324a0a;
+}
+
+body.test-ui-page.home-page #chatgpt-accounts {
+  margin-top: 0;
+}
+
+body.test-ui-page.home-page .page-head {
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+body.test-ui-page.home-page .page-heading h1,
+body.test-ui-page.home-page .resource-head h2 {
+  color: var(--test-ink);
+  font-size: clamp(23px, 2.2vw, 32px);
+  letter-spacing: -.035em;
+}
+
+body.test-ui-page.home-page .page-subtitle,
+body.test-ui-page.home-page .muted {
+  color: var(--test-muted);
+}
+
+body.test-ui-page.home-page .table-wrap {
+  border-color: var(--test-line);
+  border-radius: 16px;
+}
+
+body.test-ui-page.home-page table {
+  background: #fff;
+}
+
+body.test-ui-page.home-page th {
+  background: #fafbfc;
+  color: #8a9098;
+  font-size: 12px;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+
+body.test-ui-page.home-page td {
+  border-bottom-color: #eef0f3;
+}
+
+body.test-ui-page.home-page tbody tr:hover td {
+  background: #fbfaff;
+}
+
+body.test-ui-page.home-page .small-btn {
+  min-height: 36px;
+  border-color: var(--test-line);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--test-purple);
+  font-weight: 700;
+}
+
+body.test-ui-page.home-page .test-ui-home-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.test-ui-summary-card {
+  min-height: 112px;
+  padding: 18px 20px;
+  border: 1px solid var(--test-line);
+  border-radius: var(--test-radius);
+  background: #fff;
+  box-shadow: 0 8px 28px #26324a08;
+}
+
+.test-ui-summary-label {
+  color: #858b94;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+
+.test-ui-summary-value {
+  display: block;
+  margin-top: 12px;
+  color: var(--test-ink);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -.04em;
+}
+
+.test-ui-summary-foot {
+  display: block;
+  margin-top: 4px;
+  color: var(--test-muted);
+  font-size: 12px;
+}
+
+body.test-ui-page.home-page .resource-section {
+  scroll-margin-top: 84px;
+}
+
+body.test-ui-page.home-page .resource-head {
+  margin-bottom: 16px;
+}
+
+body.test-ui-page.home-page .codex-tip-item {
+  border-color: var(--test-line);
+  border-radius: 15px;
+  background: #fafbfc;
+}
+
+body.test-ui-page.home-page .codex-tip-item:hover,
+body.test-ui-page.home-page .codex-tip-item:focus-visible {
+  border-color: #d6ccff;
+  background: #f8f6ff;
+}
+
+body.test-ui-page.home-page .plan-pill,
+body.test-ui-page.home-page .status-tag,
+body.test-ui-page.home-page .tag-codex,
+body.test-ui-page.home-page .tag-email {
+  border-radius: 999px;
+}
+
+body.test-ui-page.test-ui-admin .shell {
+  min-height: calc(100vh - 58px);
+  background: transparent;
+}
+
+body.test-ui-page.test-ui-admin .topbar {
+  margin: 22px 30px 0;
+  padding: 20px 24px;
+  border: 1px solid var(--test-line);
+  border-radius: var(--test-radius);
+  background: #fff;
+  box-shadow: 0 8px 28px #26324a08;
+}
+
+body.test-ui-page.test-ui-admin .topbar h1 {
+  color: var(--test-ink);
+  font-size: 27px;
+  letter-spacing: -.04em;
+}
+
+body.test-ui-page.test-ui-admin .content {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 18px 30px 48px;
+}
+
+body.test-ui-page.test-ui-admin .section {
+  margin: 16px 0;
+  padding: 24px;
+  border: 1px solid var(--test-line);
+  border-radius: var(--test-radius);
+  background: #fff;
+  box-shadow: 0 8px 28px #26324a08;
+}
+
+body.test-ui-page.test-ui-admin .management-tabs {
+  border-color: var(--test-line);
+  border-radius: 15px;
+  background: #fff;
+}
+
+body.test-ui-page.test-ui-admin .management-tab-indicator {
+  border-radius: 12px;
+  background: var(--test-purple-soft);
+}
+
+body.test-ui-page.test-ui-admin .management-tabs button[aria-selected="true"] {
+  color: var(--test-purple);
+}
+
+body.test-ui-page.test-ui-admin .table-wrap {
+  border-color: var(--test-line);
+  border-radius: 15px;
+}
+
+body.test-ui-page.test-ui-admin th {
+  background: #fafbfc;
+  color: #858b94;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+body.test-ui-page.test-ui-admin .btn-primary,
+body.test-ui-page.test-ui-admin .primary {
+  border-color: var(--test-purple);
+  background: var(--test-purple);
+}
+
+body.test-ui-page.test-ui-admin .btn-primary:hover,
+body.test-ui-page.test-ui-admin .primary:hover {
+  background: #3f1bd2;
+}
+
+body.test-ui-page.test-ui-access header {
+  margin: 22px 30px 0;
+  padding: 20px 24px;
+  border: 1px solid var(--test-line);
+  border-radius: var(--test-radius);
+  background: #fff;
+  box-shadow: 0 8px 28px #26324a08;
+}
+
+body.test-ui-page.test-ui-access header h1 {
+  color: var(--test-ink);
+  font-size: 27px;
+  letter-spacing: -.04em;
+}
+
+body.test-ui-page.test-ui-access main {
+  max-width: 1480px;
+  padding: 18px 30px 48px;
+}
+
+body.test-ui-page.test-ui-access section {
+  border-color: var(--test-line);
+  border-radius: var(--test-radius);
+  box-shadow: 0 8px 28px #26324a08;
+}
+
+body.test-ui-page.test-ui-access .management-tabs {
+  border-color: var(--test-line);
+  border-radius: 15px;
+  background: #fff;
+}
+
+body.test-ui-page.test-ui-access .management-tab-indicator {
+  border-radius: 12px;
+  background: var(--test-purple-soft);
+}
+
+body.test-ui-page.test-ui-access .management-tabs button[aria-selected="true"] {
+  color: var(--test-purple);
+}
+
+body.test-ui-page.test-ui-login {
+  display: block;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 70% 10%, #eae4ff 0, #f4f5f7 38%, #f3f5f7 100%);
+}
+
+body.test-ui-page.test-ui-login .login-theme-header {
+  padding: 20px 30px;
+}
+
+body.test-ui-page.test-ui-login .login-main {
+  min-height: calc(100vh - 86px);
+}
+
+body.test-ui-page.test-ui-login .login-main form {
+  position: relative;
+  width: min(430px, calc(100vw - 34px));
+  padding: 42px 38px 36px;
+  border: 1px solid #fff;
+  border-radius: 26px;
+  background: #fffffff2;
+  box-shadow: 0 24px 70px #3341551f;
+}
+
+.test-ui-login-brand {
+  display: grid;
+  width: 50px;
+  height: 50px;
+  place-items: center;
+  margin-bottom: 22px;
+  border-radius: 16px;
+  background: var(--test-purple);
+  color: #fff;
+  font-size: 28px;
+  font-weight: 800;
+  box-shadow: 0 10px 24px #4f24ea33;
+}
+
+body.test-ui-page.test-ui-login .login-main h1 {
+  color: var(--test-ink);
+  font-size: 30px;
+  letter-spacing: -.04em;
+}
+
+body.test-ui-page.test-ui-login .login-main button {
+  border-radius: 12px;
+  background: var(--test-purple);
+}
+
+body.test-ui-page.test-ui-login .login-main .mode-link {
+  border-color: var(--test-line);
+  border-radius: 12px;
+  color: var(--test-purple);
+}
+
+body.test-ui-page.test-ui-login .login-main input {
+  border-radius: 12px;
+  border-color: var(--test-line);
+  background: #fff;
+}
+
+@media (max-width: 920px) {
+  body.test-ui-page.home-page .test-ui-home-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  :root { --test-sidebar: 68px; }
+  body.test-ui-page {
+    padding-left: var(--test-sidebar);
+  }
+  body.test-ui-page .site-session {
+    margin-left: calc(var(--test-sidebar) * -1);
+    padding-left: 82px;
+  }
+  body.test-ui-page .home-directory {
+    left: var(--test-sidebar);
+  }
+  body.test-ui-page .home-directory-inner {
+    padding: 0 14px;
+  }
+  body.test-ui-page.home-page .container {
+    width: calc(100% - 18px);
+  }
+  body.test-ui-page.home-page #chatgpt-accounts,
+  body.test-ui-page.home-page .resource-section {
+    padding: 16px;
+    border-radius: 18px;
+  }
+  body.test-ui-page.test-ui-admin .topbar,
+  body.test-ui-page.test-ui-access header {
+    margin: 14px 12px 0;
+    padding: 17px;
+    border-radius: 18px;
+  }
+  body.test-ui-page.test-ui-admin .content,
+  body.test-ui-page.test-ui-access main {
+    padding: 12px 12px 36px;
+  }
+  body.test-ui-page.test-ui-admin .section,
+  body.test-ui-page.test-ui-access section {
+    padding: 16px;
+    border-radius: 18px;
+  }
+  body.test-ui-page.home-page .test-ui-home-summary {
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+  }
+  .test-ui-summary-card {
+    min-height: 96px;
+    padding: 14px;
+    border-radius: 17px;
+  }
+  .test-ui-summary-value {
+    font-size: 23px;
+  }
+  .test-ui-sidebar {
+    padding: 16px 8px;
+  }
+  .test-ui-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+  }
+  .test-ui-nav a {
+    min-height: 41px;
+    border-radius: 12px;
+  }
+  .test-ui-nav-label {
+    display: none;
+  }
+}
+

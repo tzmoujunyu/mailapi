@@ -1,5 +1,7 @@
 """Login, website-account and group HTTP endpoints."""
 import json
+import os
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Form, Request
@@ -16,9 +18,53 @@ SESSION_COOKIE = "mailapi_session"
 def themed_page(page, request):
     user = getattr(request.state, "site_user", None)
     theme = request.app.state.site_accounts.preferences(user["id"])["theme"] if user else "system"
-    return page.replace('data-theme="system"', f'data-theme="{theme}"', 1).replace(
+    page = page.replace('data-theme="system"', f'data-theme="{theme}"', 1).replace(
         'data-theme-account=""', 'data-theme-account="signed-in"' if user else 'data-theme-account=""', 1,
     )
+    if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test" and 'id="view-overview"' not in page:
+        path = request.url.path
+        page_name = "home" if path == "/" else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else ""
+        if page_name:
+            def add_body_classes(match):
+                attrs = match.group(1) or ""
+                classes = f"test-ui-page test-ui-{page_name}"
+                class_match = re.search(r'class="([^"]*)"', attrs)
+                if class_match:
+                    attrs = attrs[:class_match.start(1)] + class_match.group(1) + " " + classes + attrs[class_match.end(1):]
+                else:
+                    attrs += f' class="{classes}"'
+                return f"<body{attrs}>"
+
+            page = re.sub(r"<body([^>]*)>", add_body_classes, page, count=1)
+        if page_name in {"home", "admin", "access"}:
+            management_link = (
+                '<a href="/admin/access" aria-label="账户" title="账户"><span aria-hidden="true">▦</span><span class="test-ui-nav-label">账户</span></a>'
+                if user and user.get("role") in {"admin", "manager"} else ""
+            )
+            resource_link = (
+                '<a href="/admin" aria-label="资源" title="资源"><span aria-hidden="true">◈</span><span class="test-ui-nav-label">资源</span></a>'
+                if user and user.get("role") == "admin" else ""
+            )
+            sidebar = (
+                '<aside class="test-ui-sidebar" aria-label="测试版导航">'
+                '<div class="test-ui-logo" aria-label="MailAPI 测试版">M</div>'
+                '<nav class="test-ui-nav">'
+                '<a href="/" aria-label="主页" title="主页"><span aria-hidden="true">⌂</span><span class="test-ui-nav-label">主页</span></a>'
+                + management_link + resource_link +
+                '<a href="/test-features" aria-label="财务" title="财务"><span aria-hidden="true">¥</span><span class="test-ui-nav-label">财务</span></a>'
+                '</nav><div class="test-ui-sidebar-footer"><a href="/login" aria-label="重新登录" title="登录">↻</a></div></aside>'
+            )
+            body_end = page.find(">", page.find("<body"))
+            if body_end >= 0:
+                page = page[:body_end + 1] + sidebar + page[body_end + 1:]
+        if page_name == "login":
+            page = page.replace('<form id="login-form" method="post" action="/login">', '<form id="login-form" method="post" action="/login"><div class="test-ui-login-brand" aria-hidden="true" style="display:grid;width:50px;height:50px;place-items:center;margin-bottom:22px;border-radius:16px;background:#4f24ea;color:#fff;font-size:28px;font-weight:800;box-shadow:0 10px 24px #4f24ea33;">M</div>', 1)
+        page = page.replace(
+            "</head>",
+            '<link rel="stylesheet" href="/static/test-ui.css"><script src="/static/test-ui.js" defer></script></head>',
+            1,
+        )
+    return page
 
 
 async def read_payload(request, fields):
