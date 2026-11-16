@@ -41,7 +41,23 @@ class TestAppIsolationTests(unittest.TestCase):
         production = project / "runtime"
         production.mkdir()
         (production / "account_credentials.json").write_text('{"version": 1, "items": {}}')
-        (production / "site_accounts.json").write_text("{}")
+        (production / "site_accounts.json").write_text(json.dumps({
+            "version": 1,
+            "users": {
+                "admin-id": {
+                    "id": "admin-id", "username": "admin", "role": "admin",
+                    "password_hash": "pbkdf2_sha256$1$salt$hash", "created_at": 1,
+                },
+                "reader-id": {
+                    "id": "reader-id", "username": "reader", "role": "user",
+                    "password_hash": "pbkdf2_sha256$1$salt$hash", "created_at": 2,
+                },
+            },
+            "groups": {
+                "group-id": {"id": "group-id", "name": "Agent", "member_ids": ["reader-id"], "resource_keys": ["gpt:fixture"]},
+            },
+            "sessions": {"stale": {"user_id": "reader-id", "expires_at": 9999999999}},
+        }))
         (production / "site_accounts.sqlite3").write_bytes(b"production database fixture")
         accounts = []
         for name, provider, field, relative in (
@@ -88,7 +104,10 @@ class TestAppIsolationTests(unittest.TestCase):
             "for path, cfg in zip(auth_paths[:3], main.ACCOUNTS[:3], strict=True):",
             "    assert path.read_text() == cfg['name'] + '-token'",
             "assert not any(path.exists() or path.is_symlink() for path in auth_paths[3:])",
-            "assert not (data / 'site_accounts.json').exists()",
+            "site_snapshot = json.loads((data / 'site_accounts.json').read_text())",
+            "assert list(site_snapshot['users']) == ['admin-id', 'reader-id']",
+            "assert site_snapshot['groups']['group-id']['name'] == 'Agent'",
+            "assert site_snapshot['sessions'] == {}",
             "assert not (data / 'site_accounts.sqlite3').exists()",
             "with patch('mailapi_shared.site_accounts.password_is_pwned', return_value=False): main.start_watchers()",
             "assert not main.MAIL_WATCHERS",
@@ -140,6 +159,41 @@ class TestAppIsolationTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_configured_snapshot_directory_is_seeded_by_test_entry(self):
+        project_directory = self.enterContext(tempfile.TemporaryDirectory())
+        project = Path(project_directory)
+        shutil.copytree(ROOT / "mailapi_shared", project / "mailapi_shared", ignore=shutil.ignore_patterns("__pycache__"))
+        production = project / "runtime"
+        production.mkdir()
+        (production / "site_accounts.json").write_text(json.dumps({
+            "version": 1,
+            "users": {"admin-id": {"id": "admin-id", "username": "admin", "role": "admin", "password_hash": "pbkdf2_sha256$1$salt$hash", "created_at": 1}},
+            "groups": {},
+            "sessions": {},
+        }))
+        (production / "gmail_accounts.json").write_text(json.dumps({"items": [{"name": "account-1", "email": "one@example.com", "provider": "gmail", "enabled": False}]}))
+        test_data = project / "test-data"
+        environment = {
+            **os.environ,
+            "MAILAPI_MODE": "test",
+            "TEST_DATA_DIR": str(test_data),
+            "TEST_SNAPSHOT_FROM_PRODUCTION": "1",
+            "TEST_EXTERNAL_WATCHERS": "0",
+            "TEST_ADMIN_PASSWORD": "snapshot-fixture-entry",
+        }
+        script = "\n".join([
+            "import json",
+            "from pathlib import Path",
+            "from mailapi_shared import application as main",
+            "data = Path(main.DATA_DIR)",
+            "assert data == Path(__import__('os').environ['TEST_DATA_DIR'])",
+            "assert json.loads((data / 'gmail_accounts.json').read_text())['items'][0]['email'] == 'one@example.com'",
+            "assert json.loads((data / 'site_accounts.json').read_text())['users']['admin-id']['username'] == 'admin'",
+        ])
+        result = subprocess.run([sys.executable, "-c", script], cwd=project, env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((test_data / "gmail_accounts.json").exists())
 
     def test_independent_import_ignores_production_accounts_and_secrets(self):
         with tempfile.TemporaryDirectory() as directory:

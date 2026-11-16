@@ -54,15 +54,15 @@ flowchart TD
 | 模式变量 | `MAILAPI_MODE=production` | `MAILAPI_MODE=test` |
 | 默认端口 | `8000` | `8001` |
 | 默认主机 | `127.0.0.1`，公网通过可信反代接入 | `127.0.0.1`，仅允许回环 |
-| 数据目录 | `runtime/`，可用 `MAILAPI_DATA_DIR` 覆盖 | 默认创建临时快照，可用 `TEST_DATA_DIR` 指定独立目录 |
+| 数据目录 | `runtime/`，可用 `MAILAPI_DATA_DIR` 覆盖 | 启动时从 `runtime/` 创建隔离快照，可用 `TEST_DATA_DIR` 指定空的快照目录 |
 | 网站账号 | 显式启用时使用 `site_accounts.sqlite3`，默认使用 `site_accounts.json` | 默认使用临时 JSON，可在独立数据目录启用 SQLite |
 | 外部监听 | `MAILAPI_EXTERNAL_WATCHERS`，默认开启 | `TEST_EXTERNAL_WATCHERS`，默认关闭 |
 | 初始化管理员 | 离线配置密码和 TOTP | `TEST_ADMIN_PASSWORD` |
 | OAuth/回调配置 | 正式环境变量 | `TEST_*` 配置或独立回调地址 |
 
-测试启动时从正式 `runtime/` 复制邮箱、Codex、凭据、历史和规则数据，故测试可以使用真实数据
-形状模拟操作；它会跳过正式网站账号、正式中继密钥和 `runtime/test/`。测试版的写入只进入
-快照，默认进程退出即删除。测试网站账号、分组和会话不是发布物，也不会自动同步到正式版。
+测试启动时从正式 `runtime/` 复制邮箱、Codex、凭据、历史、规则、网站账户和分组数据，故测试可以使用真实数据
+形状模拟操作；会话摘要、正式邮件中继密钥和 `runtime/test/` 不会复制。测试版的写入只进入
+快照，默认进程退出即删除。测试快照中的网站账户密码和资源授权只供隔离验证，不会自动同步到正式版。
 
 两版都使用网站账号会话。正式版的 admin 和普通管理员还需要一次性 TOTP 验证码。
 

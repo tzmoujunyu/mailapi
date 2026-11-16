@@ -10,6 +10,7 @@ import os
 import secrets
 import re
 import shutil
+import sqlite3
 import threading
 import tempfile
 import time
@@ -177,11 +178,67 @@ def _snapshot_ignore(directory: str, names: List[str]) -> set[str]:
     if path == _production_data:
         ignored.update({"test", LEGACY_NAME, DATABASE_NAME, DATABASE_NAME + "-journal",
                         DATABASE_NAME + "-wal", DATABASE_NAME + "-shm",
+                        "test_features.sqlite3", "test_features.sqlite3-journal",
+                        "test_features.sqlite3-wal", "test_features.sqlite3-shm", "finance_files",
                         "account_credentials.restore.key",
                         RESOURCE_DATABASE_NAME, RESOURCE_DATABASE_NAME + "-journal",
                         RESOURCE_DATABASE_NAME + "-wal", RESOURCE_DATABASE_NAME + "-shm",
                         RESOURCE_SECRET_DIRECTORY})
     return ignored
+
+
+def _copy_site_accounts_snapshot(source: Path, destination: Path, source_config: Dict[str, str]) -> None:
+    """Copy website accounts and group grants without carrying live sessions into test mode."""
+    configured_backend = os.getenv("MAILAPI_SITE_ACCOUNTS_BACKEND", source_config.get("MAILAPI_SITE_ACCOUNTS_BACKEND", "json")).strip()
+    source_db = source / DATABASE_NAME
+    source_json = source / LEGACY_NAME
+    if configured_backend == "sqlite" and source_db.is_file():
+        backend = "sqlite"
+    elif configured_backend == "json" and source_json.is_file():
+        backend = "json"
+    elif source_db.is_file():
+        backend = "sqlite"
+    elif source_json.is_file():
+        backend = "json"
+    else:
+        return
+
+    os.environ.setdefault("TEST_SITE_ACCOUNTS_BACKEND", backend)
+    target = destination / (DATABASE_NAME if backend == "sqlite" else LEGACY_NAME)
+    if backend == "json":
+        snapshot = json.loads(source_json.read_text(encoding="utf-8"))
+        if not isinstance(snapshot, dict):
+            raise RuntimeError("正式网站账户快照格式无效")
+        snapshot["sessions"] = {}
+        target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(target, 0o600)
+        return
+
+    with sqlite3.connect(source_db) as source_db_connection, sqlite3.connect(target) as target_db_connection:
+        source_db_connection.backup(target_db_connection)
+        target_db_connection.execute("DELETE FROM sessions")
+        target_db_connection.commit()
+    os.chmod(target, 0o600)
+
+
+def _copy_production_snapshot(destination: Path) -> None:
+    if not _production_data.is_dir():
+        os.chmod(destination, 0o700)
+        return
+    source_config = dict(dotenv_entries(BASE_DIR / ".env"))
+    use_database = os.getenv("MAILAPI_RESOURCE_BACKEND", source_config.get("MAILAPI_RESOURCE_BACKEND", "json")).strip() == "sqlite"
+
+    def ignore(directory, names):
+        ignored = _snapshot_ignore(directory, names)
+        if use_database and Path(directory) == _production_data:
+            ignored.update(RESOURCE_POOLS)
+        return ignored
+
+    shutil.copytree(_production_data, destination, dirs_exist_ok=True, ignore=ignore)
+    _copy_site_accounts_snapshot(_production_data, destination, source_config)
+    if use_database:
+        ResourceDatabase(_production_data).export_json(destination, include_restore_points=False)
+    os.chmod(destination, 0o700)
 
 
 def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, bool]:
@@ -190,6 +247,8 @@ def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, b
         path = Path(os.path.abspath(os.path.expanduser(configured)))
         _validate_configured_test_data(path.resolve())
         path.mkdir(parents=True, exist_ok=True)
+        if _parse_bool(os.getenv("TEST_SNAPSHOT_FROM_PRODUCTION", "")) and not any(path.iterdir()):
+            _copy_production_snapshot(path)
         return None, path, False
 
     if os.getenv("TEST_CREDENTIAL_KEY_FILE") or _parse_bool(os.getenv("TEST_OAUTH_ENCRYPTION", "")):
@@ -202,24 +261,7 @@ def _prepare_test_data() -> tuple[Optional[tempfile.TemporaryDirectory], Path, b
 
     owner = tempfile.TemporaryDirectory(prefix="mailapi-test-")
     path = Path(owner.name)
-    if _production_data.is_dir():
-        source_config = dict(dotenv_entries(BASE_DIR / ".env"))
-        use_database = os.getenv("MAILAPI_RESOURCE_BACKEND", source_config.get("MAILAPI_RESOURCE_BACKEND", "json")).strip() == "sqlite"
-
-        def ignore(directory, names):
-            ignored = _snapshot_ignore(directory, names)
-            if use_database and Path(directory) == _production_data:
-                ignored.update(RESOURCE_POOLS)
-            return ignored
-
-        shutil.copytree(
-            _production_data,
-            path,
-            dirs_exist_ok=True,
-            ignore=ignore,
-        )
-        if use_database:
-            ResourceDatabase(_production_data).export_json(path, include_restore_points=False)
+    _copy_production_snapshot(path)
     os.chmod(path, 0o700)
     return owner, path, True
 
