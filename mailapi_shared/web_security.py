@@ -17,6 +17,7 @@ LOGIN_ATTEMPTS_PER_IP = 30
 MAX_LOGIN_BUCKETS = 10_000
 SMALL_BODY_LIMIT = 8192
 BODY_LIMIT = 1024 * 1024
+FINANCE_BODY_LIMIT = 22 * 1024 * 1024
 
 
 class LoginThrottle:
@@ -66,6 +67,9 @@ class BodyLimitMiddleware:
         limit = SMALL_BODY_LIMIT if scope["path"] in {"/login", "/api/auth/login"} else BODY_LIMIT
         if scope["path"] == "/api/admin/codex-tip-images":
             limit = 9 * 1024 * 1024
+        elif scope["path"].startswith("/api/finance/applications") and scope["method"] in {"POST", "PUT"}:
+            # Two 10 MB files plus multipart headers and form fields.
+            limit = FINANCE_BODY_LIMIT
         length = Headers(scope=scope).get("content-length")
         if length is not None:
             try:
