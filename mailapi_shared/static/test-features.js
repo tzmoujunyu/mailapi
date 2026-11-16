@@ -19,9 +19,12 @@
   async function loadApi2Api() {
     const [keys, usage] = await Promise.all([api('/api/api2api/keys'), api('/api/api2api/usage')]);
     renderKeys(keys.items);
-    $('api2api-base-url').textContent = `${location.origin}/api2api/v1`;
+    const baseUrl = `${location.origin}/api2api/v1`;
+    $('api2api-base-url').textContent = baseUrl;
+    $('overview-base-url').textContent = baseUrl;
     $('api-usage-summary').textContent = `请求 ${usage.requests} 次 · 输入 ${usage.prompt_tokens} · 输出 ${usage.completion_tokens} · 总计 ${usage.total_tokens} Token`;
     $('api-usage-rows').innerHTML = usage.items.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.model || '-')}</td><td>${item.total_tokens}</td><td>${item.status_code}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">暂无调用记录。</td></tr>';
+    return { keys, usage };
   }
   async function loadAdminApi2Api() {
     const [config, usage] = await Promise.all([api('/api/admin/api2api/config'), api('/api/admin/api2api/usage')]);
@@ -50,6 +53,14 @@
       adminApplications = adminData.items;
       renderFinance(adminApplications, $('admin-finance-rows'), true);
     }
+    return { announcements, applications: isAdmin ? adminApplications : applications.items };
+  }
+  function updateDashboard(apiData, financeItems) {
+    if (!apiData) return;
+    $('dashboard-requests').textContent = apiData.usage.requests;
+    $('dashboard-tokens').textContent = Number(apiData.usage.total_tokens || 0).toLocaleString('zh-CN');
+    $('dashboard-keys').textContent = apiData.keys.items.length;
+    $('dashboard-pending').textContent = financeItems.filter(item => item.status === 'pending').length;
   }
   $('api-key-form').addEventListener('submit', async event => {
     event.preventDefault(); setError('api-key-status', '');
@@ -61,5 +72,5 @@
   $('announcement-form').addEventListener('submit', async event => { event.preventDefault(); setError('announcement-status', ''); try { await api('/api/admin/finance/announcements', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title:$('announcement-title').value, body:$('announcement-body').value, pinned:$('announcement-pinned').checked})}); $('announcement-form').reset(); $('announcement-status').textContent = '公告已发布。'; await loadFinance(); } catch (error) { setError('announcement-status', error.message); } });
   $('finance-batch-download').addEventListener('click', async () => { const ids = [...document.querySelectorAll('[data-finance-select]:checked')].map(input => input.dataset.financeSelect); if (!ids.length) return setError('announcement-status', '请先选择申请'); const response = await fetch('/api/admin/finance/download.zip', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({application_ids: ids})}); if (!response.ok) return setError('announcement-status', '批量下载失败'); const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${new Date().toISOString().slice(0,10).replaceAll('-','')}报销申请.zip`; link.click(); URL.revokeObjectURL(link.href); });
   $('admin-finance-rows').addEventListener('click', async event => { const button = event.target.closest('[data-review]'); if (!button) return; const note = prompt(button.dataset.status === 'approved' ? '审核备注（可选）' : '驳回原因（可选）') || ''; try { await api(`/api/admin/finance/applications/${encodeURIComponent(button.dataset.review)}/review`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status:button.dataset.status, note})}); await loadFinance(); } catch (error) { setError('announcement-status', error.message); } });
-  api('/api/test-features/status').then(status => { isAdmin = ['admin','manager'].includes(status.role); $('api2api-admin').classList.toggle('hidden', !isAdmin); $('finance-admin').classList.toggle('hidden', !isAdmin); return Promise.all([loadApi2Api(), loadFinance(), isAdmin ? loadAdminApi2Api() : null]); }).catch(error => { setError('api-key-status', error.message); });
+  api('/api/test-features/status').then(status => { isAdmin = ['admin','manager'].includes(status.role); $('api2api-admin').classList.toggle('hidden', !isAdmin); $('finance-admin').classList.toggle('hidden', !isAdmin); return Promise.all([loadApi2Api(), loadFinance(), isAdmin ? loadAdminApi2Api() : null]); }).then(([apiData, financeData]) => updateDashboard(apiData, financeData.applications)).catch(error => { setError('api-key-status', error.message); });
 })();
