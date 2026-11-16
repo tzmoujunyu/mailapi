@@ -112,16 +112,16 @@
         <p class="nav-label">Workspace</p>
         <nav class="nav">
           <button type="button" class="active" data-view-target="overview"><span class="nav-icon">▦</span>总览</button>
-          <button type="button" data-view-target="api2api"><span class="nav-icon">↗</span>API2API</button>
-          <button type="button" data-view-target="finance"><span class="nav-icon">¥</span>财务中心</button>
+          <button type="button" data-view-target="api2api"><span class="nav-icon">⌁</span>API</button>
+          <button type="button" data-view-target="finance"><span class="nav-icon">¥</span>财务</button>
           <button type="button" data-view-target="settings"><span class="nav-icon">⚙</span>设置</button>
         </nav>
-        <div class="sidebar-note">这是隔离的测试环境。API2API 与财务数据使用测试数据目录，停止测试进程后可整体清理。</div>
+        <div class="sidebar-note">这是隔离的测试环境。API 与财务数据使用测试数据目录，停止测试进程后可整体清理。</div>
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <div><h1>测试版工作台</h1><p>API2API 与财务系统概念界面</p></div>
+          <div><h1>测试版工作台</h1><p>API 与财务系统概念界面</p></div>
           <div class="topbar-actions"><span class="env-badge">隔离环境</span><a class="top-link" href="/">返回主页</a><a class="top-link" href="/admin">控制台</a></div>
         </header>
 
@@ -129,19 +129,19 @@
           <section id="view-overview" class="workspace-view active" data-view="overview" aria-labelledby="overview-title">
             <div class="view-head"><div><h2 id="overview-title">总览</h2><p>快速查看测试版的调用、密钥与报销状态。</p></div><span class="tag">实时读取测试数据</span></div>
             <div class="stats">
-              <article class="stat"><div class="stat-label">API2API 请求</div><div id="dashboard-requests" class="stat-value">—</div><div class="stat-foot">当前账户累计</div></article>
+              <article class="stat"><div class="stat-label">API 请求</div><div id="dashboard-requests" class="stat-value">—</div><div class="stat-foot">当前账户累计</div></article>
               <article class="stat"><div class="stat-label">总 Token</div><div id="dashboard-tokens" class="stat-value">—</div><div class="stat-foot">输入与输出合计</div></article>
               <article class="stat"><div class="stat-label">有效 API Key</div><div id="dashboard-keys" class="stat-value">—</div><div class="stat-foot">当前账户</div></article>
               <article class="stat"><div class="stat-label">待处理报销</div><div id="dashboard-pending" class="stat-value">—</div><div class="stat-foot">需要管理员审核</div></article>
             </div>
             <div class="grid">
-              <article class="card"><div class="card-head"><h3>API2API 快捷入口</h3><button type="button" class="btn" data-view-target="api2api">打开</button></div><p class="muted small">创建个人 API Key，查看调用记录，并使用测试版的 OpenAI 兼容接口。</p><p class="small">Base URL：<code id="overview-base-url">加载中…</code></p></article>
-              <article class="card"><div class="card-head"><h3>财务中心</h3><button type="button" class="btn" data-view-target="finance">打开</button></div><p class="muted small">提交订阅或模型费用报销，查看公告与审核状态。</p><p class="small">测试版文件会保存在隔离数据目录中。</p></article>
+              <article class="card"><div class="card-head"><h3>API 快捷入口</h3><button type="button" class="btn" data-view-target="api2api">打开</button></div><p class="muted small">创建个人 API Key，查看调用记录，并使用测试版的 OpenAI 兼容接口。</p><p class="small">Base URL：<code id="overview-base-url">加载中…</code></p></article>
+              <article class="card"><div class="card-head"><h3>财务</h3><button type="button" class="btn" data-view-target="finance">打开</button></div><p class="muted small">提交订阅或模型费用报销，查看公告与审核状态。</p><p class="small">测试版文件会保存在隔离数据目录中。</p></article>
             </div>
           </section>
 
           <section id="view-api2api" class="workspace-view" data-view="api2api" aria-labelledby="api2api-title">
-            <div class="view-head"><div><h2 id="api2api-title">API2API</h2><p>网站账户创建自己的 API Key，统一转发到管理员配置的 NewAPI，并按账户统计 Token。</p></div><span class="tag">OpenAI 兼容</span></div>
+            <div class="view-head"><div><h2 id="api2api-title">API</h2><p>网站账户创建自己的 API Key，统一转发到管理员配置的 NewAPI，并按账户统计 Token。</p></div><span class="tag">OpenAI 兼容</span></div>
             <div class="grid">
               <div class="card">
                 <div class="card-head"><h3>我的 API Key</h3><span class="tag">安全显示</span></div>
@@ -161,13 +161,13 @@
               </div>
             </div>
             <section id="api2api-admin" class="section-gap hidden" aria-labelledby="api2api-admin-title">
-              <div class="section-head"><div><h2 id="api2api-admin-title">API2API 管理</h2><p>上游 API Key 只保存在测试版加密密钥保护的测试数据库中。</p></div></div>
+              <div class="section-head"><div><h2 id="api2api-admin-title">API 管理</h2><p>上游 API Key 只保存在测试版加密密钥保护的测试数据库中。</p></div></div>
               <div class="grid">
                 <form id="api-config-form" class="card form">
                   <label>NewAPI OpenAI 兼容 Base URL<input id="api-config-url" type="url" placeholder="https://newapi.example.com/v1" required /></label>
                   <label>上游 API Key<input id="api-config-key" type="password" autocomplete="new-password" placeholder="新增或轮换时填写，留空保留原值" /></label>
                   <label>允许的模型（英文逗号分隔，留空表示不限制）<input id="api-config-models" placeholder="例如：glm-4.5,kimi-k2" /></label>
-                  <label><input id="api-config-enabled" type="checkbox" />启用 API2API</label>
+                  <label><input id="api-config-enabled" type="checkbox" />启用 API</label>
                   <button class="primary" type="submit">保存配置</button>
                   <p id="api-config-status" class="status" role="alert"></p>
                 </form>
@@ -177,7 +177,7 @@
           </section>
 
           <section id="view-finance" class="workspace-view" data-view="finance" aria-labelledby="finance-title">
-            <div class="view-head"><div><h2 id="finance-title">财务中心</h2><p>提交报销申请，查看公告与审核状态。</p></div><span class="tag">文件隔离保存</span></div>
+            <div class="view-head"><div><h2 id="finance-title">财务</h2><p>提交报销申请，查看公告与审核状态。</p></div><span class="tag">文件隔离保存</span></div>
             <div id="announcements"></div>
             <div class="finance-toolbar"><div><strong>提交报销申请</strong><p>项目名称最多 20 个字符，文件支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。</p></div><button id="finance-open-form" class="primary" type="button">提交报销申请</button></div>
             <p id="finance-status" class="status" role="alert"></p>
@@ -207,7 +207,7 @@
 
           <section id="view-settings" class="workspace-view" data-view="settings" aria-labelledby="settings-title">
             <div class="view-head"><div><h2 id="settings-title">设置</h2><p>测试版运行信息与界面说明。</p></div></div>
-            <div class="card"><div class="card-head"><h3>环境信息</h3><span class="tag">只读</span></div><div class="settings-list"><div class="settings-item"><span>运行模式</span><strong>测试版</strong></div><div class="settings-item"><span>数据策略</span><strong>独立测试数据目录</strong></div><div class="settings-item"><span>API 风格</span><strong>OpenAI 兼容</strong></div><div class="settings-item"><span>界面参考</span><strong>NewAPI 控制台布局</strong></div></div></div>
+            <div class="card"><div class="card-head"><h3>环境信息</h3><span class="tag">只读</span></div><div class="settings-list"><div class="settings-item"><span>运行模式</span><strong>测试版</strong></div><div class="settings-item"><span>数据策略</span><strong>独立测试数据目录</strong></div><div class="settings-item"><span>API 风格</span><strong>OpenAI 兼容</strong></div><div class="settings-item"><span>界面参考</span><strong>统一工作台布局</strong></div></div></div>
           </section>
         </div>
       </main>
@@ -222,7 +222,13 @@
           buttons.forEach(button => button.classList.toggle('active', button.dataset.viewTarget === name));
           window.scrollTo({ top: 0, behavior: 'smooth' });
         }
-        buttons.forEach(button => button.addEventListener('click', () => showView(button.dataset.viewTarget)));
+        buttons.forEach(button => button.addEventListener('click', () => {
+          const name = button.dataset.viewTarget;
+          showView(name);
+          history.replaceState(null, '', `#view-${name}`);
+        }));
+        const initialView = location.hash.startsWith('#view-') ? location.hash.slice(6) : '';
+        if (initialView && views.some(view => view.dataset.view === initialView)) showView(initialView);
       })();
     </script>
   </body>

@@ -3554,8 +3554,8 @@ def preview_page(request: FastAPIRequest):
 def render_index_page(request: FastAPIRequest, preview: bool = False):
     page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     role = request_access_role(request)
-    admin_link = '<a class="small-btn" href="/admin">账号控制台</a>'
-    test_features_link = '<a class="small-btn" href="/test-features">测试版 API 与财务</a>' if IS_TEST else ""
+    admin_link = '<a class="small-btn" href="/admin">账号控制台</a>' if not IS_TEST else ""
+    test_features_link = '<a class="small-btn" href="/test-features">测试版 API 与财务</a>' if not IS_TEST else ""
     preview_banner = (
         '<div class="preview-banner" role="status">用户账户主页预览：仅显示所选账户分组中已分配且上架的资源。请在账户管理中选择预览对象。'
         '<a href="/admin">返回账号控制台</a></div>'

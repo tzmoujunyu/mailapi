@@ -21,9 +21,9 @@ def themed_page(page, request):
     page = page.replace('data-theme="system"', f'data-theme="{theme}"', 1).replace(
         'data-theme-account=""', 'data-theme-account="signed-in"' if user else 'data-theme-account=""', 1,
     )
-    if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test" and 'id="view-overview"' not in page:
+    if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test":
         path = request.url.path
-        page_name = "home" if path == "/" else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else ""
+        page_name = "home" if path == "/" else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else "features" if path == "/test-features" else ""
         if page_name:
             def add_body_classes(match):
                 attrs = match.group(1) or ""
@@ -51,7 +51,8 @@ def themed_page(page, request):
                 '<nav class="test-ui-nav">'
                 '<a href="/" aria-label="主页" title="主页"><span aria-hidden="true">⌂</span><span class="test-ui-nav-label">主页</span></a>'
                 + management_link + resource_link +
-                '<a href="/test-features" aria-label="财务" title="财务"><span aria-hidden="true">¥</span><span class="test-ui-nav-label">财务</span></a>'
+                '<a href="/test-features#view-api2api" aria-label="API" title="API"><span aria-hidden="true">⌁</span><span class="test-ui-nav-label">API</span></a>'
+                '<a href="/test-features#view-finance" aria-label="财务" title="财务"><span aria-hidden="true">¥</span><span class="test-ui-nav-label">财务</span></a>'
                 '</nav><div class="test-ui-sidebar-footer"><a href="/login" aria-label="重新登录" title="登录">↻</a></div></aside>'
             )
             body_end = page.find(">", page.find("<body"))
