@@ -211,13 +211,17 @@
           document.getElementById('workspace-subtitle').textContent = title[1];
           window.scrollTo({ top: 0, behavior: 'smooth' });
         }
+        function showHashView() {
+          const name = location.hash.startsWith('#view-') ? location.hash.slice(6) : 'overview';
+          showView(views.some(view => view.dataset.view === name) ? name : 'overview');
+        }
         buttons.forEach(button => button.addEventListener('click', () => {
           const name = button.dataset.viewTarget;
           showView(name);
           history.replaceState(null, '', `#view-${name}`);
         }));
-        const initialView = location.hash.startsWith('#view-') ? location.hash.slice(6) : '';
-        if (initialView && views.some(view => view.dataset.view === initialView)) showView(initialView);
+        window.addEventListener('hashchange', showHashView);
+        showHashView();
       })();
     </script>
   </body>
