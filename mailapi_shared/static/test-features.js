@@ -26,20 +26,37 @@
 
   function renderKeys(items) {
     $('api-key-list').innerHTML = items.length
-      ? items.map(item => `<div class="row"><span>${escapeHtml(item.name)} <span class="tag">${escapeHtml(item.key_prefix)}…</span></span><button type="button" data-revoke-key="${escapeHtml(item.id)}">撤销</button></div>`).join('')
+      ? items.map(item => `<div class="row"><span>${escapeHtml(item.name)} <span class="tag">${escapeHtml(item.key_prefix)}…</span></span>${item.enabled ? `<button type="button" data-revoke-key="${escapeHtml(item.id)}">撤销</button>` : '<span class="tag">已撤销</span>'}</div>`).join('')
       : '<p class="muted">还没有 API Key。</p>';
   }
+
+  const baseUrl = `${location.origin}/api2api/v1`;
+  $('api2api-base-url').textContent = baseUrl;
+  $('copy-base-url').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(baseUrl);
+      $('copy-url-status').textContent = '已复制';
+    } catch {
+      $('copy-url-status').textContent = '请选中地址手动复制';
+    }
+  });
 
   async function loadApi2Api() {
     const [keys, usage] = await Promise.all([api('/api/api2api/keys'), api('/api/api2api/usage')]);
     renderKeys(keys.items);
-    const baseUrl = `${location.origin}/api2api/v1`;
-    $('api2api-base-url').textContent = baseUrl;
-    $('overview-base-url').textContent = baseUrl;
+    $('dashboard-keys').textContent = keys.items.filter(item => item.enabled).length;
+    $('dashboard-requests').textContent = usage.requests.toLocaleString('zh-CN');
+    $('dashboard-tokens').textContent = usage.total_tokens.toLocaleString('zh-CN');
+    $('dashboard-input').textContent = usage.prompt_tokens.toLocaleString('zh-CN');
+    $('dashboard-output').textContent = usage.completion_tokens.toLocaleString('zh-CN');
+    const splitTotal = usage.prompt_tokens + usage.completion_tokens;
+    const ring = $('usage-ring');
+    ring.classList.toggle('has-data', splitTotal > 0);
+    ring.style.setProperty('--input-share', `${splitTotal ? 100 * usage.prompt_tokens / splitTotal : 0}%`);
+    $('dashboard-calls').innerHTML = usage.items.slice(0, 3).map(item => `<li><span>${escapeHtml(item.model || '未知模型')}<small>${escapeHtml(item.created_at)}</small></span><b>${item.total_tokens.toLocaleString('zh-CN')} Token</b></li>`).join('') || '<li>暂无调用记录</li>';
     $('api-usage-summary').textContent = `请求 ${usage.requests} 次 · 输入 ${usage.prompt_tokens} · 输出 ${usage.completion_tokens} · 总计 ${usage.total_tokens} Token`;
     $('api-usage-rows').innerHTML = usage.items.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.model || '-')}</td><td>${item.total_tokens}</td><td>${item.status_code}</td></tr>`).join('')
       || '<tr><td colspan="4" class="muted">暂无调用记录。</td></tr>';
-    return { keys, usage };
   }
 
   async function loadAdminApi2Api() {
@@ -93,6 +110,14 @@
     ]);
     renderAnnouncements(announcements.items);
     renderFinance(applications.items, $('finance-rows'));
+    const mine = applications.items;
+    const pending = mine.filter(item => item.status === 'pending').length;
+    $('dashboard-pending').textContent = $('finance-pending').textContent = pending;
+    $('finance-total').textContent = mine.length;
+    const approvedCents = mine.filter(item => item.status === 'approved')
+      .reduce((sum, item) => sum + Math.round(Number(item.amount) * 100), 0);
+    $('finance-approved').textContent = money(approvedCents / 100);
+    $('dashboard-finance').innerHTML = mine.slice(0, 3).map(item => `<li><span>${escapeHtml(item.project)}<small>${money(item.amount)}</small></span>${statusPill(item.status)}</li>`).join('') || '<li>暂无报销申请</li>';
     if (isAdmin) {
       const [adminData, adminAnnouncementData] = await Promise.all([
         api('/api/admin/finance/applications'),
@@ -100,23 +125,11 @@
       ]);
       adminApplications = adminData.items;
       adminAnnouncements = adminAnnouncementData.items;
+      $('dashboard-review-link').classList.remove('hidden');
+      $('dashboard-review').textContent = adminApplications.filter(item => item.status === 'pending').length;
       renderFinance(adminApplications, $('admin-finance-rows'), true);
       renderAdminAnnouncements(adminAnnouncements);
     }
-    return {
-      announcements,
-      applications: applications.items,
-      adminApplications,
-    };
-  }
-
-  function updateDashboard(apiData, financeData) {
-    if (!apiData) return;
-    $('dashboard-requests').textContent = apiData.usage.requests;
-    $('dashboard-tokens').textContent = Number(apiData.usage.total_tokens || 0).toLocaleString('zh-CN');
-    $('dashboard-keys').textContent = apiData.keys.items.length;
-    const applications = financeData.adminApplications || financeData.applications || [];
-    $('dashboard-pending').textContent = applications.filter(item => item.status === 'pending').length;
   }
 
   function openFinanceForm(item = null) {
@@ -353,8 +366,17 @@
       isAdmin = ['admin', 'manager'].includes(status.role);
       $('api2api-admin').classList.toggle('hidden', !isAdmin);
       $('finance-admin').classList.toggle('hidden', !isAdmin);
-      return Promise.all([loadApi2Api(), loadFinance(), isAdmin ? loadAdminApi2Api() : null]);
+      return Promise.all([
+        loadApi2Api().catch(error => {
+          $('dashboard-calls').textContent = '调用记录加载失败';
+          setError('api-key-status', error.message);
+        }),
+        loadFinance().catch(error => {
+          $('dashboard-finance').textContent = '报销记录加载失败';
+          setError('finance-status', error.message);
+        }),
+        isAdmin ? loadAdminApi2Api() : null,
+      ]);
     })
-    .then(([apiData, financeData]) => updateDashboard(apiData, financeData))
     .catch(error => setError('api-key-status', error.message));
 })();

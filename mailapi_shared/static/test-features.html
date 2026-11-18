@@ -106,27 +106,37 @@
     <div class="workspace">
       <main class="main">
         <header class="topbar">
-          <div><h1 id="workspace-title">主页</h1><p id="workspace-subtitle">测试版资源与服务总览</p></div>
+          <div><h1 id="workspace-title">主页</h1><p id="workspace-subtitle">账户资源、API 调用与报销进度</p></div>
           <div class="topbar-actions"><span class="env-badge">测试版 · 临时快照</span></div>
         </header>
 
         <div class="content">
-          <section id="view-overview" class="workspace-view active" data-view="overview" aria-labelledby="overview-title">
-            <div class="view-head"><div><h2 id="overview-title">主页</h2><p>快速查看测试版的调用、密钥与报销状态。</p></div><span class="tag">实时读取测试数据</span></div>
-            <div class="stats">
-              <article class="stat"><div class="stat-label">API 请求</div><div id="dashboard-requests" class="stat-value">—</div><div class="stat-foot">当前账户累计</div></article>
-              <article class="stat"><div class="stat-label">总 Token</div><div id="dashboard-tokens" class="stat-value">—</div><div class="stat-foot">输入与输出合计</div></article>
-              <article class="stat"><div class="stat-label">有效 API Key</div><div id="dashboard-keys" class="stat-value">—</div><div class="stat-foot">当前账户</div></article>
-              <article class="stat"><div class="stat-label">待处理报销</div><div id="dashboard-pending" class="stat-value">—</div><div class="stat-foot">需要管理员审核</div></article>
-            </div>
-            <div class="grid">
-              <article class="card"><div class="card-head"><h3>API 快捷入口</h3><button type="button" class="btn" data-view-target="api2api">打开</button></div><p class="muted small">创建个人 API Key，查看调用记录，并使用测试版的 OpenAI 兼容接口。</p><p class="small">Base URL：<code id="overview-base-url">加载中…</code></p></article>
-              <article class="card"><div class="card-head"><h3>财务</h3><button type="button" class="btn" data-view-target="finance">打开</button></div><p class="muted small">提交订阅或模型费用报销，查看公告与审核状态。</p><p class="small">测试版文件会保存在隔离数据目录中。</p></article>
+          <section id="view-overview" class="workspace-view active" data-view="overview" aria-label="主页总览">
+            <div class="overview-grid">
+              <article class="card workspace-tree">
+                <h2>我的工作区</h2>
+                <details open><summary>资源</summary><div class="tree-links">
+                  <a href="/#chatgpt-accounts">GPT 账号</a><a href="/#codex-tips">Codex 使用提示</a>
+                  <a href="/#coding-plans">Coding Plan</a><a href="/#relay-accounts">中转站</a>
+                </div></details>
+                <details open><summary>API</summary><div class="tree-links"><a href="#view-api2api">有效 API Key <strong id="dashboard-keys">—</strong></a></div></details>
+                <details open><summary>财务</summary><div class="tree-links"><a href="#view-finance">我的待审核申请 <strong id="dashboard-pending">—</strong></a><a id="dashboard-review-link" class="hidden" href="#view-finance">待我审核 <strong id="dashboard-review">—</strong></a></div></details>
+              </article>
+              <article class="card usage-card">
+                <div class="card-head"><h2>API 用量</h2><a class="panel-link" href="#view-api2api">查看 API →</a></div>
+                <div class="usage-panel">
+                  <div id="usage-ring" class="usage-ring" aria-hidden="true"></div>
+                  <div class="usage-amount"><span>累计 Token</span><strong id="dashboard-tokens">—</strong><span>请求次数 <b id="dashboard-requests">—</b></span></div>
+                  <dl class="usage-legend"><div><dt>输入 Token</dt><dd id="dashboard-input">—</dd></div><div><dt>输出 Token</dt><dd id="dashboard-output">—</dd></div></dl>
+                </div>
+              </article>
+              <article class="card"><div class="card-head"><h2>最近调用</h2></div><ul class="activity-list" id="dashboard-calls"><li>加载中…</li></ul></article>
+              <article class="card"><div class="card-head"><h2>我的报销</h2><a class="panel-link" href="#view-finance">查看财务 →</a></div><ul class="activity-list" id="dashboard-finance"><li>加载中…</li></ul></article>
             </div>
           </section>
 
           <section id="view-api2api" class="workspace-view" data-view="api2api" aria-labelledby="api2api-title">
-            <div class="view-head"><div><h2 id="api2api-title">API</h2><p>网站账户创建自己的 API Key，统一转发到管理员配置的 NewAPI，并按账户统计 Token。</p></div><span class="tag">OpenAI 兼容</span></div>
+            <div class="card endpoint-card"><div><h2 id="api2api-title">网关接入地址</h2><code id="api2api-base-url"></code></div><button id="copy-base-url" type="button">复制地址</button><span id="copy-url-status" role="status"></span></div>
             <div class="grid">
               <div class="card">
                 <div class="card-head"><h3>我的 API Key</h3><span class="tag">安全显示</span></div>
@@ -136,7 +146,6 @@
                 </form>
                 <p id="api-key-status" class="status" role="alert"></p>
                 <div id="new-api-key" class="key-output hidden"></div>
-                <p class="small muted">Base URL：<code id="api2api-base-url"></code></p>
                 <div id="api-key-list" class="small"></div>
               </div>
               <div class="card">
@@ -162,9 +171,13 @@
           </section>
 
           <section id="view-finance" class="workspace-view" data-view="finance" aria-labelledby="finance-title">
-            <div class="view-head"><div><h2 id="finance-title">财务</h2><p>提交报销申请，查看公告与审核状态。</p></div><span class="tag">文件隔离保存</span></div>
+            <div class="section-head"><h2 id="finance-title">我的报销</h2><button id="finance-open-form" class="primary" type="button">＋ 提交报销申请</button></div>
+            <div class="finance-summary">
+              <article class="stat"><span>申请总数</span><strong id="finance-total">—</strong></article>
+              <article class="stat"><span>待审核</span><strong id="finance-pending">—</strong></article>
+              <article class="stat"><span>已通过金额</span><strong id="finance-approved">—</strong></article>
+            </div>
             <div id="announcements"></div>
-            <div class="finance-toolbar"><div><strong>提交报销申请</strong><p>项目名称最多 20 个字符，文件支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。</p></div><button id="finance-open-form" class="primary" type="button">提交报销申请</button></div>
             <p id="finance-status" class="status" role="alert"></p>
             <div id="finance-dialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="finance-dialog-title">
               <div class="modal-card">
@@ -196,16 +209,14 @@
     <script src="/static/test-features.js"></script>
     <script>
       (() => {
-        const buttons = [...document.querySelectorAll('[data-view-target]')];
         const views = [...document.querySelectorAll('.workspace-view')];
         const titles = {
-          overview: ['主页', '测试版资源与服务总览'],
-          api2api: ['API', '测试版 API 管理与调用记录'],
-          finance: ['财务', '测试版报销申请与审核'],
+          overview: ['主页', '账户资源、API 调用与报销进度'],
+          api2api: ['API', '个人密钥与调用记录'],
+          finance: ['财务', '报销申请与审核'],
         };
         function showView(name) {
           views.forEach(view => view.classList.toggle('active', view.dataset.view === name));
-          buttons.forEach(button => button.classList.toggle('active', button.dataset.viewTarget === name));
           const title = titles[name] || titles.overview;
           document.getElementById('workspace-title').textContent = title[0];
           document.getElementById('workspace-subtitle').textContent = title[1];
@@ -215,11 +226,6 @@
           const name = location.hash.startsWith('#view-') ? location.hash.slice(6) : 'overview';
           showView(views.some(view => view.dataset.view === name) ? name : 'overview');
         }
-        buttons.forEach(button => button.addEventListener('click', () => {
-          const name = button.dataset.viewTarget;
-          showView(name);
-          history.replaceState(null, '', `#view-${name}`);
-        }));
         window.addEventListener('hashchange', showHashView);
         showHashView();
       })();

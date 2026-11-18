@@ -1,124 +1,72 @@
 (() => {
-  const path = location.pathname;
-  const pageName = path === '/' ? 'home' : path === '/admin' ? 'admin' : path === '/admin/access' ? 'access' : path === '/login' ? 'login' : path === '/test-features' ? 'features' : '';
-  if (!pageName) return;
+  const sidebar = document.querySelector('.test-ui-sidebar');
+  if (sidebar) {
+    const icons = {
+      '/test-features#view-overview': 'home', '/': 'resources', '/admin/access': 'accounts',
+      '/admin': 'console', '/test-features#view-api2api': 'api', '/test-features#view-finance': 'finance',
+    };
+    const icon = name => `<svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-navigation.svg#${name}"></use></svg>`;
+    const nav = sidebar.querySelector('.test-ui-nav');
+    nav.id = 'workspace-navigation';
+    for (const link of nav.querySelectorAll('a')) {
+      const name = icons[link.getAttribute('href')];
+      if (name) link.firstElementChild.innerHTML = icon(name);
+    }
+    sidebar.querySelector('.test-ui-logo').insertAdjacentHTML('afterend', '<span class="test-ui-brand-name">MailAPI</span>');
+    const footer = sidebar.querySelector('.test-ui-sidebar-footer');
+    footer.innerHTML = `<button type="button" aria-controls="${nav.id}">${icon('sidebar')}<span class="test-ui-nav-label"></span></button>`;
+    const toggle = footer.querySelector('button');
+    function setExpanded(expanded) {
+      document.body.classList.toggle('dock-expanded', expanded);
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.title = expanded ? '收起边栏' : '展开边栏';
+      toggle.setAttribute('aria-label', toggle.title);
+      toggle.lastElementChild.textContent = toggle.title;
+    }
+    let expanded = false;
+    try { expanded = sessionStorage.getItem('mailapi.test.dock') === 'expanded'; } catch {}
+    setExpanded(expanded);
+    toggle.addEventListener('click', () => {
+      const next = !document.body.classList.contains('dock-expanded');
+      setExpanded(next);
+      try { sessionStorage.setItem('mailapi.test.dock', next ? 'expanded' : 'compact'); } catch {}
+    });
 
-  document.body.classList.add('test-ui-page', `test-ui-${pageName}`);
-
-  function buildSidebar({showAccount = true, showConsole = true} = {}) {
-    const aside = document.createElement('aside');
-    aside.className = 'test-ui-sidebar';
-    aside.setAttribute('aria-label', '测试版导航');
-    const links = [
-      ['▦', '主页', '/test-features#view-overview'],
-      ['◈', '资源', '/'],
-      ['⌁', 'API', '/test-features#view-api2api'],
-      ['¥', '财务', '/test-features#view-finance'],
-    ];
-    if (showConsole) links.splice(2, 0, ['⚙', '控制台', '/admin']);
-    if (showAccount) links.splice(showConsole ? 2 : 2, 0, ['▦', '账户', '/admin/access']);
-    aside.innerHTML = `<div class="test-ui-logo" aria-label="MailAPI 测试版">M</div><nav class="test-ui-nav">${links.map(([icon, label, href]) => `<a href="${href}" aria-label="${label}" title="${label}"><span aria-hidden="true">${icon}</span><span class="test-ui-nav-label">${label}</span></a>`).join('')}</nav><div class="test-ui-sidebar-footer"><a href="/login" aria-label="退出并重新登录" title="登录">↻</a></div>`;
-    document.body.prepend(aside);
-  }
-
-  async function ensureSidebar() {
-    const existing = document.querySelector('.test-ui-sidebar');
-    if (existing?.querySelector('a[href="/test-features#view-overview"]')) return;
-    let showAccount = existing ? Boolean(existing.querySelector('a[href="/admin/access"]')) : null;
-    let showConsole = existing ? Boolean(existing.querySelector('a[href="/admin"]')) : null;
-    existing?.remove();
-    if (showAccount === null || showConsole === null) {
-      try {
-        const response = await fetch('/api/auth/me', {cache: 'no-store'});
-        const data = response.ok ? await response.json() : {};
-        showAccount = ['admin', 'manager'].includes(data.user?.role);
-        showConsole = data.user?.role === 'admin';
-      } catch {
-        showAccount = false;
-        showConsole = false;
+    function syncCurrentNav() {
+      let target = location.pathname;
+      if (target === '/test-features') {
+        target += ['#view-api2api', '#view-finance'].includes(location.hash) ? location.hash : '#view-overview';
+      }
+      for (const link of nav.querySelectorAll('a')) {
+        if (link.getAttribute('href') === target) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
       }
     }
-    buildSidebar({showAccount, showConsole});
     syncCurrentNav();
+    window.addEventListener('hashchange', syncCurrentNav);
   }
 
-  function syncCurrentNav() {
-    const target = path === '/test-features'
-      ? (location.hash === '#view-api2api' ? '/test-features#view-api2api' : location.hash === '#view-finance' ? '/test-features#view-finance' : '/test-features#view-overview')
-      : path;
-    document.querySelectorAll('.test-ui-nav a').forEach(link => {
-      const current = link.getAttribute('href') === target;
-      if (current) link.setAttribute('aria-current', 'page');
-      else link.removeAttribute('aria-current');
-    });
-  }
-
-  function buildLoginBrand() {
-    const form = document.querySelector('.login-main form');
-    if (!form || form.querySelector('.test-ui-login-brand')) return;
-    const brand = document.createElement('div');
-    brand.className = 'test-ui-login-brand';
-    brand.textContent = 'M';
-    form.prepend(brand);
-  }
-
-  function buildHomeSummary() {
-    const container = document.querySelector('.home-page .container');
-    if (!container || document.querySelector('.test-ui-home-summary')) return;
-    const summary = document.createElement('div');
-    summary.className = 'test-ui-home-summary';
-    summary.innerHTML = [
-      ['GPT 账号', 'home-gpt-count', '可用账户'],
-      ['Coding Plan', 'home-plan-count', '订阅资源'],
-      ['中转站', 'home-relay-count', '可用入口'],
-      ['使用提示', 'home-tip-count', '帮助内容'],
-    ].map(([label, id, foot]) => `<article class="test-ui-summary-card"><span class="test-ui-summary-label">${label}</span><strong id="${id}" class="test-ui-summary-value">—</strong><small class="test-ui-summary-foot">${foot}</small></article>`).join('');
-    container.prepend(summary);
-
-    const countRows = selector => {
-      const node = document.querySelector(selector);
-      if (!node) return '—';
-      const children = [...node.children];
-      return children.filter(row => {
-        if (row.classList.contains('detail-row')) return false;
-        if (selector === '#rows') return Boolean(row.querySelector('.account-email'));
-        return !row.querySelector('.muted');
-      }).length;
-    };
-    const update = () => {
-      const gpt = document.querySelector('#rows');
-      const gptRows = gpt ? [...gpt.children].filter(row => !row.classList.contains('detail-row') && row.querySelector('.account-email')).length : 0;
-      const value = (selector, empty = 0) => {
-        const count = countRows(selector);
-        return count === '—' ? '—' : count || empty;
-      };
-      document.getElementById('home-gpt-count').textContent = gptRows || '0';
-      document.getElementById('home-plan-count').textContent = value('#coding-plan-rows');
-      document.getElementById('home-relay-count').textContent = value('#relay-account-rows');
-      document.getElementById('home-tip-count').textContent = value('#codex-tip-list');
-    };
-    const observer = new MutationObserver(update);
-    ['#rows', '#coding-plan-rows', '#relay-account-rows', '#codex-tip-list'].forEach(selector => {
-      const node = document.querySelector(selector);
-      if (node) observer.observe(node, {childList: true, subtree: true});
-    });
+  const container = document.querySelector('.test-ui-home .container');
+  if (!container) return;
+  const sections = [
+    ['chatgpt-accounts', 'GPT 账号', '#rows', '.account-email'],
+    ['codex-tips', 'Codex 使用提示', '#codex-tip-list', '.codex-tip-item'],
+    ['coding-plans', 'Coding Plan', '#coding-plan-rows', '.resource-name'],
+    ['relay-accounts', '中转站', '#relay-account-rows', '.resource-name'],
+  ];
+  const summary = document.createElement('nav');
+  summary.className = 'test-ui-home-summary';
+  summary.setAttribute('aria-label', '资源数量与分类');
+  for (const [id, label, listSelector, itemSelector] of sections) {
+    const list = document.querySelector(listSelector);
+    const link = document.createElement('a');
+    link.href = '#' + id;
+    link.className = 'test-ui-summary-card';
+    link.innerHTML = `<span class="test-ui-summary-label">${label}</span><strong class="test-ui-summary-value">—</strong>`;
+    const update = () => { link.lastElementChild.textContent = list.querySelectorAll(itemSelector).length; };
+    new MutationObserver(update).observe(list, { childList: true });
     update();
+    summary.append(link);
   }
-
-  function markSessionReady() {
-    document.querySelector('.site-session')?.classList.add('test-ui-session-ready');
-  }
-
-  ensureSidebar();
-  if (pageName === 'login') buildLoginBrand();
-  if (pageName === 'home') buildHomeSummary();
-  markSessionReady();
-  syncCurrentNav();
-  window.addEventListener('hashchange', syncCurrentNav);
-
-  const observer = new MutationObserver(() => {
-    markSessionReady();
-    if (pageName === 'home') buildHomeSummary();
-  });
-  observer.observe(document.body, {childList: true, subtree: false});
+  container.prepend(summary);
 })();
