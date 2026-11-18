@@ -107,20 +107,40 @@
       <main class="main">
         <header class="topbar">
           <div><h1 id="workspace-title">主页</h1><p id="workspace-subtitle">账户资源、API 调用与报销进度</p></div>
-          <div class="topbar-actions"><span class="env-badge">测试版 · 临时快照</span></div>
+          <div class="topbar-actions">
+            <label class="workspace-search" id="overview-search-holder"><svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-navigation.svg#search"></use></svg><input id="overview-search" type="search" placeholder="搜索本页资源、调用或报销…" aria-label="搜索主页内容" autocomplete="off"></label>
+            <span class="env-badge">测试版 · 临时快照</span>
+          </div>
         </header>
 
         <div class="content">
           <section id="view-overview" class="workspace-view active" data-view="overview" aria-label="主页总览">
             <div class="overview-grid">
               <article class="card workspace-tree">
-                <h2>我的工作区</h2>
-                <details open><summary>资源</summary><div class="tree-links">
-                  <a href="/#chatgpt-accounts">GPT 账号</a><a href="/#codex-tips">Codex 使用提示</a>
-                  <a href="/#coding-plans">Coding Plan</a><a href="/#relay-accounts">中转站</a>
-                </div></details>
-                <details open><summary>API</summary><div class="tree-links"><a href="#view-api2api">有效 API Key <strong id="dashboard-keys">—</strong></a></div></details>
-                <details open><summary>财务</summary><div class="tree-links"><a href="#view-finance">我的待审核申请 <strong id="dashboard-pending">—</strong></a><a id="dashboard-review-link" class="hidden" href="#view-finance">待我审核 <strong id="dashboard-review">—</strong></a></div></details>
+                <div class="card-head"><div><h2>我的工作区</h2><p class="workspace-caption">资源与服务</p></div><a href="/" class="panel-link">全部资源 →</a></div>
+                <div class="workspace-asset-summary"><span>可访问资源</span><strong id="workspace-asset-count">—</strong></div>
+                <p id="workspace-load-status" class="small muted" role="status">加载中…</p>
+                <div class="account-tree">
+                  <section class="tree-section open">
+                    <button type="button" class="tree-header" aria-expanded="true" aria-controls="workspace-gpt"><span class="tree-chevron" aria-hidden="true">›</span><span>GPT 账号池</span><span class="tree-category-count" id="workspace-gpt-count">—</span></button>
+                    <div class="tree-body-wrapper" id="workspace-gpt"><div class="tree-body" id="workspace-gpt-items"></div></div>
+                  </section>
+                  <section class="tree-section open">
+                    <button type="button" class="tree-header" aria-expanded="true" aria-controls="workspace-plans"><span class="tree-chevron" aria-hidden="true">›</span><span>Coding Plan</span><span class="tree-category-count" id="workspace-plans-count">—</span></button>
+                    <div class="tree-body-wrapper" id="workspace-plans"><div class="tree-body" id="workspace-plans-items"></div></div>
+                  </section>
+                  <section class="tree-section">
+                    <button type="button" class="tree-header" aria-expanded="false" aria-controls="workspace-relays"><span class="tree-chevron" aria-hidden="true">›</span><span>中转站</span><span class="tree-category-count" id="workspace-relays-count">—</span></button>
+                    <div class="tree-body-wrapper" id="workspace-relays" inert><div class="tree-body" id="workspace-relays-items"></div></div>
+                  </section>
+                </div>
+                <div class="workspace-services">
+                  <a href="#view-api2api">有效 API Key <strong id="dashboard-keys">—</strong></a>
+                  <a href="#view-finance">我的待审核申请 <strong id="dashboard-pending">—</strong></a>
+                  <a id="dashboard-review-link" class="hidden" href="#view-finance">待我审核 <strong id="dashboard-review">—</strong></a>
+                </div>
+                <p id="workspace-action-status" class="small" role="status" aria-live="polite"></p>
+                <a class="workspace-footer-link" id="workspace-resource-link" href="/">查看全部资源 →</a>
               </article>
               <article class="card usage-card">
                 <div class="card-head"><h2>API 用量</h2><a class="panel-link" href="#view-api2api">查看 API →</a></div>
@@ -131,7 +151,7 @@
                 </div>
               </article>
               <article class="card"><div class="card-head"><h2>最近调用</h2></div><ul class="activity-list" id="dashboard-calls"><li>加载中…</li></ul></article>
-              <article class="card"><div class="card-head"><h2>我的报销</h2><a class="panel-link" href="#view-finance">查看财务 →</a></div><ul class="activity-list" id="dashboard-finance"><li>加载中…</li></ul></article>
+              <article class="card"><div class="card-head"><h2>我的报销</h2></div><ul class="activity-list" id="dashboard-finance"><li>加载中…</li></ul><a class="workspace-footer-link" href="#view-finance">查看报销申请 →</a></article>
             </div>
           </section>
 
@@ -206,6 +226,8 @@
         </div>
       </main>
     </div>
+    <script src="/static/account-subscription.js"></script>
+    <script src="/static/test-workspace.js"></script>
     <script src="/static/test-features.js"></script>
     <script>
       (() => {
@@ -218,6 +240,7 @@
         function showView(name) {
           views.forEach(view => view.classList.toggle('active', view.dataset.view === name));
           const title = titles[name] || titles.overview;
+          document.getElementById('overview-search-holder').hidden = name !== 'overview';
           document.getElementById('workspace-title').textContent = title[0];
           document.getElementById('workspace-subtitle').textContent = title[1];
           window.scrollTo({ top: 0, behavior: 'smooth' });

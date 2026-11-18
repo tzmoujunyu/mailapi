@@ -14,23 +14,39 @@
     }
     sidebar.querySelector('.test-ui-logo').insertAdjacentHTML('afterend', '<span class="test-ui-brand-name">MailAPI</span>');
     const footer = sidebar.querySelector('.test-ui-sidebar-footer');
-    footer.innerHTML = `<button type="button" aria-controls="${nav.id}">${icon('sidebar')}<span class="test-ui-nav-label"></span></button>`;
-    const toggle = footer.querySelector('button');
+    footer.querySelector('a')?.remove();
+    const collapse = document.createElement('button');
+    collapse.type = 'button';
+    collapse.className = 'test-ui-dock-collapse';
+    collapse.innerHTML = icon('sidebar');
+    const expand = document.createElement('button');
+    expand.type = 'button';
+    expand.className = 'test-ui-dock-expand';
+    expand.innerHTML = icon('sidebar-expand');
+    sidebar.append(collapse);
+    const heading = document.querySelector('.topbar, body > header, .home-directory-inner');
+    heading?.prepend(expand);
+    const toggles = [collapse, expand];
+    for (const toggle of toggles) toggle.setAttribute('aria-controls', nav.id);
     function setExpanded(expanded) {
       document.body.classList.toggle('dock-expanded', expanded);
-      toggle.setAttribute('aria-expanded', String(expanded));
-      toggle.title = expanded ? '收起边栏' : '展开边栏';
-      toggle.setAttribute('aria-label', toggle.title);
-      toggle.lastElementChild.textContent = toggle.title;
+      for (const toggle of toggles) {
+        toggle.setAttribute('aria-expanded', String(expanded));
+        toggle.title = toggle === collapse ? '收起边栏' : '展开边栏';
+        toggle.setAttribute('aria-label', toggle.title);
+      }
     }
     let expanded = false;
     try { expanded = sessionStorage.getItem('mailapi.test.dock') === 'expanded'; } catch {}
     setExpanded(expanded);
-    toggle.addEventListener('click', () => {
-      const next = !document.body.classList.contains('dock-expanded');
-      setExpanded(next);
-      try { sessionStorage.setItem('mailapi.test.dock', next ? 'expanded' : 'compact'); } catch {}
-    });
+    for (const toggle of toggles) {
+      toggle.addEventListener('click', () => {
+        const next = !document.body.classList.contains('dock-expanded');
+        setExpanded(next);
+        try { sessionStorage.setItem('mailapi.test.dock', next ? 'expanded' : 'compact'); } catch {}
+        (next ? collapse : expand).focus();
+      });
+    }
 
     function syncCurrentNav() {
       let target = location.pathname;

@@ -11,18 +11,49 @@
     const response = await fetch('/api/auth/me', { cache: 'no-store' });
     if (!response.ok) return;
     const { user, groups } = await response.json();
+    const testSidebar = document.body.classList.contains('test-ui-page')
+      ? document.querySelector('.test-ui-sidebar') : null;
     const bar = document.createElement('nav');
-    bar.className = 'site-session';
+    bar.className = testSidebar ? 'test-ui-account' : 'site-session';
     bar.setAttribute('aria-label', '网站会话');
     const managementLink = document.body.classList.contains('test-ui-page')
       ? ''
       : '<a href="/admin/access" data-management hidden>网站账户与分组</a>';
-    bar.innerHTML = `<strong>账户中心</strong><span data-identity></span><span data-groups></span>${managementLink}<div class="site-session-actions"><span data-theme-control></span><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>`;
+    bar.innerHTML = testSidebar
+      ? '<span data-theme-control></span><button class="test-ui-avatar-button" type="button" aria-expanded="false" aria-controls="test-account-panel"><span class="test-ui-avatar" aria-hidden="true"></span><span class="test-ui-nav-label" data-username></span></button><div id="test-account-panel" class="test-ui-account-panel" role="group" aria-label="账户操作" hidden><strong data-identity></strong><p data-groups></p><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>'
+      : `<strong>账户中心</strong><span data-identity></span><span data-groups></span>${managementLink}<div class="site-session-actions"><span data-theme-control></span><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>`;
     bar.querySelector('[data-identity]').textContent = `${user.username} · ${roleNames[user.role]}`;
     bar.querySelector('[data-groups]').textContent = groups.length ? `分组：${groups.map(group => group.name).join('、')}` : '暂未加入分组';
     const management = bar.querySelector('[data-management]');
     if (management) management.hidden = user.role === 'user';
-    document.body.prepend(bar);
+    if (testSidebar) {
+      testSidebar.querySelector('.test-ui-sidebar-footer').append(bar);
+      const avatar = bar.querySelector('.test-ui-avatar-button');
+      const panel = bar.querySelector('.test-ui-account-panel');
+      avatar.querySelector('.test-ui-avatar').textContent = Array.from(user.username).slice(0, 2).join('').toUpperCase();
+      avatar.querySelector('[data-username]').textContent = user.username;
+      avatar.setAttribute('aria-label', `账户菜单：${user.username}`);
+      avatar.title = user.username;
+      function closeAccountPanel() {
+        panel.hidden = true;
+        avatar.setAttribute('aria-expanded', 'false');
+      }
+      avatar.addEventListener('click', () => {
+        panel.hidden = !panel.hidden;
+        avatar.setAttribute('aria-expanded', String(!panel.hidden));
+        if (!panel.hidden) panel.querySelector('button').focus();
+      });
+      document.addEventListener('click', event => {
+        if (!bar.contains(event.target)) closeAccountPanel();
+      });
+      bar.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !panel.hidden) {
+          closeAccountPanel();
+          avatar.focus();
+        }
+      });
+      bar.querySelector('[data-password]').addEventListener('click', closeAccountPanel);
+    } else document.body.prepend(bar);
     window.SiteTheme?.mount(bar.querySelector('[data-theme-control]'));
     bar.querySelector('[data-logout]').addEventListener('click', async event => {
       event.target.disabled = true;
@@ -64,7 +95,7 @@
       finally { submit.disabled = false; }
     });
     const passwordLanding = document.body.classList.contains('test-ui-page')
-      ? location.pathname === '/test-features'
+      ? location.pathname === '/test-features' && ['', '#view-overview'].includes(location.hash)
       : location.pathname === '/';
     if (user.must_change_password && passwordLanding) openPasswordDialog();
   }
