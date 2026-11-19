@@ -8,7 +8,7 @@ body.test-ui-page:not(.test-ui-login) { --test-header-height: 56px; padding-top:
   display: flex; align-items: center; gap: 0; background: var(--test-card); color: var(--test-ink);
 }
 .test-ui-header .test-ui-dock-toggle {
-  box-sizing: border-box; display: grid; place-items: center; flex: 0 0 70px; height: 40px; padding: 8px;
+  box-sizing: border-box; display: grid; place-items: center; flex: 0 0 48px; height: 40px; padding: 8px;
   border: 0; border-radius: 0; background: transparent; color: var(--test-ink); cursor: pointer;
 }
 .test-ui-header svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -99,7 +99,6 @@ body.test-ui-page.home-page section[id] { scroll-margin-top: calc(var(--test-hea
 :root[data-ui-radius]:not([data-ui-radius="auto"]) .test-ui-page :is(.card,.stat,.section,.table-wrap,.small-btn,.btn,.btn-mini-action,.tree-item,.workspace-footer-link,.workspace-search,.management-tabs,.group-overview,.resource-section) { border-radius: var(--ui-radius); }
 @keyframes drawer-enter { from { transform: translateX(100%); } to { transform: translateX(0); } }
 @media (max-width: 680px) {
-  .test-ui-header .test-ui-dock-toggle { flex-basis: 54px; }
   .test-ui-header .test-ui-brand-name { font-size: 15px; margin-right: 8px; }
   .test-ui-header-actions { gap: 0; padding-right: 5px; margin-left: auto; }
   .test-ui-header-search { display: none; }

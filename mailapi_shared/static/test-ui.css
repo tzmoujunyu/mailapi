@@ -19,7 +19,8 @@
 }
 
 body.test-ui-page {
-  --test-sidebar: 64px;
+  --test-sidebar: 48px;
+  --test-sidebar-expanded: 112px;
   min-height: 100vh;
   margin: 0;
   padding: 0 0 0 var(--test-sidebar);
@@ -28,7 +29,8 @@ body.test-ui-page {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-body.test-ui-page.dock-expanded { --test-sidebar: 256px; }
+:root:lang(en) body.test-ui-page { --test-sidebar-expanded: 128px; }
+body.test-ui-page.dock-expanded { --test-sidebar: var(--test-sidebar-expanded); }
 body.test-ui-page.test-ui-login { padding: 0; }
 
 .test-ui-sidebar {
@@ -678,9 +680,8 @@ body.test-ui-home .resource-table td, body.test-ui-home .resource-table tr:hover
   .test-ui-features .workspace-view.active, .test-ui-account-panel { animation: none; }
 }
 
-/* Adapt sidebar-07's 16rem panel, 32px targets and 200ms width transition.
-   The compact rail includes padding, keeping icons under the existing header toggle. */
-body.test-ui-page .test-ui-sidebar { padding:16px 13px 16px 19px; }
+/* Keep 32px targets and the 200ms transition, with only 8px around the menu. */
+body.test-ui-page .test-ui-sidebar { padding:16px 8px; }
 body.test-ui-page .test-ui-nav { gap:4px; align-items:stretch; }
 body.test-ui-page .test-ui-nav a { width:100%; min-height:32px; height:32px; padding:8px; gap:0; justify-content:flex-start; flex-direction:row; border-radius:6px; }
 body.test-ui-page .test-ui-nav a > span:first-child { flex:0 0 16px; }
@@ -695,16 +696,9 @@ body.test-ui-page.dock-ready .test-ui-sidebar .test-ui-nav-label { transition:ma
 body.test-ui-page .test-ui-dock-backdrop { position:fixed; inset:var(--test-header-height,56px) 0 0; z-index:65; border:0; background:#0005; }
 .test-ui-dock-backdrop[hidden] { display:none; }
 @media(max-width:767px) {
-  body.test-ui-page { --test-sidebar:64px; }
-  body.test-ui-page.dock-expanded { --test-sidebar:256px; }
-  body.test-ui-page, body.test-ui-page.dock-expanded { padding-left:64px; }
+  body.test-ui-page, body.test-ui-page.dock-expanded { padding-left:48px; }
   body.test-ui-page.dock-modal { overflow:hidden; }
   body.test-ui-page .test-ui-nav-tooltip { display:none; }
-}
-@media(max-width:680px) {
-  body.test-ui-page { --test-sidebar:54px; }
-  body.test-ui-page, body.test-ui-page.dock-expanded { padding-left:54px; }
-  body.test-ui-page .test-ui-sidebar { padding-inline:11px; }
 }
 @media(prefers-reduced-motion:reduce) {
   body.test-ui-page.dock-ready, body.test-ui-page.dock-ready .test-ui-sidebar, body.test-ui-page.dock-ready .test-ui-sidebar .test-ui-nav-label { transition:none; }
