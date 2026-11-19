@@ -1,11 +1,11 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--theme-page-bg, #f4f6f8); color: var(--theme-text, #1f2937); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 18px; padding: 18px 24px; background: var(--theme-surface, white); border-bottom: 1px solid var(--theme-border, #dfe3e8); }
+.access-page-header { display: flex; align-items: center; gap: 18px; padding: 18px 24px; background: var(--theme-surface, white); border-bottom: 1px solid var(--theme-border, #dfe3e8); }
 h1 { margin: 0 auto 0 0; font-size: 22px; }
 h2 { font-size: 18px; margin: 0; }
 a { color: var(--theme-link, #1d4ed8); text-decoration: none; }
 main { max-width: 1440px; margin: auto; padding: 0 24px 24px; }
-section { background: var(--theme-surface, white); padding: 20px; margin: 16px 0; border: 1px solid var(--theme-border, #dfe3e8); border-radius: 8px; }
+main section { background: var(--theme-surface, white); padding: 20px; margin: 16px 0; border: 1px solid var(--theme-border, #dfe3e8); border-radius: 8px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .muted, small { color: var(--theme-muted, #6b7280); font-size: 13px; line-height: 1.6; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--theme-border, #dfe3e8); border-radius: 6px; }
@@ -88,5 +88,5 @@ legend { font-size: 14px; font-weight: 600; }
 .options { display: grid; gap: 9px; max-height: 220px; overflow-y: auto; }
 .option { display: flex; align-items: baseline; gap: 7px; font-size: 14px; overflow-wrap: anywhere; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
-@media (max-width: 680px) { header { flex-wrap: wrap; gap: 12px; } h1 { flex-basis: 100%; } main { padding: 0 10px 16px; } section { padding: 14px; } }
+@media (max-width: 680px) { .access-page-header { flex-wrap: wrap; gap: 12px; } h1 { flex-basis: 100%; } main { padding: 0 10px 16px; } main section { padding: 14px; } }
 @media (max-width: 680px) { .group-config { grid-template-columns: minmax(0, 1fr); gap: 12px; } .group-config .options { min-height: 100px; max-height: 240px; } .wide-dialog { padding: 16px; } }

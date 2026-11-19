@@ -251,7 +251,7 @@ body.test-ui-page.test-ui-admin .shell {
 }
 
 body.test-ui-page.test-ui-admin .topbar,
-body.test-ui-page.test-ui-access > header {
+body.test-ui-page.test-ui-access > .access-page-header {
   max-width: 1480px;
   margin: 0 auto;
   padding: 22px 30px 0;
@@ -259,7 +259,7 @@ body.test-ui-page.test-ui-access > header {
   background: transparent;
 }
 body.test-ui-page.test-ui-admin .topbar h1,
-body.test-ui-page.test-ui-access > header h1 {
+body.test-ui-page.test-ui-access > .access-page-header h1 {
   color: var(--test-ink);
   font-size: clamp(22px, 2.5vw, 30px);
   letter-spacing: -.035em;
@@ -323,7 +323,7 @@ body.test-ui-page.test-ui-access main {
   padding: 18px 30px 48px;
 }
 
-body.test-ui-page.test-ui-access section {
+body.test-ui-page.test-ui-access main section {
   border-color: var(--test-line);
   border-radius: var(--test-radius);
   box-shadow: var(--test-shadow);
@@ -433,7 +433,7 @@ body.test-ui-features button,
 body.test-ui-features .btn { border-color: var(--theme-border-strong, #cbd5e1); background: var(--theme-surface, #fff); color: var(--theme-text, #202327); }
 body.test-ui-features button.primary,
 body.test-ui-features .btn.primary { border-color: var(--test-purple); background: var(--test-primary-fill); color: #fff; }
-body.test-ui-access > header a { display: none; }
+body.test-ui-access > .access-page-header a { display: none; }
 body.test-ui-admin .topbar .actions > a:not(.btn-primary) { display: none; }
 
 @media (max-width: 920px) {
@@ -461,7 +461,7 @@ body.test-ui-admin .topbar .actions > a:not(.btn-primary) { display: none; }
     border-radius: 18px;
   }
   body.test-ui-page.test-ui-admin .topbar,
-  body.test-ui-page.test-ui-access header {
+  body.test-ui-page.test-ui-access > .access-page-header {
     margin: 14px 12px 0;
     padding: 17px;
     border-radius: 18px;
@@ -472,7 +472,7 @@ body.test-ui-admin .topbar .actions > a:not(.btn-primary) { display: none; }
   }
   body.test-ui-features .main { padding: 0 12px 24px; }
   body.test-ui-page.test-ui-admin .section,
-  body.test-ui-page.test-ui-access section {
+  body.test-ui-page.test-ui-access main section {
     padding: 16px;
     border-radius: 18px;
   }

@@ -166,3 +166,27 @@ test('appearance drawer persists account settings and restores the saved appeara
   assert.equal(w.document.documentElement.dataset.theme, 'system');
   assert.match(w.document.querySelector('[role="status"]').textContent, /保存失败/);
 });
+
+test('account page layout styles do not match the shared header or its brand at any breakpoint', t => {
+  const dom = new JSDOM('<body class="test-ui-page test-ui-access"><header class="test-ui-header"><a class="test-ui-brand-name">MILVLG</a></header></body>');
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  const shared = doc.querySelector('.test-ui-header');
+  const brand = doc.querySelector('a');
+  for (const name of ['access.css', 'test-ui.css']) {
+    const style = doc.createElement('style');
+    style.textContent = read(name);
+    doc.head.append(style);
+    const visit = rules => {
+      for (const rule of rules) {
+        if (rule.cssRules) visit(rule.cssRules);
+        if (!rule.selectorText || !(name === 'access.css' || rule.selectorText.includes('test-ui-access'))) continue;
+        const affectsLayout = ['padding','margin','max-width','background','display'].some(key => rule.style.getPropertyValue(key));
+        if (!affectsLayout) continue;
+        assert.ok(!shared.matches(rule.selectorText), `${name}: ${rule.selectorText} overrides the shared header`);
+        assert.ok(!brand.matches(rule.selectorText), `${name}: ${rule.selectorText} overrides the shared brand`);
+      }
+    };
+    visit(style.sheet.cssRules);
+  }
+});
