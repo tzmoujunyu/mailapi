@@ -85,6 +85,22 @@ test('announcements open in dialogs and user-provided titles and filenames rende
   el('fin-notice-history').click();assert.ok(el('fin-detail-content').querySelector('[data-read-notice]'));
 });
 
+test('finance dialogs dismiss on a backdrop click but keep edits open for interior clicks or drags',async t=>{
+  const {w,el}=await setup(t);
+  el('finance-open-form').click();
+  const dialog=el('finance-dialog');
+  dialog.getBoundingClientRect=()=>({left:100,top:100,right:660,bottom:650});
+  const pointer=(type,x,y)=>dialog.dispatchEvent(new w.MouseEvent(type,{clientX:x,clientY:y,bubbles:true}));
+  el('finance-project').value='未提交草稿';
+  pointer('pointerdown',120,120);pointer('click',120,120);
+  assert.equal(dialog.open,true);
+  pointer('pointerdown',120,120);pointer('click',20,20);
+  assert.equal(dialog.open,true);
+  pointer('pointerdown',20,20);pointer('click',20,20);
+  assert.equal(dialog.open,false);
+  assert.equal(el('finance-project').value,'未提交草稿');
+});
+
 test('compact finance filters survive tab moves, period buttons filter real data, and chart details support the keyboard',async t=>{
   const today=application(), old=application({id:'old',created_at:'2020-01-01T00:00:00Z'});
   const {w,el}=await setup(t,{admin:true,all:[today,old]});

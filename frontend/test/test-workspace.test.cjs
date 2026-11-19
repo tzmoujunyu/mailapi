@@ -67,6 +67,48 @@ test('the dock enhances the supplied role links and follows URL changes', t => {
   assert.equal(current(), '/test-features#view-finance');
 });
 
+test('mobile navigation overlays content without changing the desktop preference and releases focus on close', t => {
+  const dom = new JSDOM(`<body><aside class="test-ui-sidebar" aria-label="网站导航"><nav class="test-ui-nav">
+    <a href="/test-features#view-overview"><span></span><span class="test-ui-nav-label">主页</span></a>
+    <a href="/test-features#view-finance"><span></span><span class="test-ui-nav-label">财务</span></a>
+  </nav></aside><main data-test-view><input /></main></body>`, {url:'http://localhost/test-features', runScripts:'outside-only'});
+  t.after(() => dom.window.close());
+  const w = dom.window, media = {matches:true, addEventListener(_type, callback) { this.change = callback; }};
+  w.matchMedia = () => media;
+  w.sessionStorage.setItem('mailapi.test.dock', 'expanded');
+  w.eval(read('test-ui.js'));
+  const toggle = w.document.querySelector('.test-ui-dock-toggle'), sidebar = w.document.querySelector('aside');
+  const links = [...sidebar.querySelectorAll('a')], content = w.document.querySelector('main');
+  const backdrop = w.document.querySelector('.test-ui-dock-backdrop');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  toggle.click(); toggle.focus();
+  assert.equal(w.document.body.classList.contains('dock-modal'), true);
+  assert.equal(content.inert, true);
+  assert.equal(backdrop.hidden, false);
+  assert.equal(w.sessionStorage.getItem('mailapi.test.dock'), 'expanded');
+  toggle.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Tab', shiftKey:true, bubbles:true}));
+  assert.equal(w.document.activeElement, links.at(-1));
+  links.at(-1).dispatchEvent(new w.KeyboardEvent('keydown', {key:'Tab', bubbles:true}));
+  assert.equal(w.document.activeElement, toggle);
+  toggle.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(content.inert, false);
+  assert.equal(w.document.body.classList.contains('dock-modal'), false);
+  assert.equal(backdrop.hidden, true);
+  toggle.click(); backdrop.click();
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  toggle.click(); links[0].click();
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  media.matches = false; media.change();
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  toggle.click();
+  assert.equal(w.sessionStorage.getItem('mailapi.test.dock'), 'compact');
+  media.matches = true; media.change(); toggle.click();
+  media.matches = false; media.change();
+  assert.equal(content.inert, false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+});
+
 test('workspace resources use permission-filtered endpoints and fetch secrets only on a click', async t => {
   const dom = new JSDOM(read('test-features.html'), {url: 'http://localhost/test-features', runScripts: 'outside-only'});
   const w = dom.window;

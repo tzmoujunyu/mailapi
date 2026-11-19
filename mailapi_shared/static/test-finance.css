@@ -15,29 +15,37 @@ body.test-ui-features #view-finance { padding-top:0; }
   --fin-good:light-dark(#147746,#78d6a4);
   --fin-bad:light-dark(#bd333c,#ff9ca3);
   --fin-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23192131' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7.5 5 5 5-5'/%3E%3C/svg%3E");
-  color:var(--fin-text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color:var(--fin-text); font-size:14px; line-height:1.5; font-weight:400;
 }
+#view-finance * { box-sizing:border-box; }
 #view-finance [hidden] { display:none !important; }
 #view-finance h2, #view-finance h3, #view-finance p { margin:0; }
 #view-finance h2 { font-size:21px; font-weight:600; letter-spacing:normal; }
 #view-finance h3 { font-size:15px; font-weight:600; }
 #view-finance .fin-secondary, #view-finance .muted { color:var(--fin-muted); font-size:12px; }
-#view-finance button, #view-finance input, #view-finance select, #view-finance textarea { font:inherit; box-sizing:border-box; }
+#view-finance button, #view-finance input, #view-finance select, #view-finance textarea { font:inherit; letter-spacing:normal; }
+#view-finance button, #view-finance input:not([type="checkbox"]), #view-finance textarea { -webkit-appearance:none; appearance:none; }
 #view-finance button {
   display:inline-flex; align-items:center; justify-content:center; gap:5px;
   min-height:35px; padding:7px 11px; border:1px solid var(--fin-line); border-radius:9px;
   background:var(--fin-panel); color:var(--fin-text); box-shadow:none; white-space:nowrap; cursor:pointer;
 }
 #view-finance button:hover { background:var(--fin-soft); }
+#view-finance button:active:not(:disabled) { filter:brightness(.96); }
 #view-finance button.primary, #view-finance .fin-period-buttons button[aria-pressed="true"] {
   background:var(--fin-accent); border-color:var(--fin-accent); color:light-dark(#fff,#171522);
 }
 #view-finance button:disabled { opacity:.45; cursor:default; }
+#view-finance button.primary:hover { filter:brightness(.95); }
+#view-finance :is(button, a, summary):focus-visible { outline:2px solid var(--fin-accent); outline-offset:2px; }
 #view-finance .fin-heading, #view-finance .fin-stat-toolbar, #view-finance .fin-history-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
 #view-finance .fin-heading-actions, #view-finance .actions { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
-#view-finance .fin-search { display:flex; align-items:center; gap:7px; width:260px; padding:7px 10px; border:1px solid var(--fin-line); border-radius:9px; background:var(--fin-panel); }
+#view-finance .fin-search { display:flex; align-items:center; gap:7px; width:260px; min-height:37px; padding:7px 10px; border:1px solid var(--fin-line); border-radius:9px; background:var(--fin-panel); }
+#view-finance .fin-search:focus-within { outline:2px solid var(--fin-accent); outline-offset:1px; }
 #view-finance .fin-search svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; flex-shrink:0; }
 #view-finance .fin-search input { width:100%; min-width:0; min-height:20px; padding:0; border:0; border-radius:0; background:transparent; color:var(--fin-text); box-shadow:none; font-size:13px; }
+#view-finance .fin-search input:focus-visible { outline:0; }
+#view-finance input::placeholder, #view-finance textarea::placeholder { color:var(--fin-muted); opacity:.8; }
 #view-finance .fin-notice-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:18px 0; padding:12px 14px; background:var(--fin-panel); border:1px solid var(--fin-line); border-radius:12px; }
 #view-finance .fin-notice-title { flex:1; min-width:100px; justify-content:flex-start; text-align:left; min-height:20px; padding:0; border:0; border-radius:0; background:transparent; white-space:normal; }
 #view-finance .fin-tag { display:inline-flex; align-items:center; gap:4px; padding:2px 7px; border-radius:6px; background:var(--fin-soft); color:var(--fin-muted); font-size:12px; white-space:nowrap; font-weight:400; }
@@ -65,12 +73,14 @@ body.test-ui-features #view-finance { padding-top:0; }
 #view-finance .fin-more-filters[open] .fin-extra-filters { position:absolute; top:100%; right:0; z-index:5; width:min(460px,calc(100vw - 120px)); box-shadow:0 8px 24px #0001; }
 #view-finance .fin-extra-filters label { display:grid; gap:5px; }
 #view-finance .fin-extra-filters input { width:120px; }
+#view-finance .fin-extra-filters select { max-width:190px; }
 #view-finance .table-wrap { max-width:100%; overflow-x:auto; border:0; border-radius:0; }
 #view-finance .card.table-wrap { border:1px solid var(--fin-line); border-radius:16px; }
 #view-finance table { width:100%; min-width:780px; border-collapse:collapse; font-size:12px; }
 #view-finance th { padding:10px 8px; background:var(--fin-soft); text-align:left; color:var(--fin-muted); font-size:12px; font-weight:500; white-space:nowrap; }
 #view-finance td { padding:11px 8px; border-bottom:1px solid var(--fin-line); vertical-align:middle; font-size:12px; }
 #view-finance tbody tr:last-child td { border-bottom:0; }
+#view-finance tbody tr:hover { background:var(--fin-soft); }
 #view-finance .fin-project { min-width:160px; }
 #view-finance .fin-date, #view-finance td small { display:block; margin-top:2px; color:var(--fin-muted); font-size:11px; }
 #view-finance .fin-date { white-space:nowrap; }
@@ -114,19 +124,26 @@ body.test-ui-features #view-finance { padding-top:0; }
 #view-finance .announcement-admin-item { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:13px 0; border:0; border-bottom:1px solid var(--fin-line); border-radius:0; background:transparent; }
 #view-finance .announcement-admin-item:last-child { border-bottom:0; }
 #view-finance .announcement-admin-item h3 { font-size:15px; }
+#view-finance .announcement-admin-item > div:first-child { min-width:0; overflow-wrap:anywhere; }
+#view-finance .announcement-admin-item .actions { flex-shrink:0; }
 #view-finance .announcement-admin-item small { color:var(--fin-muted); font-size:12px; }
 #view-finance .fin-dialog { position:fixed; inset:calc(var(--test-header-height, 56px) + 38px) 0 auto; margin:0 auto; width:min(560px,calc(100vw - 28px)); max-height:calc(100dvh - var(--test-header-height, 56px) - 64px); padding:20px; border:1px solid var(--fin-line); border-radius:16px; color:var(--fin-text); background:var(--fin-panel); box-shadow:0 12px 40px light-dark(#25304a28,#00000080); }
 #view-finance .fin-dialog::backdrop { background:light-dark(#26314a35,#00000085); }
 #view-finance .fin-dialog .modal-head { margin-bottom:17px; }
 #view-finance .fin-dialog .modal-head h3 { font-size:15px; }
 #view-finance .fin-dialog .modal-head button { min-height:24px; padding:0; border:0; background:transparent; color:var(--fin-muted); font-size:22px; }
+#view-finance .fin-dialog .modal-head button { width:24px; height:24px; flex:0 0 24px; line-height:1; border-radius:6px; }
+#view-finance .fin-dialog .modal-head button:hover { color:var(--fin-text); background:var(--fin-soft); }
 #view-finance .fin-dialog .form { display:grid; gap:12px; }
 #view-finance .fin-dialog label { display:grid; gap:5px; font-size:14px; font-weight:400; }
 #view-finance .fin-dialog input, #view-finance .fin-dialog textarea, #view-finance .fin-dialog select { width:100%; }
+#view-finance .fin-dialog input:not([type="checkbox"]):not([type="file"]) { height:37px; }
 #view-finance .fin-dialog select { height:37px; line-height:21px; }
 #view-finance .fin-dialog label.fin-checkbox { display:flex; }
 #view-finance .fin-dialog .fin-checkbox input { width:15px; }
 #view-finance .fin-dialog .form-hint { color:var(--fin-muted); font-size:12px; line-height:1.5; }
+#view-finance .fin-dialog .status { min-height:0; font-size:12px; color:var(--fin-bad); overflow-wrap:anywhere; }
+#view-finance .fin-dialog :is(.status, .form-hint):empty { display:none; }
 #view-finance .fin-upload-control { position:relative; display:flex; align-items:center; justify-content:center; gap:5px; padding:7px 11px; min-height:35px; border:1px solid var(--fin-line); border-radius:9px; color:var(--fin-text); background:var(--fin-panel); }
 #view-finance .fin-upload-control:hover { background:var(--fin-soft); }
 #view-finance .fin-upload-control:focus-within { outline:2px solid var(--fin-accent); outline-offset:1px; }
@@ -135,13 +152,19 @@ body.test-ui-features #view-finance { padding-top:0; }
 #view-finance .fin-upload-name:empty { display:none; }
 #view-finance .fin-dialog textarea { min-height:90px; resize:vertical; }
 #view-finance .fin-dialog-actions { display:flex; gap:7px; margin-top:0; }
-#view-finance .fin-wide-dialog { width:min(700px,calc(100vw - 28px)); }
-#view-finance .fin-event { border-left:2px solid var(--fin-line); padding:0 0 16px 16px; margin-top:15px; }
+#view-finance #fin-detail-content { display:grid; gap:12px; }
+#view-finance .fin-event { padding:0 0 13px; border-bottom:1px solid var(--fin-line); }
+#view-finance .fin-event:last-child { padding-bottom:0; border-bottom:0; }
+#view-finance .fin-event strong { font-size:14px; font-weight:600; }
+#view-finance .fin-event small { display:block; margin-top:3px; }
+#view-finance .fin-event > button { min-height:0; padding:0; border:0; border-radius:0; background:transparent; color:var(--fin-accent); white-space:normal; text-align:left; justify-content:flex-start; }
+#view-finance .fin-event > button:hover { text-decoration:underline; }
 #view-finance .fin-event p { margin:6px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 #view-finance .fin-event .actions { gap:12px; }
 #view-finance .fin-prewrap { white-space:pre-wrap; line-height:1.8; overflow-wrap:anywhere; }
 #view-finance .fin-feedback { min-height:24px; margin-top:12px; color:var(--fin-accent); font-size:12px; }
 #view-finance .fin-pager { display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-top:13px; font-size:12px; }
+body:has(#view-finance .fin-dialog[open]) { overflow:hidden; }
 @media(max-width:760px) {
   body.test-ui-features:has(#view-finance.active) .main { padding:15px; }
   #view-finance .fin-chart-grid { grid-template-columns:1fr; }
@@ -151,6 +174,7 @@ body.test-ui-features #view-finance { padding-top:0; }
   #view-finance .fin-search { flex:1 1 200px; }
   #view-finance .fin-tabs { gap:3px; }
   #view-finance .fin-tabs button { padding:8px 10px; }
+  #view-finance .announcement-admin-item { flex-wrap:wrap; }
 }
 @media(max-width:480px) {
   body.test-ui-features:has(#view-finance.active) .main { padding:12px; }
@@ -160,7 +184,13 @@ body.test-ui-features #view-finance { padding-top:0; }
   #view-finance .fin-dialog { inset:calc(var(--test-header-height, 56px) + 12px) 0 auto; max-height:calc(100dvh - var(--test-header-height, 56px) - 24px); }
   #view-finance .fin-more-filters[open] .fin-extra-filters { position:fixed; top:calc(var(--test-header-height, 56px) + 24px); left:calc(var(--test-sidebar, 54px) + 12px); right:12px; width:auto; }
 }
-@media(prefers-reduced-motion:no-preference) { #view-finance .fin-tabs button { transition:background-color .16s,color .16s; } }
+@media(prefers-reduced-motion:no-preference) {
+  #view-finance :is(button, .fin-upload-control) { transition:background-color .16s,color .16s,border-color .16s; }
+  #view-finance .fin-dialog[open] { animation:fin-dialog-enter .16s ease-out; }
+  #view-finance .fin-dialog[open]::backdrop { animation:fin-backdrop-enter .16s ease-out; }
+}
+@keyframes fin-dialog-enter { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+@keyframes fin-backdrop-enter { from { opacity:0; } to { opacity:1; } }
 :root[data-theme="dark"] #view-finance { --fin-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23e9edf5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7.5 5 5 5-5'/%3E%3C/svg%3E"); }
 @media(prefers-color-scheme:dark) {
   :root:not([data-theme]) #view-finance, :root[data-theme="system"] #view-finance { --fin-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23e9edf5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 7.5 5 5 5-5'/%3E%3C/svg%3E"); }

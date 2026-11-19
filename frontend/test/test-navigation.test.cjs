@@ -38,7 +38,7 @@ function fixture(t, {initial = 'features', real = false, previewUser = ''} = {})
   w.document.body.prepend(sidebar);
   w.scrollTo = () => {};
   w.Element.prototype.scrollIntoView = () => {};
-  w.matchMedia = () => ({matches: false});
+  w.matchMedia = () => ({matches: false, addEventListener() {}});
   w.CSS = {escape: value => value};
   w.ResizeObserver = class {observe() {} disconnect() {}};
   w.HTMLDialogElement.prototype.showModal = function () {this.open = true;};

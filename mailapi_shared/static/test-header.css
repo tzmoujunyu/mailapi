@@ -103,10 +103,6 @@ body.test-ui-page.home-page section[id] { scroll-margin-top: calc(var(--test-hea
   .test-ui-header .test-ui-brand-name { font-size: 15px; margin-right: 8px; }
   .test-ui-header-actions { gap: 0; padding-right: 5px; margin-left: auto; }
   .test-ui-header-search { display: none; }
-  .test-ui-sidebar .test-ui-nav-label { display: none; }
-  body.test-ui-page.dock-expanded { --test-sidebar: 200px; }
-  .dock-expanded .test-ui-sidebar .test-ui-nav a { flex-direction: row; justify-content: flex-start; padding: 9px 12px; }
-  .dock-expanded .test-ui-sidebar .test-ui-nav-label { display: inline; }
 }
 @media (prefers-reduced-motion: reduce) { .appearance-drawer[open] { animation: none; } }
 .site-language { position: relative; display: inline-flex; }

@@ -26,6 +26,18 @@ const financeController = (() => {
   const error = (id, value='') => { $(id).textContent = t(value); };
   const show = id => { const dialog = $(id); if (!dialog.open) dialog.showModal(); };
   const hide = id => $(id).close();
+  document.querySelectorAll('#view-finance .fin-dialog').forEach(dialog => {
+    let startedOutside = false;
+    const outside = event => {
+      const rect = dialog.getBoundingClientRect();
+      return event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom);
+    };
+    dialog.addEventListener('pointerdown', event => { startedOutside = outside(event); });
+    dialog.addEventListener('click', event => {
+      if (startedOutside && outside(event)) dialog.close();
+      startedOutside = false;
+    });
+  });
   const currentItems = () => tab === 'mine' ? mine : tab === 'history' ? history.map(event => ({...event.snapshot, status:event.action, event, search_note:event.note, search_actor:event.actor_name})) : all;
   function options(id, values, label) {
     const previous = $(id).value;
