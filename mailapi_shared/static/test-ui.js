@@ -12,41 +12,39 @@
       const name = icons[link.getAttribute('href')];
       if (name) link.firstElementChild.innerHTML = icon(name);
     }
-    sidebar.querySelector('.test-ui-logo').insertAdjacentHTML('afterend', '<span class="test-ui-brand-name">MailAPI</span>');
-    const footer = sidebar.querySelector('.test-ui-sidebar-footer');
-    footer.querySelector('a')?.remove();
-    const collapse = document.createElement('button');
-    collapse.type = 'button';
-    collapse.className = 'test-ui-dock-collapse';
-    collapse.innerHTML = icon('sidebar');
-    const expand = document.createElement('button');
-    expand.type = 'button';
-    expand.className = 'test-ui-dock-expand';
-    expand.innerHTML = icon('sidebar-expand');
-    sidebar.append(collapse);
-    const heading = document.querySelector('.topbar, body > header, .home-directory-inner');
-    heading?.prepend(expand);
-    const toggles = [collapse, expand];
-    for (const toggle of toggles) toggle.setAttribute('aria-controls', nav.id);
+    sidebar.querySelector('.test-ui-logo')?.remove();
+    const header = document.createElement('header');
+    header.className = 'test-ui-header';
+    header.innerHTML = `<button class="test-ui-dock-toggle" type="button" aria-controls="${nav.id}">${icon('sidebar-expand')}</button><a class="test-ui-brand-name" href="/test-features#view-overview">MILVLG</a><div class="test-ui-header-search"></div><div class="test-ui-header-actions"></div>`;
+    document.body.prepend(header);
+    const search = document.querySelector('.workspace-search, .management-search');
+    if (search) header.querySelector('.test-ui-header-search').append(search);
+    const account = sidebar.querySelector('.test-ui-account');
+    if (account) header.querySelector('.test-ui-header-actions').append(account);
+    sidebar.querySelector('.test-ui-sidebar-footer a')?.remove();
+    for (const link of nav.querySelectorAll('a')) {
+      link.removeAttribute('title');
+      const tooltip = document.createElement('span');
+      tooltip.className = 'test-ui-nav-tooltip';
+      tooltip.setAttribute('aria-hidden', 'true');
+      tooltip.textContent = link.getAttribute('aria-label') || link.textContent;
+      link.append(tooltip);
+    }
+    const toggle = header.querySelector('button');
     function setExpanded(expanded) {
       document.body.classList.toggle('dock-expanded', expanded);
-      for (const toggle of toggles) {
-        toggle.setAttribute('aria-expanded', String(expanded));
-        toggle.title = toggle === collapse ? '收起边栏' : '展开边栏';
-        toggle.setAttribute('aria-label', toggle.title);
-      }
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.title = expanded ? '收起边栏' : '展开边栏';
+      toggle.setAttribute('aria-label', toggle.title);
     }
     let expanded = false;
     try { expanded = sessionStorage.getItem('mailapi.test.dock') === 'expanded'; } catch {}
     setExpanded(expanded);
-    for (const toggle of toggles) {
-      toggle.addEventListener('click', () => {
-        const next = !document.body.classList.contains('dock-expanded');
-        setExpanded(next);
-        try { sessionStorage.setItem('mailapi.test.dock', next ? 'expanded' : 'compact'); } catch {}
-        (next ? collapse : expand).focus();
-      });
-    }
+    toggle.addEventListener('click', () => {
+      const next = !document.body.classList.contains('dock-expanded');
+      setExpanded(next);
+      try { sessionStorage.setItem('mailapi.test.dock', next ? 'expanded' : 'compact'); } catch {}
+    });
 
     function syncCurrentNav() {
       let target = location.pathname;

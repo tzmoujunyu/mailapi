@@ -20,14 +20,14 @@
       ? ''
       : '<a href="/admin/access" data-management hidden>网站账户与分组</a>';
     bar.innerHTML = testSidebar
-      ? '<span data-theme-control></span><button class="test-ui-avatar-button" type="button" aria-expanded="false" aria-controls="test-account-panel"><span class="test-ui-avatar" aria-hidden="true"></span><span class="test-ui-nav-label" data-username></span></button><div id="test-account-panel" class="test-ui-account-panel" role="group" aria-label="账户操作" hidden><strong data-identity></strong><p data-groups></p><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>'
+      ? '<button class="test-ui-avatar-button" type="button" aria-expanded="false" aria-controls="test-account-panel"><span class="test-ui-avatar" aria-hidden="true"></span><span class="test-ui-nav-label" data-username></span></button><div id="test-account-panel" class="test-ui-account-panel" role="group" aria-label="账户操作" hidden><strong data-identity></strong><p data-groups></p><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>'
       : `<strong>账户中心</strong><span data-identity></span><span data-groups></span>${managementLink}<div class="site-session-actions"><span data-theme-control></span><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>`;
     bar.querySelector('[data-identity]').textContent = `${user.username} · ${roleNames[user.role]}`;
     bar.querySelector('[data-groups]').textContent = groups.length ? `分组：${groups.map(group => group.name).join('、')}` : '暂未加入分组';
     const management = bar.querySelector('[data-management]');
     if (management) management.hidden = user.role === 'user';
     if (testSidebar) {
-      testSidebar.querySelector('.test-ui-sidebar-footer').append(bar);
+      (document.querySelector('.test-ui-header-actions') || testSidebar.querySelector('.test-ui-sidebar-footer')).append(bar);
       const avatar = bar.querySelector('.test-ui-avatar-button');
       const panel = bar.querySelector('.test-ui-account-panel');
       avatar.querySelector('.test-ui-avatar').textContent = Array.from(user.username).slice(0, 2).join('').toUpperCase();
@@ -54,7 +54,7 @@
       });
       bar.querySelector('[data-password]').addEventListener('click', closeAccountPanel);
     } else document.body.prepend(bar);
-    window.SiteTheme?.mount(bar.querySelector('[data-theme-control]'));
+    if (!testSidebar) window.SiteTheme?.mount(bar.querySelector('[data-theme-control]'));
     bar.querySelector('[data-logout]').addEventListener('click', async event => {
       event.target.disabled = true;
       try {

@@ -63,7 +63,7 @@ def themed_page(page, request):
             page = page.replace('<form id="login-form" method="post" action="/login">', '<form id="login-form" method="post" action="/login"><div class="test-ui-login-brand" aria-hidden="true" style="display:grid;width:50px;height:50px;place-items:center;margin-bottom:22px;border-radius:16px;background:#4f24ea;color:#fff;font-size:28px;font-weight:800;box-shadow:0 10px 24px #4f24ea33;">M</div>', 1)
         page = page.replace(
             "</head>",
-            '<link rel="stylesheet" href="/static/test-ui.css"><script src="/static/test-ui.js" defer></script></head>',
+            '<link rel="stylesheet" href="/static/test-ui.css"><script src="/static/test-ui.js" defer></script><link rel="stylesheet" href="/static/test-header.css"><script src="/static/test-header.js" defer></script></head>',
             1,
         )
     return page

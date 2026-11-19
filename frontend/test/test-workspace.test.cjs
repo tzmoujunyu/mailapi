@@ -54,8 +54,8 @@ test('the dock enhances the supplied role links and follows URL changes', t => {
   t.after(() => dom.window.close());
   const w = dom.window;
   w.eval(read('test-ui.js'));
-  const current = () => w.document.querySelector('[aria-current="page"]').textContent;
-  assert.equal(current(), '主页');
+  const current = () => w.document.querySelector('[aria-current="page"]').getAttribute('href');
+  assert.equal(current(), '/test-features#view-overview');
   const toggle = w.document.querySelector('button[aria-controls="workspace-navigation"]');
   toggle.click();
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
@@ -63,7 +63,7 @@ test('the dock enhances the supplied role links and follows URL changes', t => {
   assert.equal(w.document.querySelectorAll('.test-ui-nav a').length, 2);
   w.location.hash = '#view-finance';
   w.dispatchEvent(new w.HashChangeEvent('hashchange'));
-  assert.equal(current(), '财务');
+  assert.equal(current(), '/test-features#view-finance');
 });
 
 test('workspace resources use permission-filtered endpoints and fetch secrets only on a click', async t => {
@@ -131,4 +131,38 @@ test('test avatar opens account actions and the password dialog while production
       assert.equal(avatar.getAttribute('aria-expanded'), 'false');
     } else assert.ok(w.document.querySelector('.site-session'));
   }
+});
+
+test('appearance drawer persists account settings and restores the saved appearance after a failed save', async t => {
+  const dom = new JSDOM('<header class="test-ui-header"><div class="test-ui-header-actions"></div></header>', {url: 'http://localhost/test-features', runScripts: 'outside-only'});
+  t.after(() => dom.window.close());
+  const w = dom.window;
+  w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  w.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  let stored = {theme: 'system', preset: 'default', font: 'auto', radius: 'auto'};
+  let fail = false;
+  w.fetch = async (url, options = {}) => {
+    if (options.method === 'PUT' && !fail) stored = {...stored, ...JSON.parse(options.body)};
+    return {ok: !fail, json: async () => stored};
+  };
+  w.eval(read('test-header.js'));
+  await new Promise(resolve => setImmediate(resolve));
+  w.document.getElementById('header-appearance').click();
+  assert.equal(w.document.querySelector('dialog').open, true);
+  const select = async (name, value) => {
+    const input = w.document.querySelector(`input[name="${name}"][value="${value}"]`);
+    input.checked = true;
+    input.dispatchEvent(new w.Event('change', {bubbles: true}));
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  await select('preset', 'lake-view');
+  await select('font', 'serif');
+  await select('radius', '0.5');
+  assert.equal(stored.preset, 'lake-view');
+  assert.equal(w.document.documentElement.dataset.uiFont, 'serif');
+  assert.equal(w.document.documentElement.style.getPropertyValue('--ui-radius'), '0.5rem');
+  fail = true;
+  await select('theme', 'dark');
+  assert.equal(w.document.documentElement.dataset.theme, 'system');
+  assert.match(w.document.querySelector('[role="status"]').textContent, /保存失败/);
 });

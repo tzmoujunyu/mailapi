@@ -259,6 +259,20 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(anonymous.get(route).status_code, 401)
         self.assertEqual(anonymous.put(route, json={'theme': 'dark'}).status_code, 401)
 
+    def test_extended_interface_preferences_are_private_and_persistent(self):
+        route = "/api/test-ui/preferences"
+        baseline = self.bob.get(route).json()
+        settings = {"theme": "dark", "preset": "lake-view", "font": "serif", "radius": "0.5"}
+        self.assertEqual(self.alice.put(route, json=settings).json(), settings)
+        reopened = SiteAccountStore(self.store.path)
+        self.assertEqual(reopened.interface_preferences(self.identities["alice"]["id"]), settings)
+        self.assertEqual(self.bob.get(route).json(), baseline)
+        before = self.store.path.read_bytes()
+        for invalid in ({"radius": "<script>"}, {"theme": "dark", "font": []},
+                        {"user_id": self.identities["bob"]["id"]}, {}):
+            self.assertEqual(self.alice.put(route, json=invalid).status_code, 400)
+        self.assertEqual(self.store.path.read_bytes(), before)
+
     def test_pages_render_account_theme_before_loading_scripts(self):
         self.admin.put('/api/auth/preferences', json={'theme': 'dark'})
         self.alice.put('/api/auth/preferences', json={'theme': 'light'})

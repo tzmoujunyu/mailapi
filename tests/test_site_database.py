@@ -62,6 +62,15 @@ class SiteDatabaseTests(unittest.TestCase):
         with self.assertRaises(SiteAccountError):
             migrate_site_accounts(self.root)
 
+    def test_interface_preferences_round_trip_in_sqlite(self):
+        migrate_site_accounts(self.root)
+        store = open_site_accounts(self.root, backend="sqlite")
+        settings = {"theme": "dark", "preset": "ocean-breeze", "font": "serif", "radius": "0.75"}
+        store.set_interface_preferences(self.alice["id"], settings)
+        reopened = open_site_accounts(self.root, backend="sqlite")
+        self.assertEqual(reopened.interface_preferences(self.alice["id"]), settings)
+        self.assertEqual(reopened.interface_preferences(self.bob["id"])["preset"], "default")
+
     def test_failed_migration_leaves_no_database_or_temporary_file(self):
         data = json.loads(self.source.read_text())
         data["groups"][self.group["id"]]["member_ids"].append("missing-user")

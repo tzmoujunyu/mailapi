@@ -31,6 +31,13 @@ MAX_BATCH_USERS = 100
 MAX_USER_NOTE_LENGTH = 80
 USERNAME_PATTERN = re.compile(r"[a-z0-9_.-]{3,64}")
 TOTP_PATTERN = re.compile(r"[0-9]{6}")
+INTERFACE_OPTIONS = {
+    "theme": ("system", "light", "dark"),
+    "preset": ("default", "anthropic", "simple-large", "underground", "rose-garden", "lake-view",
+               "sunset-glow", "forest-whisper", "ocean-breeze", "lavender-dream"),
+    "font": ("auto", "sans", "serif"),
+    "radius": ("auto", "0", "0.3", "0.5", "0.75", "1"),
+}
 
 
 def timestamp_iso():
@@ -303,6 +310,31 @@ class SiteAccountStore:
                 raise SiteAccountError("请先登录", 401)
             user["theme"] = theme
         return {"theme": theme}
+
+    def interface_preferences(self, user_id):
+        with self._lock:
+            user = self._data["users"].get(user_id)
+            if not user:
+                raise SiteAccountError("请先登录", 401)
+            saved = {**user.get("interface", {}), "theme": user.get("theme", "system")}
+            return {key: saved[key] if saved.get(key) in values else values[0]
+                    for key, values in INTERFACE_OPTIONS.items()}
+
+    def set_interface_preferences(self, user_id, payload):
+        if not payload or set(payload) - INTERFACE_OPTIONS.keys() or any(
+            not isinstance(value, str) or value not in INTERFACE_OPTIONS[key]
+            for key, value in payload.items()
+        ):
+            raise SiteAccountError("界面设置无效")
+        with self._edit() as data:
+            user = data["users"].get(user_id)
+            if not user:
+                raise SiteAccountError("请先登录", 401)
+            settings = user.setdefault("interface", {})
+            settings.update({key: value for key, value in payload.items() if key != "theme"})
+            if "theme" in payload:
+                user["theme"] = payload["theme"]
+        return self.interface_preferences(user_id)
 
     def create_user(self, actor_id, username, password, role="user", *, note=""):
         return self.create_users(actor_id, [username], password, role, note=note)[0]

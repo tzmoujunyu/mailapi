@@ -561,6 +561,17 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         user = current_user(request)
         return {"role": user["role"], "api2api": store.api2api_config_public()}
 
+    @router.get("/api/test-ui/preferences")
+    def interface_preferences(request: Request):
+        return request.app.state.site_accounts.interface_preferences(current_user(request)["id"])
+
+    @router.put("/api/test-ui/preferences")
+    async def save_interface_preferences(request: Request):
+        from .accounts import read_payload
+        from .site_accounts import INTERFACE_OPTIONS
+        payload = await read_payload(request, set(INTERFACE_OPTIONS))
+        return request.app.state.site_accounts.set_interface_preferences(current_user(request)["id"], payload)
+
     @router.get("/api/api2api/keys")
     def list_user_keys(request: Request):
         user = current_user(request)
