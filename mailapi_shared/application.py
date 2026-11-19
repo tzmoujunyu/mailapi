@@ -2708,7 +2708,11 @@ async def access_guard(request: FastAPIRequest, call_next):
         ):
             return JSONResponse({"detail": "不允许跨站请求"}, status_code=403)
     test_api2api = IS_TEST and path.startswith("/api2api/v1/")
-    public = callback or test_api2api or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
+    test_ui_asset = IS_TEST and path in {
+        "/static/test-i18n-en.js", "/static/test-i18n.js", "/static/test-ui.js", "/static/test-ui.css",
+        "/static/test-header.js", "/static/test-header.css", "/static/test-notifications.js", "/static/test-navigation.svg",
+    }
+    public = callback or test_api2api or test_ui_asset or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
     role = request_access_role(request)
     if not public and (role is None or (requires_admin_access(request) and role != "admin")):
         if path.startswith("/api/"):

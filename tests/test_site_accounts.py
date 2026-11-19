@@ -262,7 +262,7 @@ class SiteAccountHTTPTests(unittest.TestCase):
     def test_extended_interface_preferences_are_private_and_persistent(self):
         route = "/api/test-ui/preferences"
         baseline = self.bob.get(route).json()
-        settings = {"theme": "dark", "preset": "lake-view", "font": "serif", "radius": "0.5"}
+        settings = {"theme": "dark", "preset": "lake-view", "font": "serif", "radius": "0.5", "language": "en"}
         self.assertEqual(self.alice.put(route, json=settings).json(), settings)
         reopened = SiteAccountStore(self.store.path)
         self.assertEqual(reopened.interface_preferences(self.identities["alice"]["id"]), settings)

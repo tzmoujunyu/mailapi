@@ -285,7 +285,7 @@
       function planValue(item) { const subscription = item.subscription || {}; if (item.reauth_required && !subscription.plan_type && !subscription.account_plan_type) return 'unknown'; return String(item.chatgpt_plan_type || subscription.account_plan_type || subscription.plan_type || '-').toLowerCase(); }
       function planBadge(item, missing = false) {
         const plan = planValue(item);
-        if (missing) return '<span class="plan-pill plan-free">无Codex</span>';
+        if (missing) return '<span class="plan-pill plan-free" data-ui-text>无Codex</span>';
         const label = plan === 'unknown' ? '待确认' : (plan === '-' ? 'FREE' : plan.toUpperCase());
         let cls = 'plan-other';
         if (plan.includes('pro')) cls = 'plan-pro'; else if (plan.includes('plus')) cls = 'plan-plus'; else if (plan.includes('go')) cls = 'plan-go'; else if (plan.includes('free') || plan === '-' || plan === 'unknown') cls = 'plan-free';
@@ -354,7 +354,7 @@
         return '';
       }
       function mailResultHtml(type, value) {
-        if (!value) return '<span class="muted">暂无</span>';
+        if (!value) return '<span class="muted" data-ui-text>暂无</span>';
         if (type === 'link') {
           const link = String(value);
           if (!/^https?:\/\//i.test(link)) return `<span class="muted">链接格式无效</span>`;
@@ -373,12 +373,12 @@
       }
       function detailRow(row) {
         const credentials = row.credentials;
-        const password = credentials && credentials.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(credentials.gpt_password_account)}">复制</button>` : '<span class="muted">未设置</span>';
-        const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" title="复制当前六位验证码，每30秒更新" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button><span data-totp-validity="${escapeAttr(credentials.totp_secret_account)}"></span>` : '<span class="muted">未配置</span>';
+        const password = credentials && credentials.has_gpt_password ? `<button class="small-btn" data-copy-type="password" data-name="${escapeAttr(credentials.gpt_password_account)}">复制</button>` : '<span class="muted" data-ui-text>未设置</span>';
+        const totp = credentials && credentials.has_totp_secret ? `<button class="small-btn" title="复制当前六位验证码，每30秒更新" data-copy-type="totp" data-name="${escapeAttr(credentials.totp_secret_account)}">复制</button><span data-totp-validity="${escapeAttr(credentials.totp_secret_account)}"></span>` : '<span class="muted" data-ui-text>未配置</span>';
         const emailLine = row.mails.length ? row.mails.map(mail => `<div class="email-detail"><div class="email-result-line"><strong>监听邮箱：</strong>${escapeHtml(mail.email || mail.name)}</div><div class="email-result-line"><strong class="email-result-label">最新接收：</strong>${mailResultHtml(mail.result_type, mail.result_value || mail.last_code)}</div><div class="mail-subject-line"><strong>主题：</strong>${mailSourceTag(mail.rule_name, mail.subject)}${escapeHtml(mail.subject || '-')}</div><div><strong>更新时间：</strong>${escapeHtml(formatDateTime(mail.updated_at))}</div><div><strong>历史记录：</strong><button class="small-btn" aria-expanded="${historyName === mail.name}" data-history-name="${escapeAttr(mail.name)}">${historyName === mail.name ? '收起' : '查看历史'}</button></div>${historyHtml(mail)}</div>`).join('') : '';
         const loginLines = [
-          credentials.has_gpt_password ? `<div class="detail-line"><span class="detail-label">GPT密码</span>${password}</div>` : '',
-          credentials.has_totp_secret ? `<div class="detail-line"><span class="detail-label">身份验证器(2FA)</span>${totp}</div>` : '',
+          credentials.has_gpt_password ? `<div class="detail-line"><span class="detail-label" data-ui-text>GPT密码</span>${password}</div>` : '',
+          credentials.has_totp_secret ? `<div class="detail-line"><span class="detail-label" data-ui-text>身份验证器(2FA)</span>${totp}</div>` : '',
         ].join('');
         return `<tr class="detail-row"><td colspan="4"><div class="detail-panel">${loginLines ? `<div class="login-detail">${loginLines}</div>` : ''}${emailLine}</div></td></tr>`;
       }
@@ -387,7 +387,7 @@
         const expanded = expandedKey === row.key;
         const hasDetails = row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length;
         const edit = previewMode ? '' : `<button class="small-btn" type="button" data-edit-gpt-key="${escapeAttr(row.key)}" aria-haspopup="dialog">编辑账号</button>`;
-        const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '登陆'}</button>` : '<span class="muted">仅账号名</span>';
+        const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '登陆'}</button>` : '<span class="muted" data-ui-text>仅账号名</span>';
         const loginActions = `<div class="resource-secret">${details}${edit}</div>`;
         const statuses = row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') + emailStatuses.map(status => statusLine(status, '邮箱')).join('');
         return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => codexQuotaCell(item, row.key)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>`;
@@ -431,7 +431,7 @@
         const name = item.url ? `<a class="resource-link" href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name || '-')}</a>` : escapeHtml(item.name || '-');
         const methods = [];
         if (item.has_password !== false && masked !== '未设置') {
-          methods.push(`<span class="status-tag tag-email">密码</span><button class="small-btn" data-resource-copy="relay-password" data-id="${escapeAttr(item.id)}">复制密码</button>`);
+          methods.push(`<span class="status-tag tag-email" data-ui-text>密码</span><button class="small-btn" data-resource-copy="relay-password" data-id="${escapeAttr(item.id)}">复制密码</button>`);
         }
         if (item.has_mailbox) {
           methods.push(`<button class="small-btn" data-relay-mail="${escapeAttr(item.id)}" aria-haspopup="dialog">验证码</button>`);
@@ -439,8 +439,8 @@
         return `<tr><td><div class="resource-name">${name}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td><div class="resource-secret">${methods.join('') || '<span class="muted">未设置登录方式</span>'}</div></td><td>${escapeHtml(item.note || '-')}</td></tr>`;
       }
       function renderResources() {
-        window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map(item => ({ key: item.id, html: codingPlanRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted">暂无 Coding Plan。</td></tr>' }]);
-        window.PagePerformance.renderRows(relayAccountRows, relayAccounts.length ? relayAccounts.map(item => ({ key: item.id, html: relayAccountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted">暂无中转站账号。</td></tr>' }]);
+        window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map(item => ({ key: item.id, html: codingPlanRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted" data-ui-text>暂无 Coding Plan。</td></tr>' }]);
+        window.PagePerformance.renderRows(relayAccountRows, relayAccounts.length ? relayAccounts.map(item => ({ key: item.id, html: relayAccountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted" data-ui-text>暂无中转站账号。</td></tr>' }]);
       }
       async function copyResourceSecret(button) {
         button.disabled = true;
@@ -491,7 +491,7 @@
         const rows = accountRows.flatMap(row => [{ key: row.key, html: rowHtml(row) },
           ...(expandedKey === row.key && (row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length)
             ? [{ key: `${row.key}:details`, html: detailRow(row) }] : [])]);
-        window.PagePerformance.renderRows(rowsNode, rows.length ? rows : [{ key: 'empty', html: '<tr><td colspan="4" class="muted">暂无账号。</td></tr>' }]);
+        window.PagePerformance.renderRows(rowsNode, rows.length ? rows : [{ key: 'empty', html: '<tr><td colspan="4" class="muted" data-ui-text>暂无账号。</td></tr>' }]);
         updateTotpCountdown();
       }
       async function refreshAccounts() {

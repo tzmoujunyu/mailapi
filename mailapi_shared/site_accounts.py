@@ -37,6 +37,7 @@ INTERFACE_OPTIONS = {
                "sunset-glow", "forest-whisper", "ocean-breeze", "lavender-dream"),
     "font": ("auto", "sans", "serif"),
     "radius": ("auto", "0", "0.3", "0.5", "0.75", "1"),
+    "language": ("zh-CN", "en"),
 }
 
 

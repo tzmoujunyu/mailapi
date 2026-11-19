@@ -11,7 +11,7 @@ let batchSaving = false;
 let loadVersion = 0;
 const byId = id => document.getElementById(id);
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-const tags = values => values.length ? values.map(value => `<span class="tag">${escapeHtml(value)}</span>`).join('') : '<span class="muted">暂无</span>';
+const tags = values => values.length ? values.map(value => `<span class="tag">${escapeHtml(value)}</span>`).join('') : '<span class="muted" data-ui-text>暂无</span>';
 
 async function api(url, options = {}) {
   const response = await fetch(url, { cache: 'no-store', ...options });
@@ -88,12 +88,12 @@ function renderGroupOverview(groupMembers, resourceNames) {
         }
         const account = nearest?.account || accounts[0];
         const expiryTag = nearest ? ` <span class="expiry-tag${nearest.expiry.due ? ' expiry-due' : ''}">(${nearest.expiry.remaining})</span>` : '';
-        const summary = account ? `${escapeHtml(account.name)}${expiryTag}` : '<span class="muted">暂无 GPT 账号</span>';
+        const summary = account ? `${escapeHtml(account.name)}${expiryTag}` : '<span class="muted" data-ui-text>暂无 GPT 账号</span>';
         const searchText = [group.name, number ? `组${number}` : '未编号', ...members.map(user => user.username), ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
         return `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}" data-search-text="${escapeHtml(searchText)}">
         <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
           title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组、成员与资源 · ${escapeHtml(group.name)}">
-          <span class="matrix-members">${members.length ? tags(members.map(user => user.note || user.username)) : '<span class="muted">暂无成员</span>'}</span>
+          <span class="matrix-members">${members.length ? tags(members.map(user => user.note || user.username)) : '<span class="muted" data-ui-text>暂无成员</span>'}</span>
           <span class="matrix-account">${summary}</span>
         </button>
         <button type="button" class="matrix-delete" data-delete-group="${escapeHtml(group.id)}"
@@ -124,8 +124,8 @@ function render() {
     if (currentUser.role === 'admin' || user.role === 'user') actions.push(`<button type="button" data-edit-user="${escapeHtml(user.id)}">${user.role === 'admin' ? '编辑备注' : '编辑'}</button>`);
     if (currentUser.role === 'admin' && user.role !== 'admin') actions.push(`<button type="button" class="danger" data-delete-user="${escapeHtml(user.id)}">删除</button>`);
     const displayName = user.note ? `${user.username}（${user.note}）` : user.username;
-    const passwordStatus = user.must_change_password ? ' <small class="muted">需修改初始密码</small>' : '';
-    return `<tr><td>${escapeHtml(displayName)}${passwordStatus}</td><td>${roleNames[user.role]}</td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
+    const passwordStatus = user.must_change_password ? ' <small class="muted" data-ui-text>需修改初始密码</small>' : '';
+    return `<tr><td>${escapeHtml(displayName)}${passwordStatus}</td><td><span data-ui-text>${roleNames[user.role]}</span></td><td>${tags(groups.filter(group => group.member_ids.includes(user.id)).map(group => group.name))}</td><td><div class="actions">${actions.join('')}</div></td></tr>`;
   }).join('');
   const usersById = new Map(users.map(user => [user.id, user]));
   const groupMembers = group => group.member_ids.map(id => usersById.get(id) || { username: '已删除账户' });
@@ -134,7 +134,7 @@ function render() {
     <td>${escapeHtml(group.name)}</td><td>${tags(groupMembers(group).map(user => user.username))}</td>
     <td>${tags(group.resource_keys.map(key => resourceNames.get(key) || '已移除资源'))}</td>
     <td>${groupActions(group, '编辑成员与资源')}</td>
-  </tr>`).join('') : '<tr><td colspan="4" class="muted">暂无分组，创建后即可分配成员和资源。</td></tr>';
+  </tr>`).join('') : '<tr><td colspan="4" class="muted" data-ui-text>暂无分组，创建后即可分配成员和资源。</td></tr>';
   renderGroupOverview(groupMembers, resourceNames);
 }
 
@@ -197,7 +197,7 @@ function openGroup(group = null, { fromOverview = false, category = '', number =
   byId('group-number').value = position.number;
   byId('group-category-options').innerHTML = [...new Set(groups.map(item => groupPosition(item.name).category))]
     .map(name => `<option value="${escapeHtml(name)}"></option>`).join('');
-  byId('member-options').innerHTML = users.map(user => `<label class="option"><input type="checkbox" value="${escapeHtml(user.id)}" ${group?.member_ids.includes(user.id) ? 'checked' : ''}><span>${escapeHtml(user.username)} <small>${roleNames[user.role]}</small></span></label>`).join('');
+  byId('member-options').innerHTML = users.map(user => `<label class="option"><input type="checkbox" value="${escapeHtml(user.id)}" ${group?.member_ids.includes(user.id) ? 'checked' : ''}><span>${escapeHtml(user.username)} <small data-ui-text>${roleNames[user.role]}</small></span></label>`).join('');
   const now = new Date();
   byId('resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
     const candidates = resources.filter(item => item.kind === kind);
@@ -206,7 +206,7 @@ function openGroup(group = null, { fromOverview = false, category = '', number =
       const shared = kind === 'gpt' ? groups.filter(candidate => candidate.resource_keys.includes(item.key)).length : 0;
       const expiry = kind === 'gpt' ? subscriptionExpiry(item.subscription_expires_at, item.subscription_expires_on, now) : null;
       const expiryTag = expiry ? ` <span class="expiry-tag${expiry.due ? ' expiry-due' : ''}" title="订阅到期 ${expiry.date}">(${expiry.remaining})</span>` : '';
-      return `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="resource-option-name">${escapeHtml(item.name)}${expiryTag}${item.listed === false ? ' <small>已下架</small>' : ''}</span>${kind === 'gpt' ? `<small class="resource-sharing" title="已分配至 ${shared} 个分组">${shared} Group shared</small>` : ''}</span></label>`;
+      return `<label class="option"><input type="checkbox" value="${escapeHtml(item.key)}" ${group?.resource_keys.includes(item.key) ? 'checked' : ''}><span><span class="resource-option-name">${escapeHtml(item.name)}${expiryTag}${item.listed === false ? ' <small data-ui-text>已下架</small>' : ''}</span>${kind === 'gpt' ? `<small class="resource-sharing" title="已分配至 ${shared} 个分组">${shared} Group shared</small>` : ''}</span></label>`;
     }).join('')}</div>`;
   }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
   byId('group-error').textContent = '';
@@ -253,7 +253,7 @@ function renderBatchGroups() {
   byId('batch-resource-save').disabled = !resource || !groups.length;
   byId('batch-group-options').innerHTML = resource
     ? groups.map(group => `<label class="option"><input type="checkbox" value="${escapeHtml(group.id)}" ${group.resource_keys.includes(batchResource) ? 'checked' : ''}><span>${escapeHtml(group.name)}</span></label>`).join('') || '<p class="muted">暂无分组，请先创建分组。</p>'
-    : '<p class="muted">选择资源后显示当前分配情况。</p>';
+    : '<p class="muted" data-ui-text>选择资源后显示当前分配情况。</p>';
   filterBatchOptions('group');
 }
 
@@ -264,7 +264,7 @@ function openBatchResources() {
   byId('batch-resource-options').innerHTML = resources.length ? Object.entries(kindNames).map(([kind, label]) => {
     const candidates = resources.filter(item => item.kind === kind);
     if (!candidates.length) return '';
-    return `<div class="resource-kind"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => `<label class="option" data-search-text="${escapeHtml(kind === 'gpt' ? 'GPT 账号' : label)}"><input type="radio" name="batch-resource" value="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}${item.listed === false ? ' <small>已下架</small>' : ''}</span></label>`).join('')}</div>`;
+    return `<div class="resource-kind"><h3>${kind === 'gpt' ? 'GPT 账号' : label}<span>${candidates.length}</span></h3>${candidates.map(item => `<label class="option" data-search-text="${escapeHtml(kind === 'gpt' ? 'GPT 账号' : label)}"><input type="radio" name="batch-resource" value="${escapeHtml(item.key)}"><span>${escapeHtml(item.name)}${item.listed === false ? ' <small data-ui-text>已下架</small>' : ''}</span></label>`).join('')}</div>`;
   }).join('') : '<p class="muted">暂无资源，请先到资源账号控制台添加。</p>';
   filterBatchOptions('resource');
   renderBatchGroups();

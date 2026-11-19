@@ -31,7 +31,7 @@ function renderAccountSubscription(item, escapeHtml, now = new Date()) {
   }
   const metadata = `<div class="subscription-meta">授权上次核对：${escapeHtml(checkedText + note)}</div>`;
   const expiry = subscriptionExpiry(automatic?.expires_at, manualEnd, now);
-  if (!expiry) return `<div class="subscription-time muted"><div>订阅到期：未设置</div>${metadata}</div>`;
+  if (!expiry) return `<div class="subscription-time muted"><div data-ui-text>订阅到期：未设置</div>${metadata}</div>`;
   let displayDate = expiry.date;
   let source, title, label;
   if (automatic) {

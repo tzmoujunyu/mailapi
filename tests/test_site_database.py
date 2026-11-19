@@ -65,7 +65,7 @@ class SiteDatabaseTests(unittest.TestCase):
     def test_interface_preferences_round_trip_in_sqlite(self):
         migrate_site_accounts(self.root)
         store = open_site_accounts(self.root, backend="sqlite")
-        settings = {"theme": "dark", "preset": "ocean-breeze", "font": "serif", "radius": "0.75"}
+        settings = {"theme": "dark", "preset": "ocean-breeze", "font": "serif", "radius": "0.75", "language": "en"}
         store.set_interface_preferences(self.alice["id"], settings)
         reopened = open_site_accounts(self.root, backend="sqlite")
         self.assertEqual(reopened.interface_preferences(self.alice["id"]), settings)

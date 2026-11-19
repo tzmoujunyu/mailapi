@@ -4,6 +4,7 @@
   const actions = header.querySelector('.test-ui-header-actions');
   const icon = name => `<svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-navigation.svg#${name}"></use></svg>`;
   actions.insertAdjacentHTML('afterbegin', `<button class="header-icon" id="header-appearance" type="button" aria-label="主题设置">${icon('palette')}</button>`);
+  window.SiteLanguage?.mount(actions);
   const presets = [
     ['default', '默认', '#4f46e5', '#6366f1'],
     ['anthropic', 'Anthropic', '#d97757', '#faf9f5'],

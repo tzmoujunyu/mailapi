@@ -22,8 +22,14 @@
     bar.innerHTML = testSidebar
       ? '<button class="test-ui-avatar-button" type="button" aria-expanded="false" aria-controls="test-account-panel"><span class="test-ui-avatar" aria-hidden="true"></span><span class="test-ui-nav-label" data-username></span></button><div id="test-account-panel" class="test-ui-account-panel" role="group" aria-label="账户操作" hidden><strong data-identity></strong><p data-groups></p><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>'
       : `<strong>账户中心</strong><span data-identity></span><span data-groups></span>${managementLink}<div class="site-session-actions"><span data-theme-control></span><button type="button" data-password>修改密码</button><button type="button" data-logout>退出登录</button></div>`;
-    bar.querySelector('[data-identity]').textContent = `${user.username} · ${roleNames[user.role]}`;
-    bar.querySelector('[data-groups]').textContent = groups.length ? `分组：${groups.map(group => group.name).join('、')}` : '暂未加入分组';
+    function renderIdentity() {
+      const translate = value => window.SiteLanguage?.t(value) || value;
+      bar.querySelector('[data-identity]').textContent = `${user.username} · ${translate(roleNames[user.role])}`;
+      bar.querySelector('[data-groups]').textContent = groups.length
+        ? `${translate('分组')} · ${groups.map(group => group.name).join('、')}` : translate('暂未加入分组');
+    }
+    renderIdentity();
+    document.addEventListener('site:language', renderIdentity);
     const management = bar.querySelector('[data-management]');
     if (management) management.hidden = user.role === 'user';
     if (testSidebar) {
@@ -66,7 +72,7 @@
 
     const dialog = document.createElement('dialog');
     dialog.className = 'site-password';
-    dialog.innerHTML = '<form><h2>修改本人密码</h2><p data-initial-password hidden>你的账户仍在使用初始密码，请设置一个新密码。</p><label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label><label>新密码（8–128 字符）<input name="new_password" type="password" autocomplete="new-password" required></label><p class="site-password-error" role="alert"></p><div class="site-password-actions"><button type="button" data-cancel>取消</button><button type="submit">保存并重新登录</button></div></form>';
+    dialog.innerHTML = '<form><h2>修改本人密码</h2><p data-initial-password hidden data-ui-text>你的账户仍在使用初始密码，请设置一个新密码。</p><label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label><label>新密码（8–128 字符）<input name="new_password" type="password" autocomplete="new-password" required></label><p class="site-password-error" role="alert"></p><div class="site-password-actions"><button type="button" data-cancel>取消</button><button type="submit">保存并重新登录</button></div></form>';
     document.body.append(dialog);
     dialog.querySelector('[data-initial-password]').hidden = !user.must_change_password;
     const passwordButton = bar.querySelector('[data-password]');

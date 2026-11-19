@@ -475,6 +475,8 @@ class _StreamUsage:
 
 def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optional[CredentialKeyring]):
     store = TestFeatureStore(data_dir, keyring)
+    from .site_announcements import install_site_announcements
+    install_site_announcements(app, store)
     router = APIRouter()
     client_holder: dict[str, Optional[httpx.AsyncClient]] = {"client": None}
 

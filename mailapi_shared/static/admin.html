@@ -789,7 +789,7 @@
         } else if (item.mailbox_key) {
           methods.push(`<div class="warn">${item.mailbox_email ? '请选择收件规则' : '接码邮箱已移除'}</div>`);
         }
-        return `<tr><td><strong>${name}</strong></td><td>${escapeHtml(item.account || '-')}</td><td>${methods.join('') || '<span class="muted">未设置</span>'}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-relay-account-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-relay-account-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
+        return `<tr><td><strong>${name}</strong></td><td>${escapeHtml(item.account || '-')}</td><td>${methods.join('') || '<span class="muted" data-ui-text>未设置</span>'}</td><td>${escapeHtml(item.note || '-')}</td><td><div class="actions"><button class="btn" data-relay-account-action="edit" data-id="${escapeAttr(item.id || '')}">修改</button><button class="btn btn-danger" data-relay-account-action="delete" data-id="${escapeAttr(item.id || '')}">删除</button></div></td></tr>`;
       }
 
       async function loadCodingPlans() {
@@ -798,7 +798,7 @@
         try {
           const data = await api('/api/coding-plans');
           codingPlans = data.items || [];
-          window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map(item => ({ key: item.id, html: codingPlanRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="6" class="muted">暂无 Coding Plan。</td></tr>' }]);
+          window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map(item => ({ key: item.id, html: codingPlanRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="6" class="muted" data-ui-text>暂无 Coding Plan。</td></tr>' }]);
           refreshVisibleCodingPlanQuotas(codingPlans);
         } catch (error) { setMessage(codingPlanMessage, error.message, true); }
         finally { codingPlansLoading = false; }
@@ -810,7 +810,7 @@
         try {
           const data = await api('/api/relay-accounts');
           relayAccounts = data.items || [];
-          window.PagePerformance.renderRows(relayAccountRows, relayAccounts.length ? relayAccounts.map(item => ({ key: item.id, html: relayAccountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="5" class="muted">暂无中转站账号。</td></tr>' }]);
+          window.PagePerformance.renderRows(relayAccountRows, relayAccounts.length ? relayAccounts.map(item => ({ key: item.id, html: relayAccountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="5" class="muted" data-ui-text>暂无中转站账号。</td></tr>' }]);
         } catch (error) { setMessage(relayAccountMessage, error.message, true); }
         finally { relayAccountsLoading = false; }
       }
@@ -950,7 +950,7 @@
         const conditionDetails = item.conditions?.slice(0, 3).map(condition => `${condition.field === 'body' ? '正文' : '主题'}${conditionOperatorLabels[condition.operator] || '匹配'}：${condition.value}`).join('；');
         const conditions = item.builtin ? '主题或正文同时包含 ChatGPT/OpenAI 与登录、验证等关键词（固定规则）' : conditionDetails ? `${conditionDetails}${item.conditions.length > 3 ? '；…' : ''}` : [item.subject ? `主题：${item.subject}` : '', item.body ? `正文：${item.body}` : ''].filter(Boolean).join('；') || '仅按发件人和验证码格式';
         const relation = item.condition_logic === 'any' || item.match_mode === 'any' ? '任一条件' : '全部条件';
-        return `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.builtin ? '<div class="muted">内置，固定启用</div>' : (item.enabled === false ? '<div class="warn">已停用</div>' : '')}</td><td>${escapeHtml(item.sender_mode === 'regex' ? item.sender_pattern : item.senders.join(', '))}<div class="muted">${escapeHtml(senderModeLabels[item.sender_mode] || item.sender_mode || '完整邮箱')} · ${item.extract_type === 'link' ? '登录链接' : item.extract_type === 'auto' ? '自动识别' : '验证码'}</div></td><td>${escapeHtml(conditions)}</td><td>${relation}<div class="muted">关键词：${item.text_mode === 'any' ? '任一' : '全部'}</div></td><td>${item.builtin ? `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">查看</button>` : `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">修改</button><button class="btn btn-danger" data-filter-action="delete" data-id="${escapeAttr(item.id)}">删除</button>`}</td></tr>`;
+        return `<tr><td><strong>${escapeHtml(item.name)}</strong>${item.builtin ? '<div class="muted">内置，固定启用</div>' : (item.enabled === false ? '<div class="warn" data-ui-text>已停用</div>' : '')}</td><td>${escapeHtml(item.sender_mode === 'regex' ? item.sender_pattern : item.senders.join(', '))}<div class="muted">${escapeHtml(senderModeLabels[item.sender_mode] || item.sender_mode || '完整邮箱')} · ${item.extract_type === 'link' ? '登录链接' : item.extract_type === 'auto' ? '自动识别' : '验证码'}</div></td><td>${escapeHtml(conditions)}</td><td>${relation}<div class="muted">关键词：${item.text_mode === 'any' ? '任一' : '全部'}</div></td><td>${item.builtin ? `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">查看</button>` : `<button class="btn" data-filter-action="edit" data-id="${escapeAttr(item.id)}">修改</button><button class="btn btn-danger" data-filter-action="delete" data-id="${escapeAttr(item.id)}">删除</button>`}</td></tr>`;
       }
 
       async function loadFilters() {
@@ -1391,7 +1391,7 @@
           const state = codexState(account);
           return `<div class="${state.cls}">${escapeHtml(state.text)} <span class="plan">Codex</span></div>${state.detail ? `<div class="muted">${escapeHtml(state.detail)}</div>` : ''}`;
         }).join('');
-        const mailStatuses = item.mail.map(mail => `<div class="${mail.enabled === false ? 'warn' : (/失败|异常|错误|重新授权/.test(mail.status) ? 'bad' : (/监测中|监听中/.test(mail.status) ? 'good' : 'warn'))}">${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')} <span class="plan">邮箱</span></div>`).join('');
+        const mailStatuses = item.mail.map(mail => `<div class="${mail.enabled === false ? 'warn' : (/失败|异常|错误|重新授权/.test(mail.status) ? 'bad' : (/监测中|监听中/.test(mail.status) ? 'good' : 'warn'))}">${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')} <span class="plan" data-ui-text>邮箱</span></div>`).join('');
         const codexActions = item.codex.map(account => `<div class="actions"><span class="muted">Codex${item.codex.length > 1 ? ' · ' + escapeHtml(account.workspace_id || account.id) : ''}</span>
           <button class="btn" data-codex-action="refresh" data-id="${escapeAttr(account.id)}">刷新额度</button>
           <button class="btn" type="button" data-codex-auth="admin-reauth" data-id="${escapeAttr(account.id)}">重新授权</button>
@@ -1401,7 +1401,7 @@
         return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.login || item.email)}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? 'Codex 已关联' : 'GPT 登录账号'}</div>${renderAccountSubscription(item, escapeHtml)}</td>
           <td>${item.codex.length ? item.codex.map(account => quotaCell(account.usage)).join('<hr>') : '<span class="muted">未提供</span>'}</td>
           <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}${mailboxActions}</td>
-          <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan">邮箱</span></div>'}</td>
+          <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan" data-ui-text>邮箱</span></div>'}</td>
           <td><div class="actions"><button class="btn" data-edit-gpt="${escapeAttr(item.key)}">编辑账号</button><button class="btn" data-gpt-changes="${escapeAttr(item.key)}">修改记录</button><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>${codexActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除 GPT 账号</button></td></tr>`;
       }
 
@@ -1579,7 +1579,7 @@
             const tag = `<span class="plan gpt-tag-${escapeAttr(item.source)}">${escapeHtml(changeLabels[item.source])}</span>`;
             const audit = item.event_type ? '<span class="plan gpt-tag-system">安全审计</span>' : '';
             const correlation = item.correlation_id ? `<small class="muted">关联 ${escapeHtml(item.correlation_id.slice(-8))}</small>` : '';
-            const review = item.reviewed ? '<span class="plan gpt-tag-review">已审核</span>' :
+            const review = item.reviewed ? '<span class="plan gpt-tag-review" data-ui-text>已审核</span>' :
               (['user', 'system'].includes(item.source) ? `<button class="btn" type="button" data-review-change="${escapeAttr(item.id)}">标记已审核</button>` : '');
             const messages = item.descriptions.map(description => `<li>${escapeHtml(description)}</li>`).join('');
             const restore = (item.restorable_fields || []).map(({ field, label }) =>
@@ -1670,7 +1670,7 @@
         document.getElementById('mailbox-error').textContent = '';
         document.getElementById('mailbox-count').textContent = '';
         document.getElementById('mailbox-save').disabled = true;
-        mailboxOptions.innerHTML = '<p class="muted">正在加载邮箱…</p>';
+        mailboxOptions.innerHTML = '<p class="muted" data-ui-text>正在加载邮箱…</p>';
         mailboxDialog.showModal();
         try {
           const data = await api(`/api/admin/gpt/accounts/${encodeURIComponent(account.key)}/mailboxes`);
@@ -1728,7 +1728,7 @@
       let codexTips = [], editingCodexTip = '';
 
       function renderCodexTips() {
-        codexTipRows.innerHTML = codexTips.map(tip => `<tr data-search-text="${escapeAttr(tip.body)}"><td>${escapeHtml(tip.title)}</td><td><div class="actions"><button class="btn" type="button" data-edit-codex-tip="${escapeAttr(tip.id)}">修改</button><button class="btn btn-danger" type="button" data-delete-codex-tip="${escapeAttr(tip.id)}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="2" class="muted">暂无使用提示。</td></tr>';
+        codexTipRows.innerHTML = codexTips.map(tip => `<tr data-search-text="${escapeAttr(tip.body)}"><td>${escapeHtml(tip.title)}</td><td><div class="actions"><button class="btn" type="button" data-edit-codex-tip="${escapeAttr(tip.id)}">修改</button><button class="btn btn-danger" type="button" data-delete-codex-tip="${escapeAttr(tip.id)}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="2" class="muted" data-ui-text>暂无使用提示。</td></tr>';
       }
 
       async function loadCodexTips() {

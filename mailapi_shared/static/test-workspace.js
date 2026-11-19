@@ -23,7 +23,7 @@
     const codex = account.codex || [];
     const plan = codex[0]?.chatgpt_plan_type || codex[0]?.subscription?.account_plan_type || codex[0]?.subscription?.plan_type;
     let badges = plan ? `<span class="workspace-plan">${escape(plan.toUpperCase())}</span>` : '';
-    if (account.listed === false) badges += '<span class="workspace-plan">已下架</span>';
+    if (account.listed === false) badges += '<span class="workspace-plan" data-ui-text>已下架</span>';
     const automatic = codex.map(value => value.subscription).find(value => value?.available && Number.isFinite(value.expires_at));
     const expiry = subscriptionExpiry(automatic?.expires_at, account.subscription_expires_on || account.subscription_ends_on);
     const detail = expiry
@@ -114,7 +114,7 @@
   Promise.allSettled(groups.map(async ([name, url, render]) => {
     const data = await request(url);
     byId(`workspace-${name}-count`).textContent = data.items.length;
-    byId(`workspace-${name}-items`).innerHTML = data.items.map(render).join('') || '<p class="workspace-empty">暂无可用资源</p>';
+    byId(`workspace-${name}-items`).innerHTML = data.items.map(render).join('') || '<p class="workspace-empty" data-ui-text>暂无可用资源</p>';
     return data.items.length;
   })).then(results => {
     const failures = results.filter(result => result.status === 'rejected').length;

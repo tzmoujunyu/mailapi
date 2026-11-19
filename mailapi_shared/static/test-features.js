@@ -26,8 +26,8 @@
 
   function renderKeys(items) {
     $('api-key-list').innerHTML = items.length
-      ? items.map(item => `<div class="row"><span>${escapeHtml(item.name)} <span class="tag">${escapeHtml(item.key_prefix)}…</span></span>${item.enabled ? `<button type="button" data-revoke-key="${escapeHtml(item.id)}">撤销</button>` : '<span class="tag">已撤销</span>'}</div>`).join('')
-      : '<p class="muted">还没有 API Key。</p>';
+      ? items.map(item => `<div class="row"><span>${escapeHtml(item.name)} <span class="tag">${escapeHtml(item.key_prefix)}…</span></span>${item.enabled ? `<button type="button" data-revoke-key="${escapeHtml(item.id)}">撤销</button>` : '<span class="tag" data-ui-text>已撤销</span>'}</div>`).join('')
+      : '<p class="muted" data-ui-text>还没有 API Key。</p>';
   }
 
   const baseUrl = `${location.origin}/api2api/v1`;
@@ -53,10 +53,10 @@
     const ring = $('usage-ring');
     ring.classList.toggle('has-data', splitTotal > 0);
     ring.style.setProperty('--input-share', `${splitTotal ? 100 * usage.prompt_tokens / splitTotal : 0}%`);
-    $('dashboard-calls').innerHTML = usage.items.slice(0, 3).map(item => `<li><span>${escapeHtml(item.model || '未知模型')}<small>${escapeHtml(item.created_at)}</small></span><b>${item.total_tokens.toLocaleString('zh-CN')} Token</b></li>`).join('') || '<li>暂无调用记录</li>';
+    $('dashboard-calls').innerHTML = usage.items.slice(0, 3).map(item => `<li><span>${escapeHtml(item.model || '未知模型')}<small>${escapeHtml(item.created_at)}</small></span><b>${item.total_tokens.toLocaleString('zh-CN')} Token</b></li>`).join('') || '<li data-ui-text>暂无调用记录</li>';
     $('api-usage-summary').textContent = `请求 ${usage.requests} 次 · 输入 ${usage.prompt_tokens} · 输出 ${usage.completion_tokens} · 总计 ${usage.total_tokens} Token`;
     $('api-usage-rows').innerHTML = usage.items.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.model || '-')}</td><td>${item.total_tokens}</td><td>${item.status_code}</td></tr>`).join('')
-      || '<tr><td colspan="4" class="muted">暂无调用记录。</td></tr>';
+      || '<tr><td colspan="4" class="muted" data-ui-text>暂无调用记录。</td></tr>';
   }
 
   async function loadAdminApi2Api() {
@@ -65,17 +65,17 @@
     $('api-config-enabled').checked = config.enabled === true;
     $('api-config-models').value = (config.model_allowlist || []).join(',');
     $('admin-api-usage-rows').innerHTML = usage.items.map(item => `<tr><td>${escapeHtml(item.user_id)}</td><td>${item.requests}</td><td>${item.prompt_tokens}</td><td>${item.completion_tokens}</td><td>${item.total_tokens}</td></tr>`).join('')
-      || '<tr><td colspan="5" class="muted">暂无全站调用记录。</td></tr>';
+      || '<tr><td colspan="5" class="muted" data-ui-text>暂无全站调用记录。</td></tr>';
   }
 
   function renderAnnouncements(items) {
-    $('announcements').innerHTML = items.map(item => `<article class="notice ${item.pinned ? 'pinned' : ''}"><div class="row"><strong>${escapeHtml(item.title)}</strong>${item.pinned ? '<span class="tag">置顶</span>' : ''}</div><p>${escapeHtml(item.body).replace(/\n/g, '<br>')}</p><small class="muted">${escapeHtml(item.updated_at)}</small></article>`).join('')
-      || '<p class="muted">暂无公告。</p>';
+    $('announcements').innerHTML = items.map(item => `<article class="notice ${item.pinned ? 'pinned' : ''}"><div class="row"><strong data-i18n-skip>${escapeHtml(item.title)}</strong>${item.pinned ? '<span class="tag" data-ui-text>置顶</span>' : ''}</div><p data-i18n-skip>${escapeHtml(item.body).replace(/\n/g, '<br>')}</p><small class="muted">${escapeHtml(item.updated_at)}</small></article>`).join('')
+      || '<p class="muted" data-ui-text>暂无公告。</p>';
   }
 
   function renderAdminAnnouncements(items) {
-    $('admin-announcements').innerHTML = items.map(item => `<article class="announcement-admin-item"><div><div class="row"><strong>${escapeHtml(item.title)}</strong>${item.pinned ? '<span class="tag">置顶</span>' : '<span class="tag">普通</span>'}</div><p>${escapeHtml(item.body)}</p><small class="muted">更新于 ${escapeHtml(item.updated_at)}</small></div><div class="actions"><button type="button" data-edit-announcement="${escapeHtml(item.id)}">编辑</button><button type="button" data-delete-announcement="${escapeHtml(item.id)}">删除</button></div></article>`).join('')
-      || '<p class="muted">暂无公告。</p>';
+    $('admin-announcements').innerHTML = items.map(item => `<article class="announcement-admin-item"><div><div class="row"><strong data-i18n-skip>${escapeHtml(item.title)}</strong>${item.pinned ? '<span class="tag" data-ui-text>置顶</span>' : '<span class="tag" data-ui-text>普通</span>'}</div><p data-i18n-skip>${escapeHtml(item.body)}</p><small class="muted">更新于 ${escapeHtml(item.updated_at)}</small></div><div class="actions"><button type="button" data-edit-announcement="${escapeHtml(item.id)}">编辑</button><button type="button" data-delete-announcement="${escapeHtml(item.id)}">删除</button></div></article>`).join('')
+      || '<p class="muted" data-ui-text>暂无公告。</p>';
   }
 
   function statusPill(status) {
@@ -94,13 +94,13 @@
         const actions = item.status === 'pending'
           ? `<button type="button" data-edit-finance="${escapeHtml(item.id)}">编辑</button><button type="button" data-cancel-finance="${escapeHtml(item.id)}">撤销</button>`
           : '';
-        return `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(groups)}</td><td>${escapeHtml(item.project)}</td><td>${money(item.amount)}</td><td>${statusPill(item.status)}</td><td><div class="actions">${files || '<span class="muted">无文件</span>'} ${archive} ${actions}</div></td></tr>`;
+        return `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(groups)}</td><td>${escapeHtml(item.project)}</td><td>${money(item.amount)}</td><td>${statusPill(item.status)}</td><td><div class="actions">${files || '<span class="muted" data-ui-text>无文件</span>'} ${archive} ${actions}</div></td></tr>`;
       }
       const reviewActions = item.status === 'pending'
         ? '<button type="button" data-review-status="approved">通过</button><button type="button" data-review-status="rejected">驳回</button>'
         : '';
       return `<tr><td><input type="checkbox" data-finance-select="${escapeHtml(item.id)}"></td><td>${escapeHtml(item.username)}${item.user_note ? `（${escapeHtml(item.user_note)}）` : ''}<br><span class="muted">${escapeHtml(groups)}</span></td><td>${escapeHtml(item.project)}</td><td>${money(item.amount)}</td><td>${statusPill(item.status)}</td><td><div class="actions">${files} ${archive} ${reviewActions}</div></td></tr>`;
-    }).join('') || `<tr><td colspan="${admin ? 6 : 6}" class="muted">暂无报销申请。</td></tr>`;
+    }).join('') || `<tr><td colspan="${admin ? 6 : 6}" class="muted" data-ui-text>暂无报销申请。</td></tr>`;
   }
 
   async function loadFinance() {
@@ -117,7 +117,7 @@
     const approvedCents = mine.filter(item => item.status === 'approved')
       .reduce((sum, item) => sum + Math.round(Number(item.amount) * 100), 0);
     $('finance-approved').textContent = money(approvedCents / 100);
-    $('dashboard-finance').innerHTML = mine.slice(0, 3).map(item => `<li><span>${escapeHtml(item.project)}<small>${money(item.amount)}</small></span>${statusPill(item.status)}</li>`).join('') || '<li>暂无报销申请</li>';
+    $('dashboard-finance').innerHTML = mine.slice(0, 3).map(item => `<li><span>${escapeHtml(item.project)}<small>${money(item.amount)}</small></span>${statusPill(item.status)}</li>`).join('') || '<li data-ui-text>暂无报销申请</li>';
     if (isAdmin) {
       const [adminData, adminAnnouncementData] = await Promise.all([
         api('/api/admin/finance/applications'),
