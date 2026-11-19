@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from base64 import b64encode
 from pathlib import Path
 import tempfile
@@ -86,6 +87,27 @@ class TestFeatureStoreTests(unittest.TestCase):
         revised = self.store.save_announcement(announcement_id=announcement["id"], title="新公告", body="新内容", pinned=False, actor="admin")
         self.assertEqual(revised["title"], "新公告")
         self.assertFalse(revised["pinned"])
+
+    def test_legacy_backfill_is_idempotent_and_does_not_guess_multi_group_attribution(self):
+        item = self.store.create_finance_application(user_id="a", username="alice", user_note="", groups=["A", "B"], project="订阅", amount_cents=100, files=[])
+        self.store.review_finance_application(item["id"], "approved", "admin", "admin", "通过")
+        with self.store._connect() as db:
+            db.execute("DELETE FROM finance_events")
+            db.execute("DELETE FROM finance_versions")
+        self.store = TestFeatureStore(self.data, self.keyring)
+        self.assertEqual(self.store.finance_application(item["id"])["expense_group_name"], "待确认")
+        self.assertEqual([row["action"] for row in self.store.finance_history(item["id"])], ["approved", "legacy"])
+        self.store = TestFeatureStore(self.data, self.keyring)
+        self.assertEqual(len(self.store.finance_history(item["id"])), 2)
+
+    def test_concurrent_review_only_records_one_result(self):
+        item = self.store.create_finance_application(user_id="a", username="alice", user_note="", groups=[], project="订阅", amount_cents=100, files=[])
+        def review(status):
+            return self.store.review_finance_application(item["id"], status, status, status, "意见", expected_version=1)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(review, ["approved", "rejected"]))
+        self.assertEqual(sum(result is not None for result in results), 1)
+        self.assertEqual(len(self.store.finance_history(item["id"])), 2)
 
 
 if __name__ == "__main__":

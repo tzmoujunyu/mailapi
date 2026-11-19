@@ -99,6 +99,7 @@
       @media (max-width: 720px) { .workspace { display: block; } .sidebar { width: 100%; padding: 13px 12px 10px; } .brand { padding: 0 8px 12px; } .sidebar-note, .nav-label { display: none; } .nav { display: flex; overflow-x: auto; gap: 5px; } .nav button { min-width: max-content; } .main { padding: 0 12px 24px; } .topbar { min-height: 68px; } .topbar h1 { font-size: 18px; } .grid { grid-template-columns: 1fr; } .view-head { align-items: flex-start; } .finance-toolbar { align-items: flex-start; flex-direction: column; } .announcement-admin-item { flex-direction: column; } }
       @media (max-width: 440px) { .stats { grid-template-columns: 1fr 1fr; gap: 8px; } .stat { padding: 13px; } .stat-value { font-size: 20px; } .topbar-actions { gap: 5px; } .env-badge { padding: 5px 8px; } }
     </style>
+    <link rel="stylesheet" href="/static/test-finance.css" />
     <script src="/static/theme.js" defer></script>
     <script src="/static/session.js" defer></script>
   </head>
@@ -191,36 +192,39 @@
           </section>
 
           <section id="view-finance" class="workspace-view" data-view="finance" aria-labelledby="finance-title">
-            <div class="section-head"><h2 id="finance-title">我的报销</h2><button id="finance-open-form" class="primary" type="button">＋ 提交报销申请</button></div>
-            <div class="finance-summary">
-              <article class="stat"><span>申请总数</span><strong id="finance-total">—</strong></article>
-              <article class="stat"><span>待审核</span><strong id="finance-pending">—</strong></article>
-              <article class="stat"><span>已通过金额</span><strong id="finance-approved">—</strong></article>
+            <div class="section-head"><div><h2 id="finance-title">财务中心</h2><p>申请、审批与费用归属，一处查看。</p></div><button id="finance-open-form" class="primary" type="button">＋ 提交报销申请</button></div>
+            <div id="announcements" class="fin-notice-bar"></div>
+            <p id="finance-status" class="status" role="status" aria-live="polite"></p>
+            <nav id="finance-tabs" class="fin-tabs hidden" aria-label="财务功能">
+              <button type="button" data-fin-tab="review" aria-pressed="true">申请审核</button><button type="button" data-fin-tab="stats" aria-pressed="false">统计分析</button><button type="button" data-fin-tab="history" aria-pressed="false">审批记录</button><button type="button" data-fin-tab="notices" aria-pressed="false">公告管理</button><button type="button" data-fin-tab="mine" aria-pressed="false">我的申请</button>
+            </nav>
+            <div id="finance-filter-card" class="card fin-filter-card">
+              <div class="fin-filters">
+                <label class="workspace-search fin-search"><svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-navigation.svg#search"></use></svg><input id="fin-search" type="search" placeholder="搜索项目、账户、分组或审核意见…" aria-label="搜索报销申请" /></label>
+                <label>状态<select id="fin-status"><option value="all" data-ui-text>全部状态</option><option value="pending" data-ui-text>待审核</option><option value="approved" data-ui-text>已通过</option><option value="rejected" data-ui-text>已驳回</option><option value="cancelled" data-ui-text>已撤销</option></select></label>
+                <label>时间范围<select id="fin-period"><option value="all" data-ui-text>全部时间</option><option value="month" data-ui-text>本月</option><option value="week" data-ui-text>本周</option><option value="day" data-ui-text>今天</option><option value="custom" data-ui-text>自定义</option></select></label>
+                <label>开始日期<input id="fin-from" type="date" /></label><label>结束日期<input id="fin-to" type="date" /></label>
+                <label class="fin-admin-filter hidden">费用归属<select id="fin-group"><option value="" data-ui-text>全部分组</option></select></label>
+                <label class="fin-admin-filter hidden">付款人<select id="fin-user"><option value="" data-ui-text>全部付款人</option></select></label>
+                <label id="fin-reviewer-filter" hidden>审核人<select id="fin-reviewer"><option value="" data-ui-text>全部审核人</option></select></label>
+                <label class="fin-amount-filter">最低金额<input id="fin-min" type="number" min="0" step="0.01" placeholder="0.00" /></label><label class="fin-amount-filter">最高金额<input id="fin-max" type="number" min="0" step="0.01" placeholder="不限" /></label>
+                <button id="fin-reset" type="button">重置筛选</button>
+              </div><p id="fin-filter-summary" class="muted small" role="status"></p>
             </div>
-            <div id="announcements"></div>
-            <p id="finance-status" class="status" role="alert"></p>
-            <div id="finance-dialog" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="finance-dialog-title">
-              <div class="modal-card">
-                <div class="modal-head"><h3 id="finance-dialog-title">提交报销申请</h3><button id="finance-close-form" class="modal-close" type="button" aria-label="关闭">×</button></div>
-                <form id="finance-form" class="form">
-                  <input id="finance-edit-id" type="hidden" />
-                  <label>报销项目<input id="finance-project" maxlength="20" placeholder="例如：模型订阅" required /></label>
-                  <p class="form-hint">最多 20 个字符，超出时会提示具体长度要求。</p>
-                  <label>报销金额（元）<input id="finance-amount" inputmode="decimal" placeholder="例如：128.00" required /></label>
-                  <label>发票（必选）<input id="finance-invoice" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required /></label>
-                  <label>支付记录截图（可选）<input id="finance-payment" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" /></label>
-                  <p id="finance-file-hint" class="form-hint">支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。编辑时不选择文件则保留原文件。</p>
-                  <div class="actions"><button id="finance-cancel-form" type="button">取消</button><button id="finance-submit" class="primary" type="submit">提交申请</button></div>
-                </form>
-              </div>
-            </div>
-            <div class="card finance-full-card"><div class="card-head"><h3>我的申请</h3><span class="tag">仅显示当前账户</span></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>分组</th><th>项目</th><th>金额</th><th>状态</th><th>文件与操作</th></tr></thead><tbody id="finance-rows"></tbody></table></div></div>
-            <section id="finance-admin" class="section-gap hidden" aria-labelledby="finance-admin-title">
-              <div class="section-head"><div><h2 id="finance-admin-title">财务审核与公告</h2><p>批量下载会按用户分文件夹，文件名包含分组、账户备注、项目和文件类型。</p></div><button id="finance-batch-download" type="button">下载选中申请</button></div>
-              <form id="announcement-form" class="card form"><div class="card-head"><h3 id="announcement-form-title">新增公告</h3><span class="tag">可编辑与置顶</span></div><input id="announcement-id" type="hidden" /><input id="announcement-title" maxlength="120" placeholder="公告标题" required /><textarea id="announcement-body" maxlength="5000" placeholder="公告内容" required></textarea><label><input id="announcement-pinned" type="checkbox" />置顶</label><div class="actions"><button id="announcement-submit" class="primary" type="submit">发布公告</button><button id="announcement-cancel-edit" class="hidden" type="button">取消编辑</button></div><p id="announcement-status" class="status"></p></form>
-              <div id="admin-announcements" class="announcement-admin-list"></div>
-              <div class="table-wrap"><table><thead><tr><th></th><th>用户 / 分组</th><th>项目</th><th>金额</th><th>状态</th><th>操作</th></tr></thead><tbody id="admin-finance-rows"></tbody></table></div>
+            <section id="fin-panel-mine" class="fin-panel">
+              <div class="finance-summary"><article class="stat"><span>申请总数</span><strong id="finance-total">—</strong></article><article class="stat"><span>待审核</span><strong id="finance-pending">—</strong></article><article class="stat"><span>已通过金额</span><strong id="finance-approved">—</strong></article></div>
+              <div class="card finance-full-card"><div class="card-head"><div><h3>我的申请</h3><p class="muted small">仅显示当前账户。已驳回申请可修改后重新提交，历史版本保留。</p></div></div><div class="table-wrap"><table><thead><tr><th>提交时间</th><th>费用归属 / 当前分组</th><th>报销项目</th><th>金额</th><th>支付记录</th><th>发票</th><th>状态</th><th>操作</th></tr></thead><tbody id="finance-rows"></tbody></table></div></div>
             </section>
+            <section id="finance-admin" class="hidden">
+              <section id="fin-panel-review" class="fin-panel" hidden><div class="card"><div class="card-head"><div><h3>申请审核</h3><p class="muted small">默认显示全部时间的待审核申请，避免遗漏。通过代表审核通过，不代表已付款。</p></div><button id="fin-refresh" type="button">刷新</button></div><div class="table-wrap"><table><thead><tr><th>费用组别</th><th>付款人</th><th>报销项目</th><th>金额</th><th>支付记录</th><th>发票</th><th>状态</th><th>审核操作</th></tr></thead><tbody id="admin-finance-rows"></tbody></table></div></div></section>
+              <section id="fin-panel-stats" class="fin-panel" hidden><div id="fin-stat-cards" class="fin-stat-grid"></div><div class="fin-chart-grid"><article class="card"><h3>申请金额趋势</h3><p class="muted small">按提交日期统计，已撤销申请不计入金额。</p><div id="fin-trend" class="fin-chart"></div></article><article class="card"><div class="card-head"><h3>金额分布</h3><select id="fin-breakdown" aria-label="金额分布方式"><option value="group" data-ui-text>按费用归属</option><option value="status" data-ui-text>按状态</option></select></div><div id="fin-donut" class="fin-chart"></div></article></div></section>
+              <section id="fin-panel-history" class="fin-panel" hidden><div class="card"><div class="card-head"><div><h3>审批记录</h3><p class="muted small">按审核日期归档。下载对应审核版本的附件和审批清单。</p></div><div class="actions"><label class="fin-checkbox"><input id="fin-select-all" type="checkbox" />全选当前结果</label><button id="finance-batch-download" type="button">下载选中已通过附件</button></div></div><div class="table-wrap"><table><thead><tr><th>选择</th><th>审核时间 / 审核人</th><th>付款人 / 费用归属</th><th>项目 / 版本</th><th>金额</th><th>结果 / 意见</th><th>附件与历史</th></tr></thead><tbody id="fin-history-rows"></tbody></table></div></div></section>
+              <section id="fin-panel-notices" class="fin-panel" hidden><div class="card"><div class="card-head"><h3>财务公告</h3><button id="fin-new-notice" type="button" class="primary">发布公告</button></div><div id="admin-announcements" class="announcement-admin-list"></div></div></section>
+            </section>
+            <dialog id="finance-dialog" class="fin-dialog" aria-labelledby="finance-dialog-title"><div class="modal-head"><h3 id="finance-dialog-title">提交报销申请</h3><button data-close-dialog="finance-dialog" type="button" aria-label="关闭">×</button></div><form id="finance-form" class="form"><input id="finance-edit-id" type="hidden" /><input id="finance-version" type="hidden" /><label>报销项目<input id="finance-project" placeholder="例如：模型订阅" required /></label><p class="form-hint">报销项目最多 20 个字符。</p><label>报销金额（元）<input id="finance-amount" type="number" min="0.01" max="1000000" step="0.01" required /></label><label id="fin-expense-label" hidden>费用归属分组<select id="fin-expense-group"></select></label><p id="fin-expense-hint" class="form-hint"></p><label><span id="fin-invoice-label">发票（必选）</span><input id="finance-invoice" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required /></label><label>支付记录截图（可选）<input id="finance-payment" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" /></label><p id="finance-file-hint" class="form-hint"></p><p id="fin-form-status" class="status" role="alert"></p><div class="fin-dialog-actions"><button data-close-dialog="finance-dialog" type="button">取消</button><button id="finance-submit" class="primary" type="submit">提交申请</button></div></form></dialog>
+            <dialog id="fin-review-dialog" class="fin-dialog" aria-labelledby="fin-review-title"><div class="modal-head"><h3 id="fin-review-title">审核申请</h3><button data-close-dialog="fin-review-dialog" type="button" aria-label="关闭">×</button></div><form id="fin-review-form" class="form"><p id="fin-review-summary" data-i18n-skip></p><label>审核意见<textarea id="fin-review-note" maxlength="500"></textarea></label><p id="fin-review-error" class="status" role="alert"></p><div class="fin-dialog-actions"><button data-close-dialog="fin-review-dialog" type="button">取消</button><button id="fin-review-submit" class="primary" type="submit">确认</button></div></form></dialog>
+            <dialog id="fin-announcement-dialog" class="fin-dialog" aria-labelledby="announcement-form-title"><div class="modal-head"><h3 id="announcement-form-title">新增公告</h3><button data-close-dialog="fin-announcement-dialog" type="button" aria-label="关闭">×</button></div><form id="announcement-form" class="form"><input id="announcement-id" type="hidden" /><label>公告标题<input id="announcement-title" maxlength="120" required /></label><label>公告内容<textarea id="announcement-body" maxlength="5000" required></textarea></label><label class="fin-checkbox"><input id="announcement-pinned" type="checkbox" />置顶</label><p id="announcement-status" class="status" role="alert"></p><div class="fin-dialog-actions"><button data-close-dialog="fin-announcement-dialog" type="button">取消</button><button id="announcement-submit" class="primary" type="submit">发布公告</button></div></form></dialog>
+            <dialog id="fin-detail-dialog" class="fin-dialog fin-wide-dialog" aria-labelledby="fin-detail-title"><div class="modal-head"><h3 id="fin-detail-title">申请详情与历史</h3><button data-close-dialog="fin-detail-dialog" type="button" aria-label="关闭">×</button></div><div id="fin-detail-content"></div></dialog>
           </section>
 
         </div>
@@ -228,6 +232,7 @@
     </div>
     <script src="/static/account-subscription.js"></script>
     <script src="/static/test-workspace.js"></script>
+    <script src="/static/test-finance.js"></script>
     <script src="/static/test-features.js"></script>
     <script>
       (() => {

@@ -57,7 +57,7 @@
     if (element.closest(protectedContent)) return true;
     if (!element.closest('button:not(.matrix-edit),[data-ui-text]') && element.closest('.option > span,.mailbox-option strong,.mailbox-option .muted,.tree-item-sub,.matrix-members,.matrix-account,.activity-list,#api-key-list')) return true;
     if (element.closest('datalist')) return true;
-    if (element.matches('option') && element.value && !['user','manager','admin','gmail','outlook','code','link','auto','all','any','contains','not_contains','regex','exact','domain','subject','body','sender'].includes(element.value)) return true;
+    if (element.matches('option:not([data-ui-text])') && element.value && !['user','manager','admin','gmail','outlook','code','link','auto','all','any','contains','not_contains','regex','exact','domain','subject','body','sender'].includes(element.value)) return true;
     if (element.closest('tbody') && !element.closest('button:not(.matrix-edit),.btn,[data-ui-text],.status-pill,.status-tag,.plan-pill,.expiry-tag,.matrix-add-label,.subscription-time,.status-good,.status-warn,.status-bad,.good,.warn,.bad,.plan,.quota-meter,.account-main + .muted,.account-line + .muted') && !element.closest('td[colspan]')) return true;
     return false;
   }

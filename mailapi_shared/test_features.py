@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS finance_announcements (
     pinned INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, created_by TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS finance_versions (
+    application_id TEXT NOT NULL REFERENCES finance_applications(id), version INTEGER NOT NULL,
+    snapshot_json TEXT NOT NULL, PRIMARY KEY(application_id, version)
+);
+CREATE TABLE IF NOT EXISTS finance_events (
+    id TEXT PRIMARY KEY, application_id TEXT NOT NULL, version INTEGER NOT NULL,
+    action TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    FOREIGN KEY(application_id, version) REFERENCES finance_versions(application_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_finance_events_time ON finance_events(created_at);
 """
 
 
@@ -138,6 +149,20 @@ class TestFeatureStore:
             if "updated_at" not in columns:
                 db.execute("ALTER TABLE finance_applications ADD COLUMN updated_at TEXT")
                 db.execute("UPDATE finance_applications SET updated_at=created_at WHERE updated_at IS NULL")
+            for name, definition in (("version", "INTEGER NOT NULL DEFAULT 1"),
+                                     ("expense_group_id", "TEXT NOT NULL DEFAULT ''"),
+                                     ("expense_group_name", "TEXT NOT NULL DEFAULT '未分组'")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE finance_applications ADD COLUMN {name} {definition}")
+            # Legacy rows have no reliable group id. Preserve a single recorded name;
+            # never guess which group paid a legacy multi-group application.
+            for row in db.execute("SELECT * FROM finance_applications WHERE id NOT IN (SELECT application_id FROM finance_versions)").fetchall():
+                groups = json.loads(row["groups_json"])
+                name = groups[0] if len(groups) == 1 else ("待确认" if groups else "未分组")
+                db.execute("UPDATE finance_applications SET expense_group_name=? WHERE id=?", (name, row["id"]))
+                self._finance_event(db, row["id"], "legacy", row["user_id"], row["username"], "旧申请导入", row["created_at"])
+                if row["status"] in {"approved", "rejected"}:
+                    self._finance_event(db, row["id"], row["status"], row["reviewer_id"] or "", row["reviewer_name"] or "", row["review_note"], row["reviewed_at"] or row["updated_at"])
 
     @staticmethod
     def _text(value: Any, label: str, maximum: int, *, required: bool = False) -> str:
@@ -313,94 +338,108 @@ class TestFeatureStore:
         return [{"user_id": row["user_id"], "requests": row["requests"], "prompt_tokens": row["prompt"],
                  "completion_tokens": row["completion"], "total_tokens": row["total"]} for row in rows]
 
+    @staticmethod
+    def _finance_row(db, app_id):
+        row = db.execute("SELECT * FROM finance_applications WHERE id=?", (app_id,)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["groups"] = json.loads(result.pop("groups_json"))
+        result["amount"] = f"{result['amount_cents'] / 100:.2f}"
+        result["files"] = [dict(item) for item in db.execute("SELECT * FROM finance_files WHERE application_id=? ORDER BY kind", (app_id,))]
+        return result
+
+    def _finance_event(self, db, app_id, action, actor_id, actor_name, note="", when=None):
+        item = self._finance_row(db, app_id)
+        db.execute("INSERT OR IGNORE INTO finance_versions VALUES (?, ?, ?)",
+                   (app_id, item["version"], json.dumps(item, ensure_ascii=False)))
+        db.execute("INSERT INTO finance_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                   (secrets.token_hex(12), app_id, item["version"], action, actor_id, actor_name, note, when or _now()))
+
     def create_finance_application(self, *, user_id: str, username: str, user_note: str,
                                    groups: list[str], project: str, amount_cents: int,
-                                   files: list[dict[str, Any]]) -> dict[str, Any]:
-        app_id = secrets.token_hex(12)
-        now = _now()
+                                   files: list[dict[str, Any]], expense_group_id: str = "",
+                                   expense_group_name: str = "未分组") -> dict[str, Any]:
+        app_id, now = secrets.token_hex(12), _now()
         with self._lock, closing(self._connect()) as db, db:
             db.execute(
-                """INSERT INTO finance_applications(id,user_id,username,user_note,groups_json,project,amount_cents,status,created_at,updated_at,review_note)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '')""",
-                (app_id, user_id, username, user_note, json.dumps(groups, ensure_ascii=False), project, amount_cents, now, now),
+                """INSERT INTO finance_applications(id,user_id,username,user_note,groups_json,project,amount_cents,status,created_at,updated_at,review_note,expense_group_id,expense_group_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '', ?, ?)""",
+                (app_id, user_id, username, user_note, json.dumps(groups, ensure_ascii=False), project, amount_cents, now, now, expense_group_id, expense_group_name),
             )
             for item in files:
-                db.execute(
-                    """INSERT INTO finance_files(id,application_id,kind,stored_name,original_name,content_type,size,sha256)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (item["id"], app_id, item["kind"], item["stored_name"], item["original_name"],
-                     item["content_type"], item["size"], item["sha256"]),
-                )
+                self._insert_finance_file(db, app_id, item["kind"], item)
+            self._finance_event(db, app_id, "submitted", user_id, username)
         return self.finance_application(app_id)
+
+    @staticmethod
+    def _insert_finance_file(db, app_id, kind, item):
+        db.execute("INSERT INTO finance_files VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                   (item["id"], app_id, kind, item["stored_name"], item["original_name"], item["content_type"], item["size"], item["sha256"]))
 
     def finance_application(self, app_id: str) -> Optional[dict[str, Any]]:
         with closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM finance_applications WHERE id=?", (app_id,)).fetchone()
-            if not row:
-                return None
-            files = db.execute("SELECT * FROM finance_files WHERE application_id=? ORDER BY kind", (app_id,)).fetchall()
-        result = dict(row)
-        result["groups"] = json.loads(result.pop("groups_json"))
-        result["amount"] = f"{result.pop('amount_cents') / 100:.2f}"
-        result["files"] = [{"id": item["id"], "kind": item["kind"], "stored_name": item["stored_name"],
-                            "original_name": item["original_name"], "content_type": item["content_type"],
-                            "size": item["size"], "sha256": item["sha256"]} for item in files]
-        return result
+            return self._finance_row(db, app_id)
+
+    def finance_history(self, app_id: Optional[str] = None) -> list[dict[str, Any]]:
+        with closing(self._connect()) as db:
+            rows = db.execute("""SELECT e.*, v.snapshot_json FROM finance_events e JOIN finance_versions v
+                                 ON e.application_id=v.application_id AND e.version=v.version"""
+                              + (" WHERE e.application_id=?" if app_id else "") + " ORDER BY e.created_at DESC, e.rowid DESC",
+                              (app_id,) if app_id else ()).fetchall()
+        return [{key: row[key] for key in row.keys() if key != "snapshot_json"} | {"snapshot": json.loads(row["snapshot_json"])} for row in rows]
 
     def list_finance_applications(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
         with closing(self._connect()) as db:
-            if user_id:
-                rows = db.execute("SELECT id FROM finance_applications WHERE user_id=? ORDER BY created_at DESC", (user_id,)).fetchall()
-            else:
-                rows = db.execute("SELECT id FROM finance_applications ORDER BY created_at DESC").fetchall()
-        return [self.finance_application(row["id"]) for row in rows]
+            rows = db.execute("SELECT id FROM finance_applications" + (" WHERE user_id=?" if user_id else "") + " ORDER BY created_at DESC, rowid DESC", (user_id,) if user_id else ()).fetchall()
+            return [self._finance_row(db, row["id"]) for row in rows]
 
-    def review_finance_application(self, app_id: str, status: str, reviewer_id: str, reviewer_name: str, note: str) -> Optional[dict[str, Any]]:
-        if status not in {"approved", "rejected", "pending"}:
+    def review_finance_application(self, app_id: str, status: str, reviewer_id: str, reviewer_name: str, note: str,
+                                   expected_version: Optional[int] = None) -> Optional[dict[str, Any]]:
+        if status not in {"approved", "rejected"}:
             raise TestFeatureError("审核状态无效")
+        note = self._text(note, "审核备注", MAX_FINANCE_NOTE, required=status == "rejected")
         with self._lock, closing(self._connect()) as db, db:
-            result = db.execute(
-                "UPDATE finance_applications SET status=?,updated_at=?,reviewed_at=?,reviewer_id=?,reviewer_name=?,review_note=? WHERE id=? AND status='pending'",
-                (status, _now(), _now(), reviewer_id, reviewer_name, self._text(note, "审核备注", MAX_FINANCE_NOTE), app_id),
-            )
-            if result.rowcount != 1:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._finance_row(db, app_id)
+            if not row or row["status"] != "pending" or (expected_version is not None and row["version"] != expected_version):
                 return None
+            db.execute("UPDATE finance_applications SET status=?,updated_at=?,reviewed_at=?,reviewer_id=?,reviewer_name=?,review_note=? WHERE id=?",
+                       (status, _now(), _now(), reviewer_id, reviewer_name, note, app_id))
+            self._finance_event(db, app_id, status, reviewer_id, reviewer_name, note)
         return self.finance_application(app_id)
 
     def update_finance_application(self, app_id: str, user_id: str, project: str,
-                                   amount_cents: int, replacements: dict[str, dict[str, Any]]) -> Optional[dict[str, Any]]:
-        now = _now()
-        old_stored_names = []
+                                   amount_cents: int, replacements: dict[str, dict[str, Any]], *,
+                                   expense_group: Optional[tuple[str, str]] = None,
+                                   expected_version: Optional[int] = None) -> Optional[dict[str, Any]]:
         with self._lock, closing(self._connect()) as db, db:
-            row = db.execute("SELECT user_id,status FROM finance_applications WHERE id=?", (app_id,)).fetchone()
-            if not row or row["user_id"] != user_id or row["status"] != "pending":
+            db.execute("BEGIN IMMEDIATE")
+            row = self._finance_row(db, app_id)
+            if (not row or row["user_id"] != user_id or row["status"] not in {"pending", "rejected"}
+                    or (expected_version is not None and row["version"] != expected_version)):
                 return None
-            db.execute("UPDATE finance_applications SET project=?,amount_cents=?,updated_at=? WHERE id=?",
-                       (project, amount_cents, now, app_id))
+            group_id, group_name = expense_group or (row["expense_group_id"], row["expense_group_name"])
+            db.execute("""UPDATE finance_applications SET project=?,amount_cents=?,updated_at=?,version=version+1,
+                          status='pending',reviewed_at=NULL,reviewer_id=NULL,reviewer_name=NULL,review_note='',
+                          expense_group_id=?,expense_group_name=? WHERE id=?""",
+                       (project, amount_cents, _now(), group_id, group_name, app_id))
             for kind, item in replacements.items():
-                previous = db.execute("SELECT stored_name FROM finance_files WHERE application_id=? AND kind=?",
-                                      (app_id, kind)).fetchone()
-                if previous:
-                    old_stored_names.append(previous["stored_name"])
                 db.execute("DELETE FROM finance_files WHERE application_id=? AND kind=?", (app_id, kind))
-                db.execute(
-                    """INSERT INTO finance_files(id,application_id,kind,stored_name,original_name,content_type,size,sha256)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (item["id"], app_id, kind, item["stored_name"], item["original_name"], item["content_type"], item["size"], item["sha256"]),
-                )
-        for stored_name in old_stored_names:
-            (self.files / stored_name).unlink(missing_ok=True)
+                self._insert_finance_file(db, app_id, kind, item)
+            # Physical files referenced by older versions remain available for audit/download.
+            self._finance_event(db, app_id, "resubmitted" if row["status"] == "rejected" else "edited", user_id, row["username"])
         return self.finance_application(app_id)
 
-    def cancel_finance_application(self, app_id: str, user_id: str) -> Optional[dict[str, Any]]:
-        now = _now()
+    def cancel_finance_application(self, app_id: str, user_id: str, expected_version: Optional[int] = None) -> Optional[dict[str, Any]]:
         with self._lock, closing(self._connect()) as db, db:
-            result = db.execute(
-                "UPDATE finance_applications SET status='cancelled',updated_at=? WHERE id=? AND user_id=? AND status='pending'",
-                (now, app_id, user_id),
-            )
-            if result.rowcount != 1:
+            db.execute("BEGIN IMMEDIATE")
+            row = self._finance_row(db, app_id)
+            if (not row or row["user_id"] != user_id or row["status"] != "pending"
+                    or (expected_version is not None and row["version"] != expected_version)):
                 return None
+            db.execute("UPDATE finance_applications SET status='cancelled',updated_at=? WHERE id=?", (_now(), app_id))
+            self._finance_event(db, app_id, "cancelled", user_id, row["username"])
         return self.finance_application(app_id)
 
     def announcements(self, *, include_disabled: bool = False) -> list[dict[str, Any]]:
@@ -436,6 +475,8 @@ def _parse_amount(value: Any) -> int:
         amount = Decimal(str(value).strip()).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
         raise TestFeatureError("报销金额格式无效") from None
+    if not amount.is_finite():
+        raise TestFeatureError("报销金额格式无效")
     cents = int(amount * 100)
     if cents <= 0 or cents > MAX_FINANCE_AMOUNT_CENTS:
         raise TestFeatureError("报销金额须大于 0 且不超过 1000000.00")
@@ -520,6 +561,21 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         result["files"] = [{key: value for key, value in file_item.items() if key not in {"stored_name", "sha256"}}
                            for file_item in item["files"]]
         return result
+
+    def expense_group(request: Request, selected: Optional[str], existing=None):
+        groups = request.app.state.site_accounts.user_groups(current_user(request)["id"])
+        if existing and (selected is None or selected == existing["expense_group_id"]):
+            return existing["expense_group_id"], existing["expense_group_name"]
+        if not groups:
+            if selected:
+                raise HTTPException(400, "费用归属必须是当前账户所属分组")
+            return "", "未分组"
+        if len(groups) == 1 and not selected:
+            return groups[0]["id"], groups[0]["name"]
+        group = next((group for group in groups if group["id"] == selected), None)
+        if not group:
+            raise HTTPException(400, "请选择一个所属分组作为费用归属")
+        return group["id"], group["name"]
 
     async def save_finance_uploads(uploads: list[tuple[str, UploadFile]]) -> list[dict[str, Any]]:
         saved = []
@@ -721,9 +777,14 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         user = current_user(request)
         return {"items": [public_application(request, item) for item in store.list_finance_applications(user["id"])]}
 
+    @router.get("/api/finance/groups")
+    def finance_groups(request: Request):
+        return {"items": request.app.state.site_accounts.user_groups(current_user(request)["id"])}
+
     @router.post("/api/finance/applications", status_code=201)
-    async def create_finance(request: Request, project: str = Form(...), amount: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None)):
+    async def create_finance(request: Request, project: str = Form(...), amount: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None)):
         account, groups = user_snapshot(request)
+        group_id, group_name = expense_group(request, expense_group_id)
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
             amount_cents = _parse_amount(amount)
@@ -734,7 +795,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         try:
             item = store.create_finance_application(user_id=account["id"], username=account["username"],
                                                     user_note=account.get("note", ""), groups=groups,
-                                                    project=project, amount_cents=amount_cents, files=saved)
+                                                    project=project, amount_cents=amount_cents, files=saved,
+                                                    expense_group_id=group_id, expense_group_name=group_name)
         except Exception:
             for entry in saved:
                 (store.files / entry["stored_name"]).unlink(missing_ok=True)
@@ -742,7 +804,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return {"item": public_application(request, item)}
 
     @router.put("/api/finance/applications/{app_id}")
-    async def update_finance(app_id: str, request: Request, project: str = Form(...), amount: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None)):
+    async def update_finance(app_id: str, request: Request, project: str = Form(...), amount: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None)):
         user = current_user(request)
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
@@ -752,8 +814,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         existing = store.finance_application(app_id)
         if not existing or existing["user_id"] != user["id"]:
             raise HTTPException(404, "未找到报销申请")
-        if existing["status"] != "pending":
-            raise HTTPException(409, "只有待审核申请可以修改")
+        if existing["status"] not in {"pending", "rejected"}:
+            raise HTTPException(409, "只有待审核或已驳回申请可以修改")
+        group = expense_group(request, expense_group_id, existing)
         uploads = []
         if invoice:
             uploads.append(("invoice", invoice))
@@ -764,7 +827,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         try:
-            updated = store.update_finance_application(app_id, user["id"], project, amount_cents, {item["kind"]: item for item in saved})
+            updated = store.update_finance_application(app_id, user["id"], project, amount_cents, {item["kind"]: item for item in saved},
+                                                       expense_group=group, expected_version=version if version is not None else existing["version"])
         except Exception:
             for item in saved:
                 (store.files / item["stored_name"]).unlink(missing_ok=True)
@@ -776,9 +840,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return {"item": public_application(request, updated)}
 
     @router.post("/api/finance/applications/{app_id}/cancel")
-    def cancel_finance(app_id: str, request: Request):
+    def cancel_finance(app_id: str, request: Request, version: Optional[int] = None):
         user = current_user(request)
-        item = store.cancel_finance_application(app_id, user["id"])
+        item = store.cancel_finance_application(app_id, user["id"], expected_version=version)
         if not item:
             raise HTTPException(409, "只有本人提交的待审核申请可以撤销")
         return {"item": public_application(request, item)}
@@ -787,6 +851,19 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     def admin_finance(request: Request):
         require_admin(request)
         return {"items": [public_application(request, item) for item in store.list_finance_applications()]}
+
+    def public_event(request, event):
+        return {key: value for key, value in event.items() if key != "snapshot"} | {"snapshot": public_application(request, event["snapshot"])}
+
+    @router.get("/api/finance/applications/{app_id}/history")
+    def application_history(app_id: str, request: Request):
+        get_allowed_application(request, app_id)
+        return {"items": [public_event(request, event) for event in store.finance_history(app_id)]}
+
+    @router.get("/api/admin/finance/history")
+    def approval_history(request: Request):
+        require_admin(request)
+        return {"items": [public_event(request, event) for event in store.finance_history() if event["action"] in {"approved", "rejected"}]}
 
     @router.get("/api/admin/finance/announcements")
     def admin_announcements(request: Request):
@@ -798,12 +875,12 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         reviewer = require_admin(request)
         payload = await request.json()
         try:
-            item = store.review_finance_application(app_id, payload.get("status"), reviewer["id"], reviewer["username"], payload.get("note", ""))
+            item = store.review_finance_application(app_id, payload.get("status"), reviewer["id"], reviewer["username"], payload.get("note", ""), expected_version=payload.get("version"))
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         if not item:
-            raise HTTPException(404, "未找到报销申请")
-        return {"item": item}
+            raise HTTPException(409, "申请状态或版本已变化，请刷新后重试")
+        return {"item": public_application(request, item)}
 
     @router.post("/api/admin/finance/announcements", status_code=201)
     async def create_announcement(request: Request):
@@ -834,11 +911,16 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             raise HTTPException(404, "未找到公告")
         return {"ok": True}
 
-    def get_allowed_application(request: Request, app_id: str):
+    def get_allowed_application(request: Request, app_id: str, event_id: Optional[str] = None):
         item = store.finance_application(app_id)
         if not item:
             raise HTTPException(404, "未找到报销申请")
         public_application(request, item)
+        if event_id:
+            event = next((event for event in store.finance_history(app_id) if event["id"] == event_id), None)
+            if not event:
+                raise HTTPException(404, "未找到历史版本")
+            item = event["snapshot"]
         return hydrate_application(request, item)
 
     def application_folder(item):
@@ -853,16 +935,18 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         suffix = Path(file_item["stored_name"]).suffix.lower() or ".bin"
         return f"{_safe_component(group)}_{_safe_component(identity)}_{_safe_component(item['project'])}_{label}{suffix}"
 
-    def zip_applications(items: list[dict[str, Any]]) -> bytes:
+    def zip_applications(items: list[dict[str, Any]], *, manifest=None) -> bytes:
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             used = set()
+            if manifest is not None:
+                archive.writestr("审批清单.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             for item in items:
                 folder = application_folder(item)
                 for file_item in item["files"]:
                     path = store.files / file_item["stored_name"]
                     if not path.is_file():
-                        continue
+                        raise HTTPException(410, "附件已丢失，下载已取消，请联系管理员")
                     filename = application_filename(item, file_item)
                     archive_name = f"{folder}/{filename}"
                     if archive_name in used:
@@ -872,8 +956,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return output.getvalue()
 
     @router.get("/api/finance/applications/{app_id}/download")
-    def download_finance_file(app_id: str, request: Request, kind: str):
-        item = get_allowed_application(request, app_id)
+    def download_finance_file(app_id: str, request: Request, kind: str, event_id: Optional[str] = None):
+        item = get_allowed_application(request, app_id, event_id)
         file_item = next((entry for entry in item["files"] if entry["kind"] == kind), None)
         if not file_item:
             raise HTTPException(404, "未找到文件")
@@ -893,12 +977,29 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def download_finance_batch(request: Request):
         require_admin(request)
         payload = await request.json()
+        event_ids = payload.get("event_ids") if isinstance(payload, dict) else None
+        if event_ids is not None:
+            if not isinstance(event_ids, list) or not event_ids or len(event_ids) > 500 or any(not isinstance(value, str) for value in event_ids):
+                raise HTTPException(400, "请选择审批通过的记录，最多 500 条")
+            events = {event["id"]: event for event in store.finance_history()}
+            selected = [events.get(value) for value in dict.fromkeys(event_ids)]
+            if any(event is None or event["action"] != "approved" for event in selected):
+                raise HTTPException(400, "仅可下载审批通过记录的附件")
+            items = [event["snapshot"] for event in selected]
+            manifest = [{"record_id": event["id"], "application_id": event["application_id"], "version": event["version"],
+                         "reviewed_at": event["created_at"], "reviewer": event["actor_name"], "note": event["note"],
+                         "expense_group": event["snapshot"]["expense_group_name"], "project": event["snapshot"]["project"],
+                         "amount": event["snapshot"]["amount"]} for event in selected]
+            data = zip_applications(items, manifest=manifest)
+            return StreamingResponse(io.BytesIO(data), media_type="application/zip", headers={"Content-Disposition": _content_disposition("审批通过附件.zip")})
         ids = payload.get("application_ids") if isinstance(payload, dict) else None
-        if not isinstance(ids, list) or not ids or any(not isinstance(value, str) for value in ids):
+        if not isinstance(ids, list) or not ids or len(ids) > 500 or any(not isinstance(value, str) for value in ids):
             raise HTTPException(400, "请选择报销申请")
         items = [store.finance_application(value) for value in ids]
         if any(item is None for item in items):
             raise HTTPException(404, "报销申请不存在")
+        if any(item["status"] != "approved" for item in items):
+            raise HTTPException(400, "仅可批量下载审批通过的申请")
         items = [hydrate_application(request, item) for item in items]
         data = zip_applications(items)
         filename = datetime.now().strftime("%Y%m%d") + "报销申请.zip"

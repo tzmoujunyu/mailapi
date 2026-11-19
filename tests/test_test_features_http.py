@@ -1,4 +1,6 @@
 import io
+import json
+import zipfile
 from pathlib import Path
 import tempfile
 import unittest
@@ -40,7 +42,7 @@ class FinanceFeatureHttpTests(unittest.TestCase):
             request.state.site_user = dict(self.site.users[user_id])
             return await call_next(request)
 
-        install_test_features(self.app, Path(__file__).resolve().parents[1] / "mailapi_shared" / "static", self.directory, None)
+        self.store = install_test_features(self.app, Path(__file__).resolve().parents[1] / "mailapi_shared" / "static", self.directory, None)
         self.app.add_middleware(BodyLimitMiddleware)
         self.client = self.enterContext(TestClient(self.app))
 
@@ -105,6 +107,84 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertFalse(updated.json()["item"]["pinned"])
         self.assertEqual(updated.json()["item"]["title"], "新公告")
+
+    def test_group_attribution_is_validated_and_stays_separate_from_current_groups(self):
+        self.site.groups["group-id"]["member_ids"] = ["alice-id"]
+        one = self.create_application().json()["item"]
+        self.assertEqual(one["expense_group_id"], "group-id")
+        self.site.groups["second"] = {"id": "second", "name": "第二组", "member_ids": ["alice-id"]}
+        self.assertEqual(self.create_application().status_code, 400)
+        for selected in ("second", "not-a-member"):
+            response = self.client.post("/api/finance/applications", headers={"x-test-user": "alice-id"},
+                                        data={"project": "第二次申请", "amount": "20.00", "expense_group_id": selected}, files=self.upload())
+            self.assertEqual(response.status_code, 201 if selected == "second" else 400)
+        self.site.groups["group-id"]["member_ids"] = []
+        self.site.users["alice-id"]["note"] = "新备注"
+        current = next(item for item in self.client.get("/api/finance/applications", headers={"x-test-user": "alice-id"}).json()["items"] if item["id"] == one["id"])
+        self.assertEqual(current["groups"], ["第二组"])
+        self.assertEqual(current["user_note"], "新备注")
+        self.assertEqual(current["expense_group_name"], "Agent")
+        self.assertEqual(current["expense_group_id"], "group-id")
+
+    def test_rejected_resubmission_keeps_versioned_files_and_exact_review_history(self):
+        item = self.create_application().json()["item"]
+        app_id = item["id"]
+        review_url = f"/api/admin/finance/applications/{app_id}/review"
+        self.assertEqual(self.client.post(review_url, json={"status": "rejected", "note": "", "version": 1}).status_code, 400)
+        self.assertEqual(self.client.post(review_url, headers={"x-test-user": "alice-id"}, json={"status": "approved"}).status_code, 403)
+        rejected = self.client.post(review_url, json={"status": "rejected", "note": "补充发票", "version": 1})
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        resubmitted = self.client.put(f"/api/finance/applications/{app_id}", headers={"x-test-user": "alice-id"},
+                                    data={"project": "订阅重提", "amount": "18.00", "version": "1"}, files=self.upload("new.pdf", b"new invoice"))
+        self.assertEqual(resubmitted.status_code, 200, resubmitted.text)
+        self.assertEqual(resubmitted.json()["item"]["status"], "pending")
+        self.assertEqual(resubmitted.json()["item"]["version"], 2)
+        self.assertEqual(self.client.post(review_url, json={"status": "approved", "version": 1}).status_code, 409)
+        stale = self.client.put(f"/api/finance/applications/{app_id}", headers={"x-test-user": "alice-id"},
+                               data={"project": "过期修改", "amount": "1.00", "version": "1"}, files=self.upload("stale.pdf", b"stale"))
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(len(list((Path(self.directory)/"finance_files").iterdir())), 2)
+        self.assertEqual(self.client.post(review_url, json={"status": "approved", "version": 2}).status_code, 200)
+        self.assertEqual(self.client.post(review_url, json={"status": "approved", "version": 2}).status_code, 409)
+        self.assertEqual(self.client.put(f"/api/finance/applications/{app_id}", headers={"x-test-user": "alice-id"}, data={"project": "修改", "amount": "1.00", "version": "2"}).status_code, 409)
+        records = self.client.get(f"/api/finance/applications/{app_id}/history", headers={"x-test-user": "alice-id"}).json()["items"]
+        self.assertEqual([event["action"] for event in records], ["approved", "resubmitted", "rejected", "submitted"])
+        old = next(event for event in records if event["action"] == "rejected")
+        self.assertEqual(old["note"], "补充发票")
+        self.assertEqual(old["snapshot"]["project"], "模型订阅")
+        self.assertNotIn("stored_name", json.dumps(records))
+        self.assertNotIn("sha256", json.dumps(records))
+        self.assertNotIn("user_id", records[0]["snapshot"])
+        self.assertEqual(self.client.get(f"/api/finance/applications/{app_id}/download?kind=invoice&event_id={old['id']}", headers={"x-test-user": "alice-id"}).content, b"invoice")
+        self.assertEqual(self.client.get(f"/api/finance/applications/{app_id}/download?kind=invoice").content, b"new invoice")
+        approved = records[0]
+        batch = self.client.post("/api/admin/finance/download.zip", json={"event_ids": [approved["id"]]})
+        self.assertEqual(batch.status_code, 200, batch.text if batch.status_code != 200 else "")
+        with zipfile.ZipFile(io.BytesIO(batch.content)) as archive:
+            manifest = json.loads(archive.read("审批清单.json"))
+            self.assertEqual(manifest[0]["version"], 2)
+            self.assertIn(b"new invoice", [archive.read(name) for name in archive.namelist()])
+        self.assertEqual(self.client.post("/api/admin/finance/download.zip", json={"event_ids": [old["id"]]}).status_code, 400)
+        self.assertEqual(self.client.get("/api/admin/finance/history", headers={"x-test-user": "alice-id"}).status_code, 403)
+
+    def test_other_users_cannot_read_change_or_download_an_application(self):
+        item = self.create_application(user_id="admin-id").json()["item"]
+        headers = {"x-test-user": "alice-id"}
+        for suffix in ("history", "download?kind=invoice", "download.zip"):
+            self.assertEqual(self.client.get(f"/api/finance/applications/{item['id']}/{suffix}", headers=headers).status_code, 404)
+        self.assertEqual(self.client.put(f"/api/finance/applications/{item['id']}", headers=headers, data={"project": "修改", "amount": "1"}).status_code, 404)
+        self.assertEqual(self.client.post("/api/admin/finance/download.zip", headers=headers, json={"application_ids": [item["id"]]}).status_code, 403)
+
+    def test_invalid_amount_and_missing_archive_file_do_not_fail_silently(self):
+        for amount in ("NaN", "Infinity", "0", "1000000.01"):
+            response = self.client.post("/api/finance/applications", data={"project": "项目", "amount": amount}, files=self.upload())
+            self.assertEqual(response.status_code, 400)
+        item = self.create_application().json()["item"]
+        self.client.post(f"/api/admin/finance/applications/{item['id']}/review", json={"status": "approved"})
+        record = self.client.get("/api/admin/finance/history").json()["items"][0]
+        for path in (Path(self.directory)/"finance_files").iterdir():
+            path.unlink()
+        self.assertEqual(self.client.post("/api/admin/finance/download.zip", json={"event_ids": [record["id"]]}).status_code, 410)
 
 
 if __name__ == "__main__":

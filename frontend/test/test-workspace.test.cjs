@@ -17,6 +17,7 @@ test('the overview uses own applications and enabled keys, and links switch the 
     '/api/api2api/keys': {items: [{id: 'one', name: 'One', enabled: true}, {id: 'old', name: 'Old', enabled: false}]},
     '/api/api2api/usage': {requests: 2, prompt_tokens: 15, completion_tokens: 5, total_tokens: 20, items: []},
     '/api/finance/announcements': {items: []},
+    '/api/finance/groups': {items: []},
     '/api/finance/applications': {items: [
       {id: '1', project: '待处理', amount: '3.00', status: 'pending'},
       {id: '2', project: '已批准', amount: '6.80', status: 'approved'},
@@ -27,7 +28,7 @@ test('the overview uses own applications and enabled keys, and links switch the 
     requests.push(url);
     return {ok: true, json: async () => fixtures[url]};
   };
-  w.eval(read('test-features.js'));
+  w.eval(read('test-finance.js') + '\n' + read('test-features.js'));
   w.eval(w.document.scripts[w.document.scripts.length - 1].textContent);
   await new Promise(resolve => setImmediate(resolve));
   const el = id => w.document.getElementById(id);
