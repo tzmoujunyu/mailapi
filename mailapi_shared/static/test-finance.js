@@ -5,6 +5,7 @@ const financeController = (() => {
   const t = value => window.SiteLanguage?.t(value) || value;
   const ui = value => `<span data-ui-text>${html(t(value))}</span>`;
   const money = cents => `${(cents / 100).toFixed(2)} ${t('元')}`;
+  const currency = cents => new Intl.NumberFormat(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN', {style:'currency',currency:'CNY'}).format(cents/100);
   const cents = item => item.amount_cents ?? Math.round(Number(item.amount) * 100);
   const names = {pending:'待审核', approved:'已通过', rejected:'已驳回', cancelled:'已撤销', submitted:'提交申请', edited:'修改申请', resubmitted:'修改后重新提交', legacy:'旧申请导入'};
   const colors = ['#6558ed', '#28b9da', '#23b98c', '#f1a547', '#e67392', '#8798b4'];
@@ -37,7 +38,7 @@ const financeController = (() => {
     if (value === 'week') start.setDate(now.getDate() - ((now.getDay()+6)%7));
     if (value === 'month') start.setDate(1);
     $('fin-from').disabled = $('fin-to').disabled = value !== 'custom';
-    $('fin-from').closest('label').hidden = $('fin-to').closest('label').hidden = value !== 'custom';
+    $('fin-custom-range').hidden = value !== 'custom';
     $('fin-from').value = value === 'all' ? '' : value === 'custom' ? $('fin-from').value : localDay(start);
     $('fin-to').value = value === 'all' ? '' : value === 'custom' ? $('fin-to').value : localDay(now);
   }
@@ -58,60 +59,81 @@ const financeController = (() => {
   }
   function fileLink(item, kind, event=null) {
     const file = (item.files || []).find(file => file.kind === kind);
-    if (!file) return '<span class="muted">—</span>';
+    if (!file) return `<span class="fin-secondary" data-ui-text>${t('未上传')}</span>`;
     const url = `/api/finance/applications/${encodeURIComponent(item.id)}/download?kind=${kind}${event ? `&event_id=${encodeURIComponent(event.id)}` : ''}`;
-    return `<a class="fin-file" data-i18n-skip title="${html(file.original_name)}" href="${url}">${html(file.original_name)}</a>`;
+    const label = kind === 'payment' ? '支付记录' : /\.pdf$/i.test(file.original_name) ? 'PDF 发票' : '图片发票';
+    return `<a class="fin-file" title="${html(file.original_name)}" href="${url}"><span data-ui-text>${t(label)}</span> ↓</a>`;
   }
   function tableRows(items, own) {
     return items.map(item => `<tr>
-      ${own ? `<td>${html(date(item.created_at))}<small data-i18n-skip>${html(item.id.slice(0,8))} · v${item.version || 1}</small></td>` : ''}
-      <td data-i18n-skip>${html(item.expense_group_name || '未分组')}<small>${html((item.groups || []).join('、') || '未分组')}</small></td>
+      <td><span class="fin-tag" data-i18n-skip title="${html(t('当前分组'))}: ${html((item.groups || []).join('、') || t('未分组'))}">${html(item.expense_group_name || t('未分组'))}</span></td>
       ${!own ? `<td data-i18n-skip>${html(identity(item))}</td>` : ''}
-      <td data-i18n-skip>${html(item.project)}</td><td class="fin-money">${html(money(cents(item)))}</td>
+      <td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date" title="${html(item.id)}">${html(item.id.slice(0,8))} · ${localDay(item.created_at).slice(5)} · v${item.version || 1}</span></td><td class="fin-money">${html(currency(cents(item)))}</td>
       <td>${fileLink(item,'payment')}</td><td>${fileLink(item,'invoice')}</td><td>${pill(item.status)}${item.review_note ? `<small data-i18n-skip>${html(item.review_note)}</small>` : ''}</td>
-      <td><div class="actions"><button type="button" data-history="${html(item.id)}">${t('详情与历史')}</button>
+      <td><div class="actions">
       ${own && ['pending','rejected'].includes(item.status) ? `<button type="button" data-edit-finance="${html(item.id)}">${t(item.status === 'rejected' ? '修改并重提' : '编辑')}</button>` : ''}
       ${own && item.status === 'pending' ? `<button type="button" data-cancel-finance="${html(item.id)}">${t('撤销')}</button>` : ''}
-      ${!own && item.status === 'pending' ? `<button type="button" data-review="${html(item.id)}" data-result="approved">${t('通过')}</button><button type="button" data-review="${html(item.id)}" data-result="rejected">${t('驳回')}</button>` : ''}</div></td></tr>`).join('') || `<tr><td colspan="8" class="muted" data-ui-text>${t('没有匹配的申请。')}</td></tr>`;
+      ${!own && item.status === 'pending' ? `<button type="button" data-review="${html(item.id)}" data-result="approved">${t('通过')}</button><button type="button" data-review="${html(item.id)}" data-result="rejected">${t('驳回')}</button>` : ''}
+      <button type="button" data-history="${html(item.id)}">${t('详情')}</button></div></td></tr>`).join('') || `<tr><td colspan="${own ? 7 : 8}" class="fin-secondary" data-ui-text>${t('没有匹配的申请。')}</td></tr>`;
   }
   function historyRows(items) {
-    let day = '';
-    return items.map(item => {
-      const event = item.event, current = localDay(event.created_at);
-      const heading = current !== day ? `<tr class="fin-day"><td colspan="7">${html(current)}</td></tr>` : ''; day = current;
-      return heading + `<tr><td>${event.action === 'approved' ? `<input class="fin-check" type="checkbox" aria-label="${html(t('选择审批记录'))}" data-select-event="${html(event.id)}" ${selected.has(event.id) ? 'checked' : ''} />` : '—'}</td>
-        <td>${html(date(event.created_at))}<small data-i18n-skip>${html(event.actor_name)}</small></td><td data-i18n-skip>${html(identity(item))}<small>${html(item.expense_group_name)}</small></td><td data-i18n-skip>${html(item.project)}<small>v${event.version}</small></td><td class="fin-money">${html(money(cents(item)))}</td><td>${pill(event.action)}<small data-i18n-skip>${html(event.note)}</small></td><td><div>${fileLink(item,'invoice',event)}</div><div>${fileLink(item,'payment',event)}</div><button type="button" data-history="${html(item.id)}">${t('详情与历史')}</button></td></tr>`;
-    }).join('') || `<tr><td colspan="7" class="muted" data-ui-text>${t('暂无审批记录。')}</td></tr>`;
+    const days = new Map();
+    for (const item of items) {
+      const day = localDay(item.event.created_at);
+      if (!days.has(day)) days.set(day, []);
+      days.get(day).push(item);
+    }
+    return [...days].map(([day, rows]) => `<h3 class="fin-history-day">${html(day)} <small>· ${rows.length} ${t('笔审批')} · ${t('通过')} ${html(currency(rows.filter(item=>item.event.action==='approved').reduce((sum,item)=>sum+cents(item),0)))}</small></h3>
+      <div class="card table-wrap"><table aria-label="${html(day)} ${t('审批记录')}"><thead><tr><th>${t('选择')}</th><th>${t('付款人 / 费用归属')}</th><th>${t('报销项目')}</th><th class="fin-money">${t('金额')}</th><th>${t('结果 / 意见')}</th><th>${t('审核人')}</th><th>${t('附件与历史')}</th></tr></thead><tbody>${rows.map(item => {
+        const event = item.event;
+        return `<tr><td>${event.action === 'approved' ? `<input class="fin-check" type="checkbox" aria-label="${html(t('选择审批记录'))}" data-select-event="${html(event.id)}" ${selected.has(event.id) ? 'checked' : ''} />` : '—'}</td>
+          <td data-i18n-skip>${html(identity(item))}<span class="fin-date">${html(item.expense_group_name)}</span></td><td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date">${html(item.id.slice(0,8))} · v${event.version}</span></td><td class="fin-money">${html(currency(cents(item)))}</td><td>${pill(event.action)}<small data-i18n-skip>${html(event.note)}</small></td><td data-i18n-skip>${html(event.actor_name)}<span class="fin-date">${html(date(event.created_at))}</span></td><td><div class="actions">${fileLink(item,'invoice',event)} ${fileLink(item,'payment',event)}<button type="button" data-history="${html(item.id)}">${t('详情')}</button></div></td></tr>`;
+      }).join('')}</tbody></table></div>`).join('') || `<p class="fin-secondary" data-ui-text>${t('暂无审批记录。')}</p>`;
   }
   function stats(items) {
     const counted = items.filter(item => item.status !== 'cancelled');
     const categories = [['申请总额',counted], ['待审核金额',counted.filter(item=>item.status==='pending')], ['已通过金额',counted.filter(item=>item.status==='approved')], ['已驳回金额',counted.filter(item=>item.status==='rejected')]];
-    $('fin-stat-cards').innerHTML = categories.map(([label,rows]) => `<article class="stat"><span class="stat-label" data-ui-text>${t(label)}</span><div class="stat-value">${html(money(rows.reduce((sum,item)=>sum+cents(item),0)))}</div><small>${rows.length} ${t('笔申请')}</small></article>`).join('');
+    $('fin-stat-cards').innerHTML = categories.map(([label,rows]) => `<article class="stat"><span class="stat-label" data-ui-text>${t(label)}</span><div class="stat-value">${html(currency(rows.reduce((sum,item)=>sum+cents(item),0)))}</div><small>${rows.length} ${t('笔申请')}</small></article>`).join('');
     const grouped = new Map();
     const days = counted.map(item=>localDay(item.created_at)).sort();
     const monthly = days.length && (new Date(days.at(-1))-new Date(days[0])) / 86400000 > 62;
     for (const item of counted) { const key = localDay(item.created_at).slice(0,monthly ? 7 : 10); grouped.set(key,(grouped.get(key)||0)+cents(item)); }
     const points = [...grouped].sort(([a],[b])=>a.localeCompare(b));
-    if (!points.length) $('fin-trend').innerHTML = `<p class="muted" data-ui-text>${t('所选范围暂无数据。')}</p>`;
+    if (!points.length) $('fin-trend').innerHTML = `<p class="fin-secondary" data-ui-text>${t('所选范围暂无数据。')}</p>`;
     else {
-      const maximum = Math.max(...points.map(([,amount])=>amount),1), width=660, chartWidth=580, bar=chartWidth/points.length;
-      $('fin-trend').innerHTML = `<svg viewBox="0 0 ${width} 260" role="img" aria-label="${t('申请金额趋势')}"><line x1="55" y1="220" x2="640" y2="220" stroke="currentColor" opacity=".2"/><text x="50" y="25" fill="currentColor" font-size="11">${html(money(maximum))}</text>${points.map(([day,amount],index)=>{const height=170*amount/maximum;return `<g tabindex="0"><title>${html(day)}: ${html(money(amount))}</title><rect x="${58+bar*index}" y="${220-height}" width="${Math.max(2,bar*.65)}" height="${height}" rx="3" fill="${colors[0]}"/>${index%Math.ceil(points.length/7)===0 ? `<text x="${58+bar*index}" y="245" fill="currentColor" font-size="10">${html(day.slice(monthly?0:5))}</text>` : ''}</g>`;}).join('')}</svg>`;
+      const maximum=Math.max(...points.map(([,amount])=>amount/100),1), unit=10**Math.floor(Math.log10(maximum)), ceiling=Math.ceil(maximum/unit)*unit;
+      const width=660, height=225, left=48, top=24, plotHeight=165, step=(width-left-10)/points.length, barWidth=Math.min(42,step*.58);
+      const grid=[0,ceiling/2,ceiling].map(value=>{const y=top+plotHeight-value/ceiling*plotHeight;return `<line x1="${left}" x2="650" y1="${y}" y2="${y}" stroke="var(--fin-line)"/><text x="${left-7}" y="${y+4}" text-anchor="end" fill="var(--fin-muted)" font-size="11">${value.toLocaleString(undefined,{maximumFractionDigits:0})}</text>`;}).join('');
+      const bars=points.map(([day,amount],index)=>{const x=left+step*(index+.5),barHeight=amount/100/ceiling*plotHeight;return `<g tabindex="0" role="button" data-fin-chart="trend" aria-label="${html(day)} · ${html(currency(amount))}"><title>${html(day)}: ${html(currency(amount))}</title><rect x="${x-barWidth/2}" y="${top+plotHeight-barHeight}" width="${barWidth}" height="${barHeight}" rx="3" fill="var(--fin-accent)"/></g>${index%Math.ceil(points.length/7)===0?`<text x="${x}" y="212" text-anchor="middle" fill="var(--fin-muted)" font-size="11">${html(day.slice(monthly?0:5))}</text>`:''}`;}).join('');
+      $('fin-trend').innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${t('申请金额趋势')}"><text x="40" y="12" text-anchor="end" fill="var(--fin-muted)" font-size="11">${t('元')}</text>${grid}${bars}</svg>` + chartDetails('trend', points);
     }
-    const breakdown = new Map();
-    for (const item of counted) { const key=$('fin-breakdown').value==='status' ? t(names[item.status]) : item.expense_group_name || t('未分组'); breakdown.set(key,(breakdown.get(key)||0)+cents(item)); }
-    const pieces=[...breakdown], total=pieces.reduce((sum,[,value])=>sum+value,0);let offset=0;
-    $('fin-donut').innerHTML = total ? `<svg class="fin-donut-svg" viewBox="0 0 200 200" role="img" aria-label="${t('金额分布')}">${pieces.map(([name,value],index)=>{const share=value/total*100; const circle=`<circle tabindex="0" cx="100" cy="100" r="76" fill="none" stroke="${colors[index%colors.length]}" stroke-width="24" pathLength="100" stroke-dasharray="${share} ${100-share}" stroke-dashoffset="${-offset}" transform="rotate(-90 100 100)"><title>${html(name)}: ${html(money(value))} (${(share).toFixed(1)}%)</title></circle>`;offset+=share;return circle;}).join('')}<text x="100" y="98" text-anchor="middle" fill="currentColor" font-size="16" font-weight="700">${(total/100).toFixed(2)}</text><text x="100" y="120" text-anchor="middle" fill="currentColor" font-size="12">${t('元')}</text></svg><div class="fin-legend">${pieces.map(([name,value],index)=>`<span data-i18n-skip><i style="background:${colors[index%colors.length]}"></i>${html(name)} ${html(money(value))}</span>`).join('')}</div>` : `<p class="muted" data-ui-text>${t('所选范围暂无数据。')}</p>`;
+    const byStatus=$('fin-breakdown').value==='status', breakdown=new Map();
+    if (byStatus) for (const status of ['pending','approved','rejected']) breakdown.set(status,0);
+    for (const item of counted) { const key=byStatus?item.status:item.expense_group_name || t('未分组');breakdown.set(key,(breakdown.get(key)||0)+cents(item)); }
+    const pieces=[...breakdown],total=pieces.reduce((sum,[,value])=>sum+value,0);let offset=0;
+    const color=(key,index)=>byStatus?({pending:'var(--fin-text)',approved:'var(--fin-good)',rejected:'var(--fin-bad)'})[key]:colors[index%colors.length];
+    const label=key=>byStatus?t(names[key]):key;
+    $('fin-breakdown-title').textContent=t(byStatus?'申请状态金额占比':'金额分布');
+    $('fin-donut').innerHTML = total ? `<svg class="fin-donut-svg" viewBox="0 0 360 225" role="img" aria-label="${t('金额分布')}">${pieces.map(([key,value],index)=>{const share=value/total*100,circle=value?`<g tabindex="0" role="button" data-fin-chart="donut" aria-label="${html(label(key))} · ${html(currency(value))} · ${share.toFixed(1)}%"><title>${html(label(key))}: ${html(currency(value))} (${share.toFixed(1)}%)</title><circle cx="180" cy="110" r="68" fill="none" stroke="${color(key,index)}" stroke-width="26" pathLength="100" stroke-dasharray="${share} ${100-share}" stroke-dashoffset="${-offset}" transform="rotate(-90 180 110)"/></g>`:'';offset+=share;return circle;}).join('')}<text x="180" y="110" text-anchor="middle" fill="var(--fin-text)" font-size="13" font-weight="600">${html(currency(total))}</text><text x="180" y="130" text-anchor="middle" fill="var(--fin-muted)" font-size="11">${t('不含撤销')}</text></svg><div class="fin-legend">${pieces.map(([key,value],index)=>`<span data-i18n-skip><i style="background:${color(key,index)}"></i>${html(label(key))} ${html(currency(value))} · ${(value/total*100).toFixed(1)}%</span>`).join('')}</div>` + chartDetails('donut',pieces.map(([key,value])=>[label(key),value])) : `<p class="fin-secondary" data-ui-text>${t('所选范围暂无数据。')}</p>`;
+    for (const button of document.querySelectorAll('[data-fin-period]')) button.setAttribute('aria-pressed',String(button.dataset.finPeriod===$('fin-period').value));
+    let range=[$('fin-from').value,$('fin-to').value].filter(Boolean).join(' – ');
+    if($('fin-period').value==='month') range=new Intl.DateTimeFormat(document.documentElement.lang==='en'?'en-US':'zh-CN',{year:'numeric',month:'long'}).format(new Date($('fin-from').value+'T12:00:00'));
+    if($('fin-period').value==='day') range=$('fin-from').value;
+    $('fin-period-label').textContent=`${range || t('全部时间')} · ${t('按申请提交日')} · ${t('不含撤销')}`;
+  }
+  function chartDetails(name, rows) {
+    return `<details class="fin-chart-details" id="fin-${name}-details"><summary>${t('查看金额明细')}</summary><div class="table-wrap"><table><thead><tr><th>${t(name==='trend'?'日期':'分类')}</th><th class="fin-money">${t('金额')}</th></tr></thead><tbody>${rows.map(([label,value])=>`<tr><td data-i18n-skip>${html(label)}</td><td class="fin-money">${html(currency(value))}</td></tr>`).join('')}</tbody></table></div></details>`;
   }
   function render() {
     const items = filtered();
-    if (tab === 'notices') return;
-    $('fin-filter-summary').textContent = $('fin-from').value && $('fin-to').value && $('fin-from').value > $('fin-to').value ? t('开始日期不能晚于结束日期。') : `${items.length} ${t('条匹配记录')} · ${t(tab==='history' ? '按审核时间筛选' : '按提交时间筛选')}`;
+    if (tab === 'notices') { renderNotices(); return; }
+    $('fin-filter-summary').textContent = $('fin-from').value && $('fin-to').value && $('fin-from').value > $('fin-to').value ? t('开始日期不能晚于结束日期。') : `${tab==='mine'?t('仅本人')+' · ':''}${items.length} ${t('笔申请')} · ${t('合计')} ${currency(items.reduce((sum,item)=>sum+cents(item),0))}`;
     if (tab === 'stats') { stats(items); return; }
     const pages = Math.max(1,Math.ceil(items.length/25));page=Math.min(page,pages);
     const rows=items.slice((page-1)*25,page*25);
     const target = $(tab==='mine' ? 'finance-rows' : tab==='review' ? 'admin-finance-rows' : 'fin-history-rows');
     target.innerHTML = tab==='history' ? historyRows(rows) : tableRows(rows,tab==='mine');
-    const card = target.closest('.card');card.querySelector('.fin-pager')?.remove();
+    const card = tab==='history' ? $('fin-panel-history') : target.closest('.card');card.querySelector('.fin-pager')?.remove();
     if (pages>1) card.insertAdjacentHTML('beforeend',`<div class="fin-pager"><button type="button" data-fin-page="-1" ${page===1?'disabled':''}>${t('上一页')}</button><span>${page} / ${pages}</span><button type="button" data-fin-page="1" ${page===pages?'disabled':''}>${t('下一页')}</button></div>`);
     const eligible = items.filter(item=>item.event?.action==='approved').map(item=>item.event.id);
     selected=new Set([...selected].filter(id=>eligible.includes(id)));
@@ -124,15 +146,19 @@ const financeController = (() => {
     for (const name of ['mine','review','stats','history','notices']) $('fin-panel-'+name).hidden = tab!==name;
     for (const button of $('finance-tabs').querySelectorAll('button')) button.setAttribute('aria-pressed',String(button.dataset.finTab===tab));
     $('finance-filter-card').hidden=tab==='notices';
+    const destination=tab==='notices' ? $('fin-filter-parking') : $('fin-panel-'+tab).querySelector('.fin-filter-slot');
+    destination.append($('finance-filter-card'));
+    $('fin-refresh').hidden=tab!=='review';
     $('fin-reviewer-filter').hidden=tab!=='history';
     document.querySelectorAll('.fin-admin-filter').forEach(el=>el.classList.toggle('hidden',!admin || tab==='mine'));
-    if (reset) { $('fin-search').value='';$('fin-status').value=tab==='review'?'pending':'all';$('fin-period').value=tab==='stats'?'month':'all';$('fin-min').value=$('fin-max').value=$('fin-group').value=$('fin-user').value=$('fin-reviewer').value='';period(); }
+    if (reset) { $('fin-more-filters').open=false;$('fin-search').value='';$('fin-status').value=tab==='review'?'pending':'all';$('fin-period').value=tab==='stats'?'month':'all';$('fin-min').value=$('fin-max').value=$('fin-group').value=$('fin-user').value=$('fin-reviewer').value='';period(); }
     render();
   }
   function renderNotices() {
     const latest=announcements[0];
-    $('announcements').innerHTML=`${latest ? `<button type="button" data-read-notice="${html(latest.id)}"><span class="tag" data-ui-text>${t(latest.pinned?'置顶':'财务公告')}</span> <span data-i18n-skip>${html(latest.title)}</span></button>` : `<span class="muted" data-ui-text>${t('暂无公告。')}</span>`}<button type="button" id="fin-notice-history">${t('历史公告')}</button>`;
-    $('admin-announcements').innerHTML=announcements.map(item=>`<article class="announcement-admin-item"><div><strong data-i18n-skip>${html(item.title)}</strong> ${item.pinned?ui('置顶'):''}<p data-i18n-skip>${html(item.body)}</p><small>${html(date(item.updated_at))}</small></div><div class="actions"><button type="button" data-edit-notice="${html(item.id)}">${t('编辑')}</button><button type="button" data-pin-notice="${html(item.id)}">${t(item.pinned?'取消置顶':'置顶')}</button><button type="button" data-delete-notice="${html(item.id)}">${t('删除')}</button></div></article>`).join('') || `<p class="muted" data-ui-text>${t('暂无公告。')}</p>`;
+    $('announcements').innerHTML=`${latest ? `<span class="fin-tag ${latest.pinned?'fin-pin':''}" data-ui-text>${t(latest.pinned?'置顶公告':'财务公告')}</span><button class="fin-notice-title" type="button" data-read-notice="${html(latest.id)}" data-i18n-skip>${html(latest.title)}</button>` : `<span class="fin-notice-title fin-secondary" data-ui-text>${t('暂无公告。')}</span>`}<button class="fin-link" type="button" id="fin-notice-history">${t('历史公告')} →</button>`;
+    const query=$('fin-search').value.trim().toLocaleLowerCase();
+    $('admin-announcements').innerHTML=announcements.filter(item=>tab!=='notices'||(item.title+' '+item.body).toLocaleLowerCase().includes(query)).map(item=>`<article class="announcement-admin-item"><div><h3><span data-i18n-skip>${html(item.title)}</span> ${item.pinned?`<span class="fin-tag fin-pin" data-ui-text>${t('置顶')}</span>`:''}</h3><small>${html(date(item.updated_at))}</small></div><div class="actions"><button class="fin-link" type="button" data-read-notice="${html(item.id)}">${t('阅览')}</button><button class="fin-link" type="button" data-edit-notice="${html(item.id)}">${t('编辑')}</button><button class="fin-link" type="button" data-pin-notice="${html(item.id)}">${t(item.pinned?'取消置顶':'置顶')}</button><button class="fin-link" type="button" data-delete-notice="${html(item.id)}">${t('删除')}</button></div></article>`).join('') || `<p class="fin-secondary" data-ui-text>${t('暂无公告。')}</p>`;
   }
   async function load() {
     if (loading) return loading;
@@ -162,7 +188,13 @@ const financeController = (() => {
     $('fin-invoice-label').textContent=t(item?'发票（不选则保留原文件）':'发票（必选）');
     $('finance-dialog-title').textContent=t(item ? item.status==='rejected'?'修改并重提':'编辑报销申请':'提交报销申请');
     $('finance-submit').textContent=t(item ? item.status==='rejected'?'修改并重提':'保存修改':'提交申请');
-    $('finance-file-hint').textContent=t('支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。不选择文件则保留原文件。');
+    $('finance-file-hint').textContent=t(item?'支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。不选择文件则保留原文件。':'支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。');
+    for(const kind of ['invoice','payment']) {
+      const existing=item?.files?.find(file=>file.kind===kind);
+      $('fin-'+kind+'-name').textContent=existing?.original_name || '';
+      $('fin-'+kind+'-name').title=existing?.original_name || '';
+      $('fin-'+kind+'-prompt').textContent=t(existing ? (kind==='invoice'?'保留现有发票 / 替换':'保留现有支付记录 / 替换') : (kind==='invoice'?'＋ 选择发票 · PDF / JPG / PNG / WebP':'＋ 选择支付记录'));
+    }
     const choices=[...groups];
     if(item?.expense_group_id && !choices.some(group=>group.id===item.expense_group_id)) choices.push({id:item.expense_group_id,name:item.expense_group_name});
     $('fin-expense-group').innerHTML='<option value="">'+t('请选择费用归属')+'</option>'+choices.map(group=>`<option value="${html(group.id)}" data-i18n-skip>${html(group.name)}</option>`).join('');
@@ -188,6 +220,11 @@ const financeController = (() => {
   }
   $('finance-open-form').addEventListener('click',()=>openApplication());
   $('fin-new-notice').addEventListener('click',()=>openNoticeForm());
+  for(const kind of ['invoice','payment']) $(kind==='invoice'?'finance-invoice':'finance-payment').addEventListener('change',event=>{
+    const name=event.target.files[0]?.name || '';
+    $('fin-'+kind+'-name').textContent=name;
+    $('fin-'+kind+'-name').title=name;
+  });
   $('finance-tabs').addEventListener('click',event=>{const button=event.target.closest('[data-fin-tab]');if(button)selectTab(button.dataset.finTab);});
   $('fin-reset').addEventListener('click',()=>selectTab(tab));
   $('fin-refresh').addEventListener('click',()=>load().catch(e=>error('finance-status',e.message)));
@@ -195,8 +232,11 @@ const financeController = (() => {
   for(const id of ['fin-search','fin-min','fin-max']) $(id).addEventListener('input',()=>{page=1;render();});
   for(const id of ['fin-status','fin-from','fin-to','fin-group','fin-user','fin-reviewer','fin-breakdown']) $(id).addEventListener('change',()=>{page=1;render();});
   $('view-finance').addEventListener('click',async event=>{
+    const chart=event.target.closest('[data-fin-chart]');
+    if(chart){$('fin-'+chart.dataset.finChart+'-details').open=true;return;}
     const button=event.target.closest('button');if(!button)return;
     try {
+      if(button.dataset.finPeriod){$('fin-period').value=button.dataset.finPeriod;period();page=1;render();}
       if(button.dataset.closeDialog)hide(button.dataset.closeDialog);
       if(button.dataset.finPage){page+=Number(button.dataset.finPage);render();}
       if(button.dataset.history)await detail(button.dataset.history);
@@ -209,6 +249,10 @@ const financeController = (() => {
       if(button.dataset.pinNotice){const item=announcements.find(item=>item.id===button.dataset.pinNotice);await request(`/api/admin/finance/announcements/${item.id}`,json('PUT',{title:item.title,body:item.body,pinned:!item.pinned}));await load();}
       if(button.dataset.deleteNotice && confirm(t('删除这条公告？'))){await request(`/api/admin/finance/announcements/${button.dataset.deleteNotice}`,{method:'DELETE'});await load();}
     }catch(e){error('finance-status',e.message);}
+  });
+  $('view-finance').addEventListener('keydown',event=>{
+    const chart=event.target.closest('[data-fin-chart]');
+    if(chart && ['Enter',' '].includes(event.key)){event.preventDefault();$('fin-'+chart.dataset.finChart+'-details').open=true;}
   });
   async function submit(buttonId,statusId,action) {
     const button=$(buttonId);if(button.disabled)return;button.disabled=true;error(statusId);
@@ -238,5 +282,5 @@ const financeController = (() => {
     const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download='approved-finance.zip';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }));
   document.addEventListener('site:language',()=>{renderNotices();render();});
-  return {load,start(value){admin=value;$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');}};
+  return {load,start(value){admin=value;$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);$('fin-subtitle').textContent=t(admin?'审核申请与管理报销资料':'查看公告、提交报销和跟进审核');selectTab(admin?'review':'mine');}};
 })();

@@ -45,8 +45,9 @@ test('admin review defaults to all-time pending; own applications stay private a
   assert.ok(el('finance-rows').textContent.includes('没有匹配的申请'));assert.equal(el('finance-total').textContent,'0');
   w.document.querySelector('[data-fin-tab="stats"]').click();
   el('fin-period').value='all';el('fin-period').dispatchEvent(new w.Event('change'));
-  assert.equal(el('fin-stat-cards').querySelector('.stat-value').textContent,'32.50 元');
+  assert.equal(el('fin-stat-cards').querySelector('.stat-value').textContent,'¥32.50');
   assert.ok(el('fin-trend').querySelector('svg title').textContent.includes('12.50'));
+  el('fin-breakdown').value='group';el('fin-breakdown').dispatchEvent(new w.Event('change'));
   assert.equal(el('fin-donut').querySelectorAll('circle').length,1);
   assert.ok(el('fin-donut').textContent.includes('32.50'));
 });
@@ -82,4 +83,27 @@ test('announcements open in dialogs and user-provided titles and filenames rende
   assert.equal(el('finance-rows').querySelector('img'),null);
   w.document.querySelector('[data-close-dialog="fin-detail-dialog"]').click();assert.equal(el('fin-detail-dialog').open,false);
   el('fin-notice-history').click();assert.ok(el('fin-detail-content').querySelector('[data-read-notice]'));
+});
+
+test('compact finance filters survive tab moves, period buttons filter real data, and chart details support the keyboard',async t=>{
+  const today=application(), old=application({id:'old',created_at:'2020-01-01T00:00:00Z'});
+  const {w,el}=await setup(t,{admin:true,all:[today,old]});
+  const filters=el('finance-filter-card'), search=el('fin-search');
+  assert.ok(el('fin-panel-review').contains(filters));
+  assert.ok(!filters.contains(search));
+  w.document.querySelector('[data-fin-tab="stats"]').click();
+  assert.equal(el('finance-filter-card'),filters);
+  assert.ok(el('fin-panel-stats').contains(filters));
+  w.document.querySelector('[data-fin-period="day"]').click();
+  assert.equal(el('fin-period').value,'day');
+  assert.equal(el('fin-stat-cards').querySelector('.stat-value').textContent,'¥12.50');
+  w.document.querySelector('[data-fin-chart="trend"]').dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  assert.equal(el('fin-trend-details').open,true);
+  w.document.querySelector('[data-fin-tab="review"]').click();
+  assert.ok(el('fin-panel-review').contains(filters));
+  el('fin-status').value='all';el('fin-status').dispatchEvent(new w.Event('change'));
+  search.value='old';search.dispatchEvent(new w.Event('input'));
+  assert.equal(el('admin-finance-rows').querySelectorAll('tr').length,1);
+  assert.ok(el('admin-finance-rows').textContent.includes('old'));
+  assert.equal(el('admin-finance-rows').querySelector('.fin-file').getAttribute('title'),'Invoice.pdf');
 });

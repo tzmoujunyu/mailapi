@@ -682,3 +682,15 @@ body.test-ui-home .resource-table td, body.test-ui-home .resource-table tr:hover
   .test-ui-page, .test-ui-sidebar, .tree-chevron, .tree-body-wrapper, .tree-item, .btn-mini-action, .workspace-footer-link { transition: none; }
   .test-ui-features .workspace-view.active, .test-ui-account-panel { animation: none; }
 }
+
+/* Compact rail from the approved finance mockup; the shared header stays unchanged. */
+body.test-ui-page .test-ui-sidebar { padding-top:24px; }
+body.test-ui-page .test-ui-nav { gap:23px; align-items:center; }
+body.test-ui-page .test-ui-nav a { width:36px; min-height:36px; height:36px; padding:0; border-radius:10px; }
+body.test-ui-page .test-ui-sidebar svg { width:17px; height:17px; }
+body.test-ui-page .test-ui-nav a[aria-current="page"]::before { display:none; }
+body.test-ui-page.dock-expanded .test-ui-nav a { width:100%; padding-inline:16px; }
+@media(max-width:680px) {
+  body.test-ui-page .test-ui-nav-label, body.test-ui-page.dock-expanded .test-ui-nav-label { display:none; }
+  body.test-ui-page.dock-expanded .test-ui-nav a { width:36px; padding:0; }
+}
