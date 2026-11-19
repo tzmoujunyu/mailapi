@@ -1,5 +1,6 @@
 """Login, website-account and group HTTP endpoints."""
 import json
+from html import escape
 import os
 import re
 from typing import Optional
@@ -22,11 +23,17 @@ def themed_page(page, request):
         'data-theme-account=""', 'data-theme-account="signed-in"' if user else 'data-theme-account=""', 1,
     )
     if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test":
+        path = request.url.path
+        page_name = "home" if path == "/" else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else "features" if path == "/test-features" else ""
+        if page_name in {"home", "admin", "access", "features"}:
+            from .test_navigation import prepare_workspace_page
+            page = prepare_workspace_page(page, page_name)
+            page = page.replace('data-test-view="' + page_name + '"',
+                                'data-test-view="' + page_name + '" data-test-account-id="' + escape(user["id"], quote=True)
+                                + '" data-test-account-role="' + escape(user["role"], quote=True) + '"', 1)
         language = request.app.state.site_accounts.interface_preferences(user["id"])["language"] if user else "zh-CN"
         page = page.replace('lang="zh-CN"', f'lang="{language}" data-interface-language="{language}"', 1)
         page = page.replace("<head>", '<head><script src="/static/test-i18n-en.js" defer></script><script src="/static/test-i18n.js" defer></script>', 1)
-        path = request.url.path
-        page_name = "home" if path == "/" else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else "features" if path == "/test-features" else ""
         if page_name:
             def add_body_classes(match):
                 attrs = match.group(1) or ""
@@ -64,9 +71,10 @@ def themed_page(page, request):
                 page = page[:body_end + 1] + sidebar + page[body_end + 1:]
         if page_name == "login":
             page = page.replace('<form id="login-form" method="post" action="/login">', '<form id="login-form" method="post" action="/login"><div class="test-ui-login-brand" aria-hidden="true" style="display:grid;width:50px;height:50px;place-items:center;margin-bottom:22px;border-radius:16px;background:#4f24ea;color:#fff;font-size:28px;font-weight:800;box-shadow:0 10px 24px #4f24ea33;">M</div>', 1)
+        router_script = '<script src="/static/test-router.js" type="module"></script>' if page_name in {"home", "admin", "access", "features"} else ""
         page = page.replace(
             "</head>",
-            '<link rel="stylesheet" href="/static/test-ui.css"><script src="/static/test-ui.js" defer></script><link rel="stylesheet" href="/static/test-header.css"><script src="/static/test-header.js" defer></script><script src="/static/test-notifications.js" defer></script></head>',
+            '<link rel="stylesheet" href="/static/test-ui.css"><script src="/static/test-ui.js" defer></script><link rel="stylesheet" href="/static/test-header.css"><script src="/static/test-header.js" defer></script><script src="/static/test-notifications.js" defer></script>' + router_script + '</head>',
             1,
         )
     return page

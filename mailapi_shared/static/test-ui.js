@@ -40,6 +40,7 @@
     let expanded = false;
     try { expanded = sessionStorage.getItem('mailapi.test.dock') === 'expanded'; } catch {}
     setExpanded(expanded);
+    setTimeout(() => document.body.classList.add('dock-ready'), 0);
     toggle.addEventListener('click', () => {
       const next = !document.body.classList.contains('dock-expanded');
       setExpanded(next);
@@ -58,29 +59,34 @@
     }
     syncCurrentNav();
     window.addEventListener('hashchange', syncCurrentNav);
+    window.addEventListener('test:navigation', syncCurrentNav);
   }
 
-  const container = document.querySelector('.test-ui-home .container');
-  if (!container) return;
-  const sections = [
-    ['chatgpt-accounts', 'GPT 账号', '#rows', '.account-email'],
-    ['codex-tips', 'Codex 使用提示', '#codex-tip-list', '.codex-tip-item'],
-    ['coding-plans', 'Coding Plan', '#coding-plan-rows', '.resource-name'],
-    ['relay-accounts', '中转站', '#relay-account-rows', '.resource-name'],
-  ];
-  const summary = document.createElement('nav');
-  summary.className = 'test-ui-home-summary';
-  summary.setAttribute('aria-label', '资源数量与分类');
-  for (const [id, label, listSelector, itemSelector] of sections) {
-    const list = document.querySelector(listSelector);
-    const link = document.createElement('a');
-    link.href = '#' + id;
-    link.className = 'test-ui-summary-card';
-    link.innerHTML = `<span class="test-ui-summary-label">${label}</span><strong class="test-ui-summary-value">—</strong>`;
-    const update = () => { link.lastElementChild.textContent = list.querySelectorAll(itemSelector).length; };
-    new MutationObserver(update).observe(list, { childList: true });
-    update();
-    summary.append(link);
+  function enhanceResources(root) {
+    const container = root.querySelector('.container');
+    if (!container || !root.querySelector('#chatgpt-accounts') || container.querySelector('.test-ui-home-summary')) return;
+    const sections = [
+      ['chatgpt-accounts', 'GPT 账号', '#rows', '.account-email'],
+      ['codex-tips', 'Codex 使用提示', '#codex-tip-list', '.codex-tip-item'],
+      ['coding-plans', 'Coding Plan', '#coding-plan-rows', '.resource-name'],
+      ['relay-accounts', '中转站', '#relay-account-rows', '.resource-name'],
+    ];
+    const summary = document.createElement('nav');
+    summary.className = 'test-ui-home-summary';
+    summary.setAttribute('aria-label', '资源数量与分类');
+    for (const [id, label, listSelector, itemSelector] of sections) {
+      const list = root.querySelector(listSelector);
+      const link = document.createElement('a');
+      link.href = '#' + id;
+      link.className = 'test-ui-summary-card';
+      link.innerHTML = `<span class="test-ui-summary-label">${label}</span><strong class="test-ui-summary-value">—</strong>`;
+      const update = () => { link.lastElementChild.textContent = list.querySelectorAll(itemSelector).length; };
+      new MutationObserver(update).observe(list, { childList: true });
+      update();
+      summary.append(link);
+    }
+    container.prepend(summary);
   }
-  container.prepend(summary);
+  window.TestUI = {enhanceResources};
+  if (!document.querySelector('[data-test-view]') && document.body.classList.contains('test-ui-home')) enhanceResources(document);
 })();

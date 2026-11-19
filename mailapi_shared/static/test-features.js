@@ -361,6 +361,12 @@
     }
   });
 
+  document.addEventListener('test:view-enter', () => {
+    loadApi2Api().catch(error => setError('api-key-status', error.message));
+    loadFinance().catch(error => setError('finance-status', error.message));
+    if (isAdmin) loadAdminApi2Api().catch(error => setError('api-key-status', error.message));
+  });
+
   api('/api/test-features/status')
     .then(status => {
       isAdmin = ['admin', 'manager'].includes(status.role);

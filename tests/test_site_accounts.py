@@ -308,6 +308,34 @@ class SiteAccountHTTPTests(unittest.TestCase):
         response = https.post("/api/auth/login", json={"username": "admin", "password": "fixture-entry-8642"})
         self.assertIn("Secure", response.headers["set-cookie"])
 
+    def test_test_workspace_controllers_preserve_page_permissions(self):
+        for route, name in (("/", "home"), ("/admin", "admin"), ("/admin/access", "access"), ("/test-features", "features")):
+            page = self.admin.get(route)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn(f'data-test-view="{name}" data-test-account-id="{self.identities["admin"]["id"]}"', page.text)
+            self.assertIn('<script src="/static/test-router.js" type="module">', page.text)
+            self.assertLess(page.text.index('/static/test-header.js'), page.text.index('/static/test-router.js'))
+            self.assertIn(f'data-test-page-style="{name}"', page.text)
+            self.assertEqual(page.text.count('src="/static/performance-monitor.js"'), 1)
+            self.assertIn('data-performance-monitor="test"', page.text)
+            self.assertNotIn('<script src="/static/access.js"', page.text)
+            self.assertNotIn('<script src="/static/test-features.js"', page.text)
+        for name in ("home", "features", "access", "admin", "editor"):
+            response = self.admin.get(f"/api/test-ui/views/{name}.js")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("application/javascript", response.headers["content-type"])
+            self.assertIn("export function mount(context)", response.text)
+            self.assertIn("no-store", response.headers["cache-control"])
+        self.assertEqual(self.alice.get("/api/test-ui/views/access.js").status_code, 403)
+        self.assertEqual(self.alice.get("/api/test-ui/views/admin.js").status_code, 403)
+        self.assertEqual(self.manager.get("/api/test-ui/views/access.js").status_code, 200)
+        self.assertEqual(self.manager.get("/api/test-ui/views/admin.js").status_code, 403)
+        self.assertEqual(self.manager.get("/api/test-ui/views/editor.js").status_code, 403)
+        self.assertEqual(self.admin.get("/api/test-ui/views/unknown.js").status_code, 404)
+        anonymous = TestClient(self.module.app, follow_redirects=False)
+        self.addCleanup(anonymous.close)
+        self.assertEqual(anonymous.get("/api/test-ui/views/admin.js").status_code, 401)
+
     def test_unauthed_requests_and_old_shared_tokens_cannot_bypass_login(self):
         client = TestClient(self.module.app, follow_redirects=False)
         self.addCleanup(client.close)

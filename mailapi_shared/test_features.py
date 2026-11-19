@@ -563,6 +563,20 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         user = current_user(request)
         return {"role": user["role"], "api2api": store.api2api_config_public()}
 
+    @router.get("/api/test-ui/views/{name}.js")
+    def workspace_controller(name: str, request: Request):
+        from fastapi.responses import Response
+        from .test_navigation import PAGES, page_controller
+        user = current_user(request)
+        if name not in {*PAGES, "editor"}:
+            raise HTTPException(404, "页面不存在")
+        if (name in {"admin", "editor"} and user["role"] != "admin") or (
+            name == "access" and user["role"] not in ADMIN_ROLES
+        ):
+            raise HTTPException(403, "需要管理员权限")
+        return Response(page_controller(static_dir, name), media_type="application/javascript",
+                        headers={"Cache-Control": "no-store, private"})
+
     @router.get("/api/test-ui/preferences")
     def interface_preferences(request: Request):
         return request.app.state.site_accounts.interface_preferences(current_user(request)["id"])

@@ -1,4 +1,6 @@
 /* The header and rail share one surface and one icon alignment grid. */
+.test-page-view { display: contents; }
+.test-navigation-status { position: fixed; bottom: 18px; left: 50%; z-index: 90; margin: 0; padding: 9px 16px; border: 1px solid var(--test-line); border-radius: 12px; background: var(--test-card); color: var(--test-ink); box-shadow: var(--test-shadow); font-size: 13px; }
 body.test-ui-page:not(.test-ui-login) { --test-header-height: 56px; padding-top: var(--test-header-height); }
 .test-ui-header {
   box-sizing: border-box; width: 100%; max-width: none; margin: 0; padding: 0; border: 0; border-radius: 0;

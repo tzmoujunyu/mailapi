@@ -10,7 +10,7 @@
   async function start() {
     const response = await fetch('/api/auth/me', { cache: 'no-store' });
     if (!response.ok) return;
-    const { user, groups } = await response.json();
+    let { user, groups } = await response.json();
     const testSidebar = document.body.classList.contains('test-ui-page')
       ? document.querySelector('.test-ui-sidebar') : null;
     const bar = document.createElement('nav');
@@ -29,6 +29,10 @@
         ? `${translate('分组')} · ${groups.map(group => group.name).join('、')}` : translate('暂未加入分组');
     }
     renderIdentity();
+    window.addEventListener('test:session', event => {
+      ({user, groups} = event.detail);
+      renderIdentity();
+    });
     document.addEventListener('site:language', renderIdentity);
     const management = bar.querySelector('[data-management]');
     if (management) management.hidden = user.role === 'user';
@@ -100,10 +104,19 @@
       } catch (error) { dialog.querySelector('[role="alert"]').textContent = error.message; }
       finally { submit.disabled = false; }
     });
-    const passwordLanding = document.body.classList.contains('test-ui-page')
-      ? location.pathname === '/test-features' && ['', '#view-overview'].includes(location.hash)
-      : location.pathname === '/';
-    if (user.must_change_password && passwordLanding) openPasswordDialog();
+    let initialPasswordPrompted = false;
+    function promptInitialPassword() {
+      const passwordLanding = document.body.classList.contains('test-ui-page')
+        ? location.pathname === '/test-features' && ['', '#view-overview'].includes(location.hash)
+        : location.pathname === '/';
+      if (!passwordLanding && document.body.classList.contains('test-ui-page') && dialog.open) dialog.close();
+      if (user.must_change_password && passwordLanding && !initialPasswordPrompted) {
+        initialPasswordPrompted = true;
+        openPasswordDialog();
+      }
+    }
+    promptInitialPassword();
+    window.addEventListener('test:navigation', promptInitialPassword);
   }
   start().catch(() => {});
 })();

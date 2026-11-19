@@ -111,16 +111,20 @@
     ['plans', '/api/coding-plans', planItem],
     ['relays', '/api/relay-accounts', relayItem],
   ];
-  Promise.allSettled(groups.map(async ([name, url, render]) => {
-    const data = await request(url);
-    byId(`workspace-${name}-count`).textContent = data.items.length;
-    byId(`workspace-${name}-items`).innerHTML = data.items.map(render).join('') || '<p class="workspace-empty" data-ui-text>暂无可用资源</p>';
-    return data.items.length;
-  })).then(results => {
-    const failures = results.filter(result => result.status === 'rejected').length;
-    byId('workspace-asset-count').textContent = failures ? '—' : results.reduce((total, result) => total + result.value, 0);
-    byId('workspace-load-status').textContent = failures ? '部分资源加载失败，请刷新页面重试。' : '';
-  });
+  function loadResources() {
+    return Promise.allSettled(groups.map(async ([name, url, render]) => {
+      const data = await request(url);
+      byId(`workspace-${name}-count`).textContent = data.items.length;
+      byId(`workspace-${name}-items`).innerHTML = data.items.map(render).join('') || '<p class="workspace-empty" data-ui-text>暂无可用资源</p>';
+      return data.items.length;
+    })).then(results => {
+      const failures = results.filter(result => result.status === 'rejected').length;
+      byId('workspace-asset-count').textContent = failures ? '—' : results.reduce((total, result) => total + result.value, 0);
+      byId('workspace-load-status').textContent = failures ? '部分资源加载失败，请刷新页面重试。' : '';
+    });
+  }
+  loadResources();
+  document.addEventListener('test:view-enter', loadResources);
 
   request('/api/auth/me').then(({user}) => {
     if (user.role !== 'admin') return;

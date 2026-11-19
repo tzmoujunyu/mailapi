@@ -133,6 +133,29 @@ test('test avatar opens account actions and the password dialog while production
   }
 });
 
+test('the initial password reminder follows single-document navigation and appears only once on the overview', async t => {
+  const dom = new JSDOM('<body class="test-ui-page"><aside class="test-ui-sidebar"><div class="test-ui-sidebar-footer"></div></aside></body>', {url: 'http://localhost/test-features#view-api2api', runScripts: 'outside-only'});
+  const w = dom.window;
+  t.after(() => w.close());
+  let prompts = 0;
+  w.HTMLDialogElement.prototype.showModal = function () {this.open = true; prompts++;};
+  w.HTMLDialogElement.prototype.close = function () {this.open = false;};
+  w.fetch = async () => ({ok: true, json: async () => ({user: {username: 'alice', role: 'user', must_change_password: true}, groups: []})});
+  w.eval(read('session.js'));
+  await new Promise(resolve => setImmediate(resolve));
+  const dialog = w.document.querySelector('.site-password');
+  assert.equal(dialog.open, false);
+  w.history.pushState(null, '', '/test-features#view-overview');
+  w.dispatchEvent(new w.CustomEvent('test:navigation'));
+  assert.equal(dialog.open, true);
+  w.history.pushState(null, '', '/');
+  w.dispatchEvent(new w.CustomEvent('test:navigation'));
+  assert.equal(dialog.open, false);
+  w.history.pushState(null, '', '/test-features#view-overview');
+  w.dispatchEvent(new w.CustomEvent('test:navigation'));
+  assert.equal(prompts, 1);
+});
+
 test('appearance drawer persists account settings and restores the saved appearance after a failed save', async t => {
   const dom = new JSDOM('<header class="test-ui-header"><div class="test-ui-header-actions"></div></header>', {url: 'http://localhost/test-features', runScripts: 'outside-only'});
   t.after(() => dom.window.close());
