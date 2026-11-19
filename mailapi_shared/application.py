@@ -3570,7 +3570,7 @@ def render_index_page(request: FastAPIRequest, preview: bool = False):
     if not subject_id and request.state.site_user:
         subject_id = request.state.site_user["id"]
     preview_script = ("<script>window.__USER_PREVIEW__ = true;window.__PREVIEW_USER_ID__ = "
-                      + json.dumps(subject_id) + ";</script>") if preview else ""
+                      + json.dumps(subject_id) + ";</script>") if preview and not IS_TEST else ""
     performance_mode = "test" if IS_TEST else "disabled"
     performance_script = '<script src="/static/performance-monitor.js"></script>' if IS_TEST else ""
     return HTMLResponse(

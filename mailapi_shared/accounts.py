@@ -24,13 +24,17 @@ def themed_page(page, request):
     )
     if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test":
         path = request.url.path
-        page_name = "home" if path == "/" else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else "features" if path == "/test-features" else ""
+        page_name = "home" if path in {"/", "/preview"} else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else "features" if path == "/test-features" else ""
         if page_name in {"home", "admin", "access", "features"}:
             from .test_navigation import prepare_workspace_page
             page = prepare_workspace_page(page, page_name)
             page = page.replace('data-test-view="' + page_name + '"',
                                 'data-test-view="' + page_name + '" data-test-account-id="' + escape(user["id"], quote=True)
                                 + '" data-test-account-role="' + escape(user["role"], quote=True) + '"', 1)
+            if path == "/preview":
+                subject_id = request.query_params.get("user_id") or user["id"]
+                page = page.replace('data-test-view="home"',
+                                    'data-test-view="home" data-test-preview-user="' + escape(subject_id, quote=True) + '"', 1)
         language = request.app.state.site_accounts.interface_preferences(user["id"])["language"] if user else "zh-CN"
         page = page.replace('lang="zh-CN"', f'lang="{language}" data-interface-language="{language}"', 1)
         page = page.replace("<head>", '<head><script src="/static/test-i18n-en.js" defer></script><script src="/static/test-i18n.js" defer></script>', 1)

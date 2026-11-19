@@ -18,8 +18,9 @@ print(json.dumps(data))
 `], {cwd: root, env: {...process.env, UV_CACHE_DIR: '/private/tmp/mailapi-uv-cache'}, encoding: 'utf8'}));
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
-function fixture(t, {initial = 'features', real = false} = {}) {
-  const initialPath = {features: '/test-features', home: '/', access: '/admin/access', admin: '/admin'}[initial];
+function fixture(t, {initial = 'features', real = false, previewUser = ''} = {}) {
+  const initialPath = previewUser ? '/preview?user_id=' + previewUser
+    : {features: '/test-features', home: '/', access: '/admin/access', admin: '/admin'}[initial];
   const dom = new JSDOM(real ? pages[initial].html : `<html><head><style data-test-page-style="${initial}"></style></head><body><div class="test-page-view" data-test-view="${initial}"><input id="draft"><div class="management-search"><input id="search"></div></div></body></html>`, {
     url: 'http://localhost' + initialPath, runScripts: 'outside-only', pretendToBeVisual: true,
   });
@@ -27,6 +28,7 @@ function fixture(t, {initial = 'features', real = false} = {}) {
   t.after(() => w.close());
   w.document.body.classList.add('test-ui-page', 'test-ui-' + initial);
   w.document.querySelector('[data-test-view]').dataset.testAccountId = 'admin';
+  if (previewUser) w.document.querySelector('[data-test-view]').dataset.testPreviewUser = previewUser;
   const sidebar = w.document.createElement('aside');
   sidebar.className = 'test-ui-sidebar';
   sidebar.innerHTML = '<nav class="test-ui-nav">' + Object.entries({
@@ -55,6 +57,7 @@ function fixture(t, {initial = 'features', real = false} = {}) {
   const apiData = url => {
     if (url === '/api/auth/me') return {user: {id: 'admin', username: 'admin', role: blocked ? 'user' : 'admin'}, groups: []};
     if (url === '/api/test-features/status') return {role: 'admin'};
+    if (url === '/api/admin/users') return {items: [{id: 'alice', username: 'alice', role: 'user'}]};
     if (url.includes('/usage')) return {items: [], requests: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0};
     if (url.includes('/config')) return {};
     return {items: [], server_time: Date.now() / 1000};
@@ -64,9 +67,11 @@ function fixture(t, {initial = 'features', real = false} = {}) {
     calls.push(url);
     if (!url.startsWith('/api/')) {
       if (url === '/admin/access' && slow) await slow;
-      const name = {'/': 'home', '/admin/access': 'access', '/admin': 'admin', '/test-features': 'features'}[url];
-      return {ok: !fail, url: 'http://localhost' + url, text: async () => real ? pages[name].html.replace('data-test-view="' + name + '"', 'data-test-view="' + name + '" data-test-account-id="admin"')
-        : `<title>${name}</title><style data-test-page-style="${name}">.sample {color:red}</style><div class="test-page-view" data-test-view="${name}" data-test-account-id="admin"><input id="draft"><div class="management-search"><input id="search"></div></div>`};
+      const target = new URL(url, w.location);
+      const name = {'/': 'home', '/preview': 'home', '/admin/access': 'access', '/admin': 'admin', '/test-features': 'features'}[target.pathname];
+      const preview = target.pathname === '/preview' ? ` data-test-preview-user="${target.searchParams.get('user_id') || 'admin'}"` : '';
+      return {ok: !fail, url: 'http://localhost' + url, text: async () => real ? pages[name].html.replace('data-test-view="' + name + '"', 'data-test-view="' + name + '" data-test-account-id="admin"' + preview)
+        : `<title>${name}</title><style data-test-page-style="${name}">.sample {color:red}</style><div class="test-page-view" data-test-view="${name}" data-test-account-id="admin"${preview}><input id="draft"><div class="management-search"><input id="search"></div></div>`};
     }
     return {ok: true, json: async () => apiData(url)};
   };
@@ -207,4 +212,56 @@ test('the lazy real editor keeps its console scope and is reused after leaving a
   assert.equal(w.document.querySelectorAll('.ProseMirror').length, 1);
   assert.equal(mounts.get('editor'), 1);
   assert.equal(w.document.getElementById('codex-tip-save').disabled, false);
+});
+
+test('the account preview link uses the new shell and isolates each selected user from ordinary resources', async t => {
+  const {w, router, contexts, calls} = fixture(t, {real: true, initial: 'access'});
+  await router.ready;
+  await settle();
+  const header = w.document.querySelector('.test-ui-header');
+  const link = w.document.querySelector('#users a[href="/preview?user_id=alice"]');
+  assert.ok(link);
+  const entered = new Promise(resolve => w.addEventListener('test:navigation', resolve, {once: true}));
+  link.click();
+  await entered;
+  await settle();
+  const alice = w.document.querySelector('[data-test-view]');
+  assert.equal(w.document.querySelector('.test-ui-header'), header);
+  assert.equal(alice.dataset.testPreviewUser, 'alice');
+  assert.equal(w.document.querySelector('[aria-current="page"]').getAttribute('href'), '/');
+  assert.ok(alice.querySelector('.test-ui-home-summary'));
+  assert.equal(contexts.get('home').window.__USER_PREVIEW__, true);
+  assert.ok(calls.includes('/api/accounts?preview=1&user_id=alice'));
+  assert.ok(calls.includes('/api/coding-plans?preview=1&user_id=alice'));
+  assert.ok(calls.includes('/api/relay-accounts?preview=1&user_id=alice'));
+  await router.navigate('/preview?user_id=bob');
+  await settle();
+  assert.notEqual(w.document.querySelector('[data-test-view]'), alice);
+  assert.equal(contexts.get('home').window.__PREVIEW_USER_ID__, 'bob');
+  assert.ok(calls.includes('/api/accounts?preview=1&user_id=bob'));
+  // A legacy global must never leak a preview scope into the ordinary page.
+  w.__USER_PREVIEW__ = true;
+  w.__PREVIEW_USER_ID__ = 'bob';
+  await router.navigate('/');
+  await settle();
+  assert.equal(contexts.get('home').window.__USER_PREVIEW__, false);
+  assert.equal(contexts.get('home').window.__PREVIEW_USER_ID__, '');
+  assert.ok(calls.includes('/api/accounts'));
+  await router.navigate('/preview?user_id=alice');
+  await settle();
+  assert.equal(w.document.querySelector('[data-test-view]'), alice);
+  assert.equal(w.document.querySelector('.test-ui-header'), header);
+});
+
+test('direct preview entry mounts the new resource controller with the selected user scope', async t => {
+  const {w, router, calls, contexts} = fixture(t, {real: true, initial: 'home', previewUser: 'alice'});
+  await router.ready;
+  await settle();
+  assert.equal(contexts.get('home').window.__PREVIEW_USER_ID__, 'alice');
+  assert.ok(calls.includes('/api/accounts?preview=1&user_id=alice'));
+  assert.ok(!calls.includes('/api/accounts'));
+  const preview = w.document.querySelector('[data-test-view]');
+  await router.navigate('/');
+  await router.navigate('/preview?user_id=alice');
+  assert.equal(w.document.querySelector('[data-test-view]'), preview);
 });

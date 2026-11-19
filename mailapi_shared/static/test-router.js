@@ -2,7 +2,16 @@
 export function createWorkspaceRouter({loadController = name => import(`/api/test-ui/views/${name}.js`)} = {}) {
   const initialRoot = document.querySelector('[data-test-view]');
   if (!initialRoot) return null;
-  const routes = {'/': 'home', '/admin': 'admin', '/admin/access': 'access', '/test-features': 'features'};
+  const routes = {'/': 'home', '/preview': 'home', '/admin': 'admin', '/admin/access': 'access', '/test-features': 'features'};
+  function routeFor(url) {
+    const page = routes[url.pathname];
+    if (url.origin !== location.origin || !page) return null;
+    if (url.pathname === '/preview') {
+      if ([...url.searchParams.keys()].some(key => key !== 'user_id') || url.searchParams.getAll('user_id').length > 1) return null;
+      return {page, key: 'preview:' + (url.searchParams.get('user_id') || '')};
+    }
+    return url.search ? null : {page, key: page};
+  }
   const shellSearch = document.querySelector('.test-ui-header-search');
   const sharedStyle = document.querySelector('link[href="/static/test-ui.css"]');
   const views = new Map();
@@ -22,6 +31,8 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
     const documentEvents = [], windowEvents = [], intervals = new Set();
     const subscriptions = new AbortController();
     const localWindow = Object.create(null);
+    localWindow.__USER_PREVIEW__ = root.hasAttribute('data-test-preview-user');
+    localWindow.__PREVIEW_USER_ID__ = root.dataset.testPreviewUser || '';
     function findAll(selector) {
       return [...root.querySelectorAll(selector), ...(view.search ? view.search.matches(selector)
         ? [view.search, ...view.search.querySelectorAll(selector)] : [...view.search.querySelectorAll(selector)] : [])];
@@ -158,8 +169,9 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
 
   async function navigate(input, {push = true, restore = false} = {}) {
     const url = new URL(input, location.href);
-    const page = routes[url.pathname];
-    if (url.origin !== location.origin || !page || url.search) return false;
+    const route = routeFor(url);
+    if (!route) return false;
+    const {page, key} = route;
     const token = ++sequence;
     pending?.abort();
     pending = new AbortController();
@@ -169,7 +181,7 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
       if (token === sequence) { status.textContent = translate('正在加载…'); status.hidden = false; }
     }, 150);
     try {
-      let view = views.get(page);
+      let view = views.get(key);
       const session = await fetch('/api/auth/me', {cache: 'no-store', signal: pending.signal});
       if (token !== sequence) return true;
       if (session.status === 401) { location.assign('/login'); return true; }
@@ -180,14 +192,14 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
         location.assign(url.href);
         return true;
       }
-      if ((page === 'admin' && identity.user.role !== 'admin') ||
+      if (((page === 'admin' || url.pathname === '/preview') && identity.user.role !== 'admin') ||
           (page === 'access' && !['admin', 'manager'].includes(identity.user.role))) {
         throw new Error('页面加载失败，请重试');
       }
       window.dispatchEvent(new CustomEvent('test:session', {detail: identity}));
       if (current !== view) {
         if (!view) {
-          const response = await fetch(url.pathname, {cache: 'no-store', signal: pending.signal});
+          const response = await fetch(url.pathname + url.search, {cache: 'no-store', signal: pending.signal});
           if (token !== sequence) return true;
           if (new URL(response.url || url, location.href).pathname === '/login') {
             location.assign('/login');
@@ -199,6 +211,8 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
           const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
           const root = parsed.querySelector(`[data-test-view="${page}"]`);
           if (!root) throw new Error('页面加载失败，请重试');
+          if (url.pathname === '/preview' && url.searchParams.get('user_id')
+              && root.dataset.testPreviewUser !== url.searchParams.get('user_id')) throw new Error('页面加载失败，请重试');
           if (accountId && root.dataset.testAccountId !== accountId) { location.assign(url.href); return true; }
           root.querySelectorAll('script').forEach(script => script.remove());
           const styles = [...parsed.querySelectorAll('[data-test-page-style]')];
@@ -217,7 +231,7 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
             styles.forEach(style => style.remove());
             throw error;
           }
-          views.set(page, view);
+          views.set(key, view);
         }
       }
       if (token !== sequence) return true;
@@ -245,7 +259,7 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
   initial.title = document.title;
   initial.url = location.href;
   initial.search = shellSearch.firstElementChild;
-  views.set(initial.page, initial);
+  views.set(routeFor(new URL(location.href))?.key || initial.page, initial);
   current = initial;
   initial.active = true;
   moveSearch(initial);
@@ -255,7 +269,7 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
     if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey
         || link.download || (link.target && link.target !== '_self')) return;
     const url = new URL(link.href);
-    if (url.origin !== location.origin || !routes[url.pathname] || url.search) return;
+    if (!routeFor(url)) return;
     event.preventDefault();
     ready.then(() => navigate(url));
   });

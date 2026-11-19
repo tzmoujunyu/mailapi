@@ -49,6 +49,7 @@
 
     function syncCurrentNav() {
       let target = location.pathname;
+      if (target === '/preview') target = '/';
       if (target === '/test-features') {
         target += ['#view-api2api', '#view-finance'].includes(location.hash) ? location.hash : '#view-overview';
       }

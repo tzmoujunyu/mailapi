@@ -598,7 +598,12 @@ class SiteAccountHTTPTests(unittest.TestCase):
         self.assertEqual(self.admin.get(f"/api/coding-plans/{self.other_plan['id']}/api-key" + suffix).status_code, 404)
         page = self.admin.get("/preview?user_id=" + self.identities["alice"]["id"])
         self.assertIn(self.identities["alice"]["id"], page.text)
-        self.assertIn("window.__PREVIEW_USER_ID__", page.text)
+        self.assertIn('data-test-preview-user="' + self.identities["alice"]["id"] + '"', page.text)
+        self.assertIn('data-test-view="home"', page.text)
+        self.assertIn('test-ui-page test-ui-home', page.text)
+        self.assertIn('/static/test-router.js', page.text)
+        self.assertNotIn('window.__PREVIEW_USER_ID__', page.text)
+        self.assertNotIn('href="/preview"', self.admin.get('/admin').text)
         self.assertEqual(self.admin.get("/preview?user_id=missing").status_code, 404)
 
     def test_persistence_password_hashes_and_session_expiry(self):
