@@ -45,6 +45,7 @@ const apiController = (() => {
   function renderEngine() {
     const native = engine.engine === 'newapi';
     $('api-engine-badge').textContent = native ? 'NewAPI' : t('共享模式');
+    $('api-engine-description').textContent = t(native ? '密钥由 NewAPI 签发，本站管理入口和用户身份。' : '共享模式使用本站密钥，转发时使用管理员配置的上游凭据。');
     $('api-metric-quota').textContent = native && engine.linked ? num(engine.quota) : '—';
     $('api-quota-hint').textContent = t(native ? engine.linked ? 'quota 点 · 以 NewAPI 为准' : '创建密钥后关联独立网关账户' : '当前共享模式不管理额度');
     $('api-models').innerHTML = engine.models?.length ? engine.models.map(name => `<span data-i18n-skip>${esc(name)}</span>`).join('') : `<p class="api-hint" data-ui-text>${esc(t('创建密钥后获取可用模型，或由管理员配置渠道。'))}</p>`;

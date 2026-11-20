@@ -956,4 +956,6 @@ window.MILVLG_EN = {
   "确认撤销": "Confirm revocation",
   "流中断": "Stream interrupted",
   "测试版 API：请确认渠道配置，模拟上游数据仅供功能验证。": "Test API: check the channel configuration. Simulated upstream data is for functional verification only.",
+  "密钥使用当前配置的网关模式，完整内容只在本次创建后显示。": "Keys use the configured gateway mode. The full key is displayed only after creation.",
+  "共享模式使用本站密钥，转发时使用管理员配置的上游凭据。": "Shared mode uses website keys and the upstream credentials configured by an administrator.",
 };
