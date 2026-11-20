@@ -4,7 +4,6 @@ Run with the local uv environment and --binary pointing at the official macOS
 arm64 v1.0.0-rc.51 release. No website or production data is read or changed.
 """
 import argparse
-import asyncio
 from base64 import b64encode
 import hashlib
 import json
@@ -26,7 +25,6 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from mailapi_shared.credential_crypto import CredentialKeyring
-from mailapi_shared.newapi_gateway import NewAPIGateway
 from mailapi_shared.test_features import install_test_features
 
 parser = argparse.ArgumentParser(description=__doc__)

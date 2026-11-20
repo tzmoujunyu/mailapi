@@ -170,6 +170,8 @@ class NewAPIGateway:
             item = {key:value for key,value in row.items() if key not in {'remote_id','engine_origin','user_id'}}
             item['enabled'] = bool(row['enabled'] and current and current.get('status')==1)
             item['available_here'] = row['provider']=='newapi' and row['engine_origin']==origin
+            item['revoke_pending'] = bool(not row['enabled'] and current and current.get('status')==1)
+            item['revocable'] = bool(row['enabled'] or item['revoke_pending'])
             if current:
                 item.update(used_quota=current.get('used_quota',0),remaining_quota=current.get('remain_quota',0),
                             unlimited=bool(current.get('unlimited_quota')),expired_at=current.get('expired_time',-1))

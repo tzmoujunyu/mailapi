@@ -7,6 +7,7 @@ write production resource pools or website-account data.
 from __future__ import annotations
 
 import asyncio
+import anyio
 from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -788,6 +789,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             return {'items':await gateway.list_keys(user['id'])}
         rows = store.list_api_keys(user['id'])
         return {'items':[{**row,'available_here':row['provider']=='legacy',
+                          'revocable':bool(row['enabled']),
                           'enabled':row['enabled'] and row['provider']=='legacy'} for row in rows]}
 
     @router.post("/api/api2api/keys", status_code=201)
@@ -949,18 +951,26 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 collector = _StreamUsage()
 
                 async def stream_body():
+                    stream_error = ''
                     try:
                         async for chunk in upstream.aiter_bytes():
                             collector.feed(chunk)
                             yield chunk
+                    except httpx.HTTPError as error:
+                        stream_error = type(error).__name__
+                        raise
+                    except asyncio.CancelledError:
+                        stream_error = 'stream_cancelled'
+                        raise
                     finally:
-                        await upstream.aclose()
-                        collector.feed(b'\n')
-                        prompt, completion, total = collector.usage
-                        store.record_usage(key_id=key["id"], user_id=key["user_id"], model=model,
-                                           prompt_tokens=prompt, completion_tokens=completion, total_tokens=total,
-                                           status_code=upstream.status_code, request_ms=int((time.perf_counter() - started) * 1000),
-                                           error="" if upstream.status_code < 400 else "upstream_error")
+                        with anyio.CancelScope(shield=True):
+                            await upstream.aclose()
+                            collector.feed(b'\n')
+                            prompt, completion, total = collector.usage
+                            store.record_usage(key_id=key["id"], user_id=key["user_id"], model=model,
+                                               prompt_tokens=prompt, completion_tokens=completion, total_tokens=total,
+                                               status_code=upstream.status_code, request_ms=int((time.perf_counter() - started) * 1000),
+                                               error=stream_error or ("" if upstream.status_code < 400 else "upstream_error"))
                 return StreamingResponse(stream_body(), status_code=upstream.status_code, headers=response_headers)
             content = await upstream.aread()
             await upstream.aclose()

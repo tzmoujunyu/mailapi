@@ -35,7 +35,13 @@ class EngineFixture:
             user = self.users.get(body['username'])
             if not user or user['password'] != body['password']:
                 return self.response(status=401, success=False)
-            return self.response({'access_token': f'auth-{user["id"]}', 'access_expires_at': 4102444800, 'user': {'id': user['id']}})
+            response = self.response({'access_token': f'auth-{user["id"]}', 'access_expires_at': 4102444800, 'user': {'id': user['id']}})
+            response.headers['set-cookie'] = f'new_api_refresh=refresh-{user["id"]}; HttpOnly; Path=/'
+            return response
+        if path == '/api/user/auth/refresh':
+            owner = int(request.headers['cookie'].rsplit('-',1)[-1])
+            return self.response({'access_token':f'auth-{owner}','access_expires_at':4102444800,'user':{'id':owner}})
+        assert request.headers.get('cookie','') == '', 'Do not forward another linked user session cookie'
         owner = int(request.headers.get('authorization', 'Bearer auth-0').rsplit('-', 1)[-1])
         if path == '/api/user/' and request.method == 'POST':
             assert owner == 1
@@ -124,6 +130,7 @@ class NewAPIGatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(NewAPIError):
             await self.gateway.revoke_key(item['id'], 'alice')
         self.assertIsNone(self.store.authenticate_api_key(item['api_key']))
+        self.assertTrue((await self.gateway.list_keys('alice'))[0]['revoke_pending'])
         self.engine.fail_delete = False
         await self.gateway.revoke_key(item['id'], 'alice')
         self.assertFalse(self.engine.tokens)
@@ -135,6 +142,15 @@ class NewAPIGatewayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.store.configure_api2api({'engine':'newapi','base_url':'http://public.example/v1',
                                          'management_username':'manager','management_password':'secret','enabled':True})
+
+    async def test_refresh_keeps_distinct_users_and_does_not_send_shared_client_cookies(self):
+        await self.gateway.create_key('alice','A')
+        await self.gateway.create_key('bob','B')
+        user = await self.gateway.identity('alice')
+        renewed = await self.gateway.session(user,renew=True)
+        self.assertEqual(renewed['user_id'],self.store.gateway_user(user['origin'],'alice')['remote_id'])
+        self.assertEqual((await self.gateway.list_keys('alice'))[0]['name'],'A')
+        self.assertTrue(any(path=='/api/user/auth/refresh' for _,path,_ in self.engine.calls))
 
 
 class GatewayHttpTests(unittest.TestCase):
@@ -211,3 +227,19 @@ class GatewayHttpTests(unittest.TestCase):
         for start in range(0,len(payload),13):
             collector.feed(payload[start:start+13])
         self.assertEqual(collector.usage,(3,4,7))
+
+    def test_broken_stream_is_recorded_as_interrupted_even_after_http_200(self):
+        key = self.create()
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"choices":[]}\n\n'
+                raise httpx.ReadError('fixture disconnect')
+        async def upstream(request):
+            return httpx.Response(200,headers={'Content-Type':'text/event-stream'},stream=BrokenStream())
+        relay = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        with patch('mailapi_shared.test_features.httpx.AsyncClient',return_value=relay):
+            with self.assertRaises(httpx.ReadError):
+                self.client.post('/api2api/v1/chat/completions',json={'model':'gpt-4o-mini','stream':True},headers={'Authorization':'Bearer '+key['api_key']})
+        row = self.client.get('/api/api2api/usage').json()['items'][0]
+        self.assertEqual(row['error'],'ReadError')
+        self.assertEqual(row['status_code'],200)
