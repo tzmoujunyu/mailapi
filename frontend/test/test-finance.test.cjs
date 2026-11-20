@@ -53,7 +53,7 @@ test('admin review defaults to all-time pending; own applications stay private a
 });
 test('history selects only approved records and review requires a reason with the displayed version',async t=>{
   const item=application(), snapshot=application({status:'pending'});
-  const history=[{id:'good',action:'approved',actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'',snapshot},{id:'bad',action:'rejected',actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'原因',snapshot}];
+  const history=[{id:'good',is_current_review:true,action:'approved',actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'',snapshot},{id:'bad',action:'rejected',actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'原因',snapshot}];
   const {w,el,requests}=await setup(t,{admin:true,all:[item],history});
   w.document.querySelector('[data-review][data-result="rejected"]').click();
   assert.ok(el('fin-review-dialog').open);assert.equal(el('fin-review-note').required,true);
@@ -122,4 +122,30 @@ test('compact finance filters survive tab moves, period buttons filter real data
   assert.equal(el('admin-finance-rows').querySelectorAll('tr').length,1);
   assert.ok(el('admin-finance-rows').textContent.includes('old'));
   assert.equal(el('admin-finance-rows').querySelector('.fin-file').getAttribute('title'),'Invoice.pdf');
+});
+
+test('re-review is offered only for the current decision and submits its event id with a mandatory reason',async t=>{
+  for(const current of ['approved','rejected']){
+    const item=application({status:current}),next=current==='approved'?'rejected':'approved';
+    const history=[{id:'latest',application_id:item.id,action:current,actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'原审批',snapshot:application(),is_current_review:true},{id:'old',application_id:item.id,action:next,actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'更早审批',snapshot:application(),is_current_review:false}];
+    const {w,el,requests}=await setup(t,{admin:true,all:[item],history});
+    w.document.querySelector('[data-fin-tab="history"]').click();
+    assert.equal(el('fin-history-rows').querySelectorAll('[data-re-review]').length,1);
+    assert.equal(el('fin-history-rows').querySelectorAll('[data-select-event]').length,current==='approved'?1:0);
+    assert.match(el('fin-history-rows').textContent,/已被后续操作替代/);
+    assert.ok(el('fin-filter-summary').textContent.includes('当前有效通过 '+(current==='approved'?'¥12.50':'¥0.00')));
+    el('fin-history-rows').querySelector('[data-re-review]').click();
+    assert.equal(el('fin-review-title').textContent,'再审核申请');
+    assert.equal(el('fin-review-note').required,true);
+    assert.equal(el('fin-re-review-result').querySelector(`[value="${current}"]`).disabled,true);
+    el('fin-re-review-result').value=next;
+    el('fin-review-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+    assert.match(el('fin-review-error').textContent,/改审原因/);
+    assert.ok(!requests.some(([,opts])=>opts.method==='POST'));
+    el('fin-review-note').value='纠正误操作';
+    el('fin-review-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+    const [url,options]=requests.find(([,opts])=>opts.method==='POST');
+    assert.equal(url,'/api/admin/finance/applications/app-1/re-review');
+    assert.deepEqual(JSON.parse(options.body),{status:next,note:'纠正误操作',version:1,event_id:'latest'});
+  }
 });

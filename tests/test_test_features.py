@@ -100,6 +100,21 @@ class TestFeatureStoreTests(unittest.TestCase):
         self.store = TestFeatureStore(self.data, self.keyring)
         self.assertEqual(len(self.store.finance_history(item["id"])), 2)
 
+    def test_re_review_schema_migrates_existing_events_without_rewriting_snapshots(self):
+        item = self.store.create_finance_application(user_id='alice',username='alice',user_note='',groups=[],project='订阅',amount_cents=100,files=[])
+        self.store.review_finance_application(item['id'],'approved','admin','admin','原记录',expected_version=1)
+        with self.store._connect() as db:
+            before = db.execute('SELECT snapshot_json FROM finance_versions').fetchall()
+            db.execute('ALTER TABLE finance_events DROP COLUMN supersedes_event_id')
+        migrated = TestFeatureStore(self.data,self.keyring)
+        with migrated._connect() as db:
+            self.assertEqual(db.execute('SELECT snapshot_json FROM finance_versions').fetchall(),before)
+            self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
+        events = migrated.finance_history(item['id'])
+        self.assertEqual([event['action'] for event in events],['approved','submitted'])
+        self.assertTrue(events[0]['is_current_review'])
+        self.assertIsNone(events[0]['supersedes_event_id'])
+
     def test_concurrent_review_only_records_one_result(self):
         item = self.store.create_finance_application(user_id="a", username="alice", user_note="", groups=[], project="订阅", amount_cents=100, files=[])
         def review(status):
@@ -108,6 +123,24 @@ class TestFeatureStoreTests(unittest.TestCase):
             results = list(pool.map(review, ["approved", "rejected"]))
         self.assertEqual(sum(result is not None for result in results), 1)
         self.assertEqual(len(self.store.finance_history(item["id"])), 2)
+
+    def test_concurrent_re_review_preserves_history_after_reopen(self):
+        item = self.store.create_finance_application(user_id='alice',username='alice',user_note='',groups=[],project='订阅',amount_cents=100,files=[])
+        self.store.review_finance_application(item['id'],'approved','admin','admin','原审批',expected_version=1)
+        original = self.store.finance_history(item['id'])[0]
+        def re_review(pair):
+            store,actor = pair
+            return store.re_review_finance_application(item['id'],'rejected',actor,actor,'改审原因',expected_version=1,event_id=original['id'])
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(re_review,[(self.store,'admin-a'),(TestFeatureStore(self.data,self.keyring),'admin-b')]))
+        self.assertEqual(sum(result is not None for result in results),1)
+        events = self.store.finance_history(item['id'])
+        self.assertEqual(len(events),3)
+        self.assertEqual(events[0]['supersedes_event_id'],original['id'])
+        self.assertEqual(events[1]['snapshot'],original['snapshot'])
+        self.assertEqual(sum(event['is_current_review'] for event in events),1)
+        reopened = TestFeatureStore(self.data,self.keyring)
+        self.assertEqual(reopened.finance_history(item['id']),events)
 
 
 if __name__ == "__main__":

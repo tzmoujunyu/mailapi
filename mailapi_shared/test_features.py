@@ -100,9 +100,11 @@ CREATE TABLE IF NOT EXISTS finance_events (
     id TEXT PRIMARY KEY, application_id TEXT NOT NULL, version INTEGER NOT NULL,
     action TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    supersedes_event_id TEXT REFERENCES finance_events(id),
     FOREIGN KEY(application_id, version) REFERENCES finance_versions(application_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_finance_events_time ON finance_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_finance_events_application ON finance_events(application_id);
 """
 
 
@@ -166,6 +168,8 @@ class TestFeatureStore:
                     if name not in existing:
                         db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
             columns = {row[1] for row in db.execute("PRAGMA table_info(finance_applications)")}
+            if 'supersedes_event_id' not in {row[1] for row in db.execute('PRAGMA table_info(finance_events)')}:
+                db.execute('ALTER TABLE finance_events ADD COLUMN supersedes_event_id TEXT REFERENCES finance_events(id)')
             if "updated_at" not in columns:
                 db.execute("ALTER TABLE finance_applications ADD COLUMN updated_at TEXT")
                 db.execute("UPDATE finance_applications SET updated_at=created_at WHERE updated_at IS NULL")
@@ -451,12 +455,12 @@ class TestFeatureStore:
         result["files"] = [dict(item) for item in db.execute("SELECT * FROM finance_files WHERE application_id=? ORDER BY kind", (app_id,))]
         return result
 
-    def _finance_event(self, db, app_id, action, actor_id, actor_name, note="", when=None):
+    def _finance_event(self, db, app_id, action, actor_id, actor_name, note="", when=None, *, supersedes_event_id=None):
         item = self._finance_row(db, app_id)
         db.execute("INSERT OR IGNORE INTO finance_versions VALUES (?, ?, ?)",
                    (app_id, item["version"], json.dumps(item, ensure_ascii=False)))
-        db.execute("INSERT INTO finance_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                   (secrets.token_hex(12), app_id, item["version"], action, actor_id, actor_name, note, when or _now()))
+        db.execute("INSERT INTO finance_events(id,application_id,version,action,actor_id,actor_name,note,created_at,supersedes_event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   (secrets.token_hex(12), app_id, item["version"], action, actor_id, actor_name, note, when or _now(), supersedes_event_id))
 
     def create_finance_application(self, *, user_id: str, username: str, user_note: str,
                                    groups: list[str], project: str, amount_cents: int,
@@ -485,11 +489,17 @@ class TestFeatureStore:
 
     def finance_history(self, app_id: Optional[str] = None) -> list[dict[str, Any]]:
         with closing(self._connect()) as db:
-            rows = db.execute("""SELECT e.*, v.snapshot_json FROM finance_events e JOIN finance_versions v
-                                 ON e.application_id=v.application_id AND e.version=v.version"""
+            rows = db.execute("""SELECT e.*, v.snapshot_json, prior.action AS previous_status,
+                                 (e.action IN ('approved','rejected') AND a.status=e.action AND a.version=e.version
+                                  AND e.rowid=(SELECT MAX(last.rowid) FROM finance_events last WHERE last.application_id=e.application_id)) AS is_current_review
+                                 FROM finance_events e JOIN finance_versions v
+                                 ON e.application_id=v.application_id AND e.version=v.version
+                                 JOIN finance_applications a ON a.id=e.application_id
+                                 LEFT JOIN finance_events prior ON prior.id=e.supersedes_event_id"""
                               + (" WHERE e.application_id=?" if app_id else "") + " ORDER BY e.created_at DESC, e.rowid DESC",
                               (app_id,) if app_id else ()).fetchall()
-        return [{key: row[key] for key in row.keys() if key != "snapshot_json"} | {"snapshot": json.loads(row["snapshot_json"])} for row in rows]
+        return [{key: row[key] for key in row.keys() if key not in {"snapshot_json","is_current_review"}}
+                | {"is_current_review":bool(row['is_current_review']), "snapshot": json.loads(row["snapshot_json"])} for row in rows]
 
     def list_finance_applications(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
         with closing(self._connect()) as db:
@@ -509,6 +519,27 @@ class TestFeatureStore:
             db.execute("UPDATE finance_applications SET status=?,updated_at=?,reviewed_at=?,reviewer_id=?,reviewer_name=?,review_note=? WHERE id=?",
                        (status, _now(), _now(), reviewer_id, reviewer_name, note, app_id))
             self._finance_event(db, app_id, status, reviewer_id, reviewer_name, note)
+        return self.finance_application(app_id)
+
+    def re_review_finance_application(self, app_id, status, reviewer_id, reviewer_name, note, *, expected_version, event_id):
+        if status not in {'approved','rejected'}:
+            raise TestFeatureError('审核状态无效')
+        note = self._text(note,'改审原因',MAX_FINANCE_NOTE,required=True)
+        if type(expected_version) is not int or expected_version < 1 or not isinstance(event_id,str) or not event_id:
+            raise TestFeatureError('请提供当前资料版本及审批记录')
+        with self._lock, closing(self._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            item = self._finance_row(db,app_id)
+            latest = db.execute('SELECT id,action,version FROM finance_events WHERE application_id=? ORDER BY rowid DESC LIMIT 1',(app_id,)).fetchone()
+            if (not item or item['status'] not in {'approved','rejected'} or item['version'] != expected_version
+                    or not latest or latest['id'] != event_id or latest['version'] != expected_version or latest['action'] != item['status']):
+                return None
+            if item['status'] == status:
+                raise TestFeatureError('请选择不同的审核结果')
+            now = _now()
+            db.execute('UPDATE finance_applications SET status=?,updated_at=?,reviewed_at=?,reviewer_id=?,reviewer_name=?,review_note=? WHERE id=?',
+                       (status,now,now,reviewer_id,reviewer_name,note,app_id))
+            self._finance_event(db,app_id,status,reviewer_id,reviewer_name,note,supersedes_event_id=event_id)
         return self.finance_application(app_id)
 
     def update_finance_application(self, app_id: str, user_id: str, project: str,
@@ -1105,6 +1136,16 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             raise HTTPException(409, "申请状态或版本已变化，请刷新后重试")
         return {"item": public_application(request, item)}
 
+    @router.post('/api/admin/finance/applications/{app_id}/re-review')
+    async def re_review_finance(app_id: str, request: Request):
+        reviewer = require_admin(request)
+        payload = await gateway_payload(request)
+        item = store.re_review_finance_application(app_id,payload.get('status'),reviewer['id'],reviewer['username'],
+                payload.get('note'),expected_version=payload.get('version'),event_id=payload.get('event_id'))
+        if not item:
+            raise HTTPException(409,'申请或审批记录已变化，请刷新后再审核')
+        return {'item':public_application(request,item)}
+
     @router.post("/api/admin/finance/announcements", status_code=201)
     async def create_announcement(request: Request):
         admin = require_admin(request)
@@ -1206,8 +1247,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 raise HTTPException(400, "请选择审批通过的记录，最多 500 条")
             events = {event["id"]: event for event in store.finance_history()}
             selected = [events.get(value) for value in dict.fromkeys(event_ids)]
-            if any(event is None or event["action"] != "approved" for event in selected):
-                raise HTTPException(400, "仅可下载审批通过记录的附件")
+            if any(event is None or event["action"] != "approved" or not event['is_current_review'] for event in selected):
+                raise HTTPException(400, "仅可批量下载当前有效的审批通过记录")
             items = [event["snapshot"] for event in selected]
             manifest = [{"record_id": event["id"], "application_id": event["application_id"], "version": event["version"],
                          "reviewed_at": event["created_at"], "reviewer": event["actor_name"], "note": event["note"],

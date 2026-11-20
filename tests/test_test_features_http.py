@@ -175,6 +175,56 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         self.assertEqual(self.client.put(f"/api/finance/applications/{item['id']}", headers=headers, data={"project": "修改", "amount": "1"}).status_code, 404)
         self.assertEqual(self.client.post("/api/admin/finance/download.zip", headers=headers, json={"application_ids": [item["id"]]}).status_code, 403)
 
+    def test_re_review_keeps_history_and_requires_the_latest_review_and_reason(self):
+        item = self.create_application().json()['item']
+        url = f"/api/admin/finance/applications/{item['id']}/re-review"
+        self.assertEqual(self.client.post(url,json={'status':'rejected','note':'误操作','version':1,'event_id':'missing'}).status_code,409)
+        self.client.post(f"/api/admin/finance/applications/{item['id']}/review",json={'status':'approved','version':1,'note':'首次审批'})
+        before = self.client.get(f"/api/finance/applications/{item['id']}/history").json()['items'][0]
+        self.assertTrue(before['is_current_review'])
+        payload = {'status':'rejected','note':'误点通过，重新核对','version':1,'event_id':before['id']}
+        self.assertEqual(self.client.post(url,headers={'x-test-user':'alice-id'},json=payload).status_code,403)
+        for changed in ({'note':''},{'event_id':None},{'version':True},{'status':'approved'}):
+            self.assertEqual(self.client.post(url,json=payload|changed).status_code,400)
+        self.site.users['manager-id']={'id':'manager-id','username':'manager','role':'manager','note':''}
+        response = self.client.post(url,headers={'x-test-user':'manager-id'},json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['item']['status'],'rejected')
+        self.assertEqual(response.json()['item']['version'],1)
+        events = self.client.get(f"/api/finance/applications/{item['id']}/history").json()['items']
+        self.assertEqual([event['action'] for event in events],['rejected','approved','submitted'])
+        self.assertEqual(events[0]['supersedes_event_id'],before['id'])
+        self.assertEqual(events[0]['previous_status'],'approved')
+        self.assertEqual(events[0]['actor_name'],'manager')
+        self.assertTrue(events[0]['is_current_review'])
+        self.assertFalse(events[1]['is_current_review'])
+        self.assertEqual(events[1]['snapshot'],before['snapshot'])
+        self.assertEqual(events[1]['note'],'首次审批')
+        self.assertEqual(self.client.post('/api/admin/finance/download.zip',json={'event_ids':[before['id']]}).status_code,400)
+        self.assertEqual(self.client.post(url,json=payload).status_code,409)
+        restored = self.client.post(url,json={'status':'approved','note':'核对完成，恢复通过','version':1,'event_id':events[0]['id']})
+        self.assertEqual(restored.status_code,200,restored.text)
+        self.assertEqual(restored.json()['item']['status'],'approved')
+        self.assertEqual(self.client.post(url,json=payload).status_code,409)
+        current = self.client.get(f"/api/finance/applications/{item['id']}/history").json()['items'][0]
+        self.assertEqual(self.client.post('/api/admin/finance/download.zip',json={'event_ids':[before['id'],current['id']]}).status_code,400)
+        batch = self.client.post('/api/admin/finance/download.zip',json={'event_ids':[current['id']]})
+        self.assertEqual(batch.status_code,200)
+        with zipfile.ZipFile(io.BytesIO(batch.content)) as archive:
+            self.assertEqual(json.loads(archive.read('审批清单.json'))[0]['record_id'],current['id'])
+        self.assertEqual(self.client.get(f"/api/finance/applications/{item['id']}/download?kind=invoice&event_id={before['id']}").content,b'invoice')
+
+    def test_old_review_cannot_override_resubmitted_material(self):
+        item = self.create_application().json()['item']
+        self.client.post(f"/api/admin/finance/applications/{item['id']}/review",json={'status':'rejected','note':'补材料','version':1})
+        previous = self.client.get(f"/api/finance/applications/{item['id']}/history").json()['items'][0]
+        self.client.put(f"/api/finance/applications/{item['id']}",headers={'x-test-user':'alice-id'},data={'project':'更新资料','amount':'18.00','version':'1'})
+        response = self.client.post(f"/api/admin/finance/applications/{item['id']}/re-review",json={'status':'approved','note':'旧页面误操作','version':1,'event_id':previous['id']})
+        self.assertEqual(response.status_code,409)
+        events = self.client.get(f"/api/finance/applications/{item['id']}/history").json()['items']
+        self.assertFalse(any(event['is_current_review'] for event in events))
+        self.assertEqual(events[0]['snapshot']['version'],2)
+
     def test_invalid_amount_and_missing_archive_file_do_not_fail_silently(self):
         for amount in ("NaN", "Infinity", "0", "1000000.01"):
             response = self.client.post("/api/finance/applications", data={"project": "项目", "amount": amount}, files=self.upload())

@@ -95,11 +95,11 @@ const financeController = (() => {
       if (!days.has(day)) days.set(day, []);
       days.get(day).push(item);
     }
-    return [...days].map(([day, rows]) => `<h3 class="fin-history-day">${html(day)} <small>· ${rows.length} ${t('笔审批')} · ${t('通过')} ${html(currency(rows.filter(item=>item.event.action==='approved').reduce((sum,item)=>sum+cents(item),0)))}</small></h3>
+    return [...days].map(([day, rows]) => `<h3 class="fin-history-day">${html(day)} <small>· ${rows.length} ${t('笔审批')} · ${t('当前有效通过')} ${html(currency(rows.filter(item=>item.event.action==='approved' && item.event.is_current_review).reduce((sum,item)=>sum+cents(item),0)))}</small></h3>
       <div class="card table-wrap"><table aria-label="${html(day)} ${t('审批记录')}"><thead><tr><th>${t('选择')}</th><th>${t('付款人 / 费用归属')}</th><th>${t('报销项目')}</th><th class="fin-money">${t('金额')}</th><th>${t('结果 / 意见')}</th><th>${t('审核人')}</th><th>${t('附件与历史')}</th></tr></thead><tbody>${rows.map(item => {
         const event = item.event;
-        return `<tr><td>${event.action === 'approved' ? `<input class="fin-check" type="checkbox" aria-label="${html(t('选择审批记录'))}" data-select-event="${html(event.id)}" ${selected.has(event.id) ? 'checked' : ''} />` : '—'}</td>
-          <td data-i18n-skip>${html(identity(item))}<span class="fin-date">${html(item.expense_group_name)}</span></td><td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date">${html(item.id.slice(0,8))} · v${event.version}</span></td><td class="fin-money">${html(currency(cents(item)))}</td><td>${pill(event.action)}<small data-i18n-skip>${html(event.note)}</small></td><td data-i18n-skip>${html(event.actor_name)}<span class="fin-date">${html(date(event.created_at))}</span></td><td><div class="actions">${fileLink(item,'invoice',event)} ${fileLink(item,'payment',event)}<button type="button" data-history="${html(item.id)}">${t('详情')}</button></div></td></tr>`;
+        return `<tr><td>${event.action === 'approved' && event.is_current_review ? `<input class="fin-check" type="checkbox" aria-label="${html(t('选择审批记录'))}" data-select-event="${html(event.id)}" ${selected.has(event.id) ? 'checked' : ''} />` : '—'}</td>
+          <td data-i18n-skip>${html(identity(item))}<span class="fin-date">${html(item.expense_group_name)}</span></td><td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date">${html(item.id.slice(0,8))} · v${event.version}</span></td><td class="fin-money">${html(currency(cents(item)))}</td><td>${pill(event.action)}${event.supersedes_event_id ? `<small data-ui-text>${t('再审核')} · ${t(names[event.previous_status])} → ${t(names[event.action])}</small>` : ''}${event.is_current_review === false ? `<small data-ui-text>${t('已被后续操作替代')}</small>` : ''}<small data-i18n-skip>${html(event.note)}</small></td><td data-i18n-skip>${html(event.actor_name)}<span class="fin-date">${html(date(event.created_at))}</span></td><td><div class="actions">${fileLink(item,'invoice',event)} ${fileLink(item,'payment',event)}${event.is_current_review ? `<button type="button" data-re-review="${html(event.id)}">${t('再审核')}</button>` : ''}<button type="button" data-history="${html(item.id)}">${t('详情')}</button></div></td></tr>`;
       }).join('')}</tbody></table></div>`).join('') || `<p class="fin-secondary" data-ui-text>${t('暂无审批记录。')}</p>`;
   }
   function stats(items) {
@@ -139,7 +139,7 @@ const financeController = (() => {
   function render() {
     const items = filtered();
     if (tab === 'notices') { renderNotices(); return; }
-    $('fin-filter-summary').textContent = $('fin-from').value && $('fin-to').value && $('fin-from').value > $('fin-to').value ? t('开始日期不能晚于结束日期。') : `${tab==='mine'?t('仅本人')+' · ':''}${items.length} ${t('笔申请')} · ${t('合计')} ${currency(items.reduce((sum,item)=>sum+cents(item),0))}`;
+    $('fin-filter-summary').textContent = $('fin-from').value && $('fin-to').value && $('fin-from').value > $('fin-to').value ? t('开始日期不能晚于结束日期。') : tab==='history' ? `${items.length} ${t('笔审批')} · ${t('当前有效通过')} ${currency(items.filter(item=>item.event.action==='approved' && item.event.is_current_review).reduce((sum,item)=>sum+cents(item),0))}` : `${tab==='mine'?t('仅本人')+' · ':''}${items.length} ${t('笔申请')} · ${t('合计')} ${currency(items.reduce((sum,item)=>sum+cents(item),0))}`;
     if (tab === 'stats') { stats(items); return; }
     const pages = Math.max(1,Math.ceil(items.length/25));page=Math.min(page,pages);
     const rows=items.slice((page-1)*25,page*25);
@@ -147,7 +147,7 @@ const financeController = (() => {
     target.innerHTML = tab==='history' ? historyRows(rows) : tableRows(rows,tab==='mine');
     const card = tab==='history' ? $('fin-panel-history') : target.closest('.card');card.querySelector('.fin-pager')?.remove();
     if (pages>1) card.insertAdjacentHTML('beforeend',`<div class="fin-pager"><button type="button" data-fin-page="-1" ${page===1?'disabled':''}>${t('上一页')}</button><span>${page} / ${pages}</span><button type="button" data-fin-page="1" ${page===pages?'disabled':''}>${t('下一页')}</button></div>`);
-    const eligible = items.filter(item=>item.event?.action==='approved').map(item=>item.event.id);
+    const eligible = items.filter(item=>item.event?.action==='approved' && item.event.is_current_review).map(item=>item.event.id);
     selected=new Set([...selected].filter(id=>eligible.includes(id)));
     $('fin-select-all').checked=eligible.length>0 && eligible.every(id=>selected.has(id));
     $('fin-select-all').indeterminate=selected.size>0 && !$('fin-select-all').checked;
@@ -224,7 +224,21 @@ const financeController = (() => {
   async function detail(appId) {
     const data=await request(`/api/finance/applications/${encodeURIComponent(appId)}/history`);
     $('fin-detail-title').textContent=t('申请详情与历史');
-    $('fin-detail-content').innerHTML=data.items.map(event=>`<article class="fin-event"><strong>${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');show('fin-detail-dialog');
+    $('fin-detail-content').innerHTML=data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');show('fin-detail-dialog');
+  }
+  function openReview(item,status,eventId=null) {
+    review={item,status,eventId};
+    $('fin-review-form').reset();error('fin-review-error');
+    $('fin-review-title').textContent=t(eventId?'再审核申请':status==='rejected'?'驳回申请':'通过申请');
+    $('fin-review-summary').textContent=`${identity(item)} · ${item.project} · ${money(cents(item))} · v${item.version}${eventId?' · '+t(names[item.status]):''}`;
+    $('fin-re-review-hint').hidden=$('fin-re-review-result-label').hidden=!eventId;
+    $('fin-re-review-result').required=!!eventId;
+    for(const option of $('fin-re-review-result').options)option.disabled=!!eventId && option.value===item.status;
+    $('fin-review-note-label').textContent=t(eventId?'改审原因':'审核意见');
+    $('fin-review-note').required=!!eventId || status==='rejected';
+    $('fin-review-note').placeholder=t(eventId?'请填写改审原因':status==='rejected'?'请填写驳回原因':'审核备注（可选）');
+    $('fin-review-submit').textContent=t(eventId?'确认改审':'确认');
+    show('fin-review-dialog');
   }
   function noticeDetail(id) {
     const item=announcements.find(value=>value.id===id);if(!item)return;
@@ -254,7 +268,8 @@ const financeController = (() => {
       if(button.dataset.history)await detail(button.dataset.history);
       if(button.dataset.editFinance)openApplication(mine.find(item=>item.id===button.dataset.editFinance));
       if(button.dataset.cancelFinance){const item=mine.find(item=>item.id===button.dataset.cancelFinance);if(confirm(t('撤销这条待审核申请？'))){await request(`/api/finance/applications/${encodeURIComponent(item.id)}/cancel?version=${item.version}`,{method:'POST'});await load();}}
-      if(button.dataset.review){const item=all.find(item=>item.id===button.dataset.review);review={item,status:button.dataset.result};$('fin-review-form').reset();error('fin-review-error');$('fin-review-title').textContent=t(review.status==='rejected'?'驳回申请':'通过申请');$('fin-review-summary').textContent=`${identity(item)} · ${item.project} · ${money(cents(item))} · v${item.version}`;$('fin-review-note').required=review.status==='rejected';$('fin-review-note').placeholder=t(review.status==='rejected'?'请填写驳回原因':'审核备注（可选）');show('fin-review-dialog');}
+      if(button.dataset.review)openReview(all.find(item=>item.id===button.dataset.review),button.dataset.result);
+      if(button.dataset.reReview){const event=history.find(item=>item.id===button.dataset.reReview);const item=all.find(item=>item.id===event?.application_id);if(!event?.is_current_review || !item || item.version!==event.version || item.status!==event.action)throw new Error(t('申请或审批记录已变化，请刷新后再审核'));openReview(item,'',event.id);}
       if(button.dataset.readNotice)noticeDetail(button.dataset.readNotice);
       if(button.id==='fin-notice-history'){$('fin-detail-title').textContent=t('历史公告');$('fin-detail-content').innerHTML=announcements.map(item=>`<article class="fin-event"><button type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button><small class="muted"> ${html(date(item.updated_at))}</small></article>`).join('') || t('暂无公告。');show('fin-detail-dialog');}
       if(button.dataset.editNotice)openNoticeForm(announcements.find(item=>item.id===button.dataset.editNotice));
@@ -279,14 +294,19 @@ const financeController = (() => {
     await request('/api/finance/applications'+(id?`/${encodeURIComponent(id)}`:''),{method:id?'PUT':'POST',body:form});hide('finance-dialog');await load();error('finance-status',id?'申请已更新。':'申请已提交。');
   });});
   $('fin-review-form').addEventListener('submit',event=>{event.preventDefault();submit('fin-review-submit','fin-review-error',async()=>{
-    if(review.status==='rejected' && !$('fin-review-note').value.trim())throw new Error(t('请填写驳回原因'));
-    await request(`/api/admin/finance/applications/${encodeURIComponent(review.item.id)}/review`,json('POST',{status:review.status,note:$('fin-review-note').value,version:review.item.version}));hide('fin-review-dialog');await load();
+    const status=review.eventId ? $('fin-re-review-result').value : review.status;
+    if(review.eventId && !status)throw new Error(t('请选择新的审核结果'));
+    if((review.eventId || status==='rejected') && !$('fin-review-note').value.trim())throw new Error(t(review.eventId?'请填写改审原因':'请填写驳回原因'));
+    const payload={status,note:$('fin-review-note').value,version:review.item.version};
+    if(review.eventId)payload.event_id=review.eventId;
+    await request(`/api/admin/finance/applications/${encodeURIComponent(review.item.id)}/${review.eventId?'re-review':'review'}`,json('POST',payload));hide('fin-review-dialog');await load();
+    if(review.eventId)error('finance-status','再审核已保存，原审批记录已保留。');
   });});
   $('announcement-form').addEventListener('submit',event=>{event.preventDefault();submit('announcement-submit','announcement-status',async()=>{
     const id=$('announcement-id').value;await request('/api/admin/finance/announcements'+(id?`/${id}`:''),json(id?'PUT':'POST',{title:$('announcement-title').value,body:$('announcement-body').value,pinned:$('announcement-pinned').checked}));hide('fin-announcement-dialog');await load();
   });});
   $('fin-history-rows').addEventListener('change',event=>{const id=event.target.dataset.selectEvent;if(id){event.target.checked?selected.add(id):selected.delete(id);render();}});
-  $('fin-select-all').addEventListener('change',event=>{selected=new Set(event.target.checked?filtered().filter(item=>item.event.action==='approved').map(item=>item.event.id):[]);render();});
+  $('fin-select-all').addEventListener('change',event=>{selected=new Set(event.target.checked?filtered().filter(item=>item.event.action==='approved' && item.event.is_current_review).map(item=>item.event.id):[]);render();});
   $('finance-batch-download').addEventListener('click',()=>submit('finance-batch-download','finance-status',async()=>{
     if(!selected.size)return;
     const response=await fetch('/api/admin/finance/download.zip',json('POST',{event_ids:[...selected]}));
