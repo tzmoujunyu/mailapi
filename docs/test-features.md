@@ -22,6 +22,19 @@ Authorization: Bearer <网站生成的 API Key>
 
 NewAPI 本身提供 OpenAI 兼容接口、API Key、模型组和用量日志，适合作为上游网关。[NewAPI README](https://github.com/unorouter/new-api/blob/main/README.en.md)、[API Key 文档](https://github.com/QuantumNous/new-api-docs-v1/blob/main/content/docs/en/guide/feature-guide/user/token.mdx)、[Token 用量接口](https://github.com/QuantumNous/new-api-docs/blob/main/docs/api/token-usage.md)
 
+### NewAPI 引擎接入验证
+
+目标是先接入独立 NewAPI 网关的功能，再改进本站 API 工作台，不直接嵌入整套 NewAPI 界面。现有网站转发仍为上文的共享上游密钥原型；原生 NewAPI 密钥与网站用户的关联方式尚待确认，不能把基础引擎验证视为网站已完成接入。
+
+`scripts/verify_newapi_engine.py` 使用官方 macOS arm64 `v1.0.0-rc.51` 发行文件，并在执行前校验固定 SHA-256。它仅在回环地址启动网关和本地确定性上游，创建独立临时数据库及随机测试管理员，验证原生密钥、普通请求参数和响应内容，以及响应结束前的流式交付。退出时关闭两个服务并清理临时数据库；不访问网站运行数据，不连接真实模型或进行真实计费。该检查不代表真实上游的性能或生成质量基准，测试发行候选版也不自动成为正式部署版本。
+
+本地验证命令（先自行下载官方发行文件）：
+
+```bash
+uv run --offline --python .venv/bin/python python scripts/verify_newapi_engine.py \
+  --binary /path/to/new-api-macos-v1.0.0-rc.51
+```
+
 ## 财务申请
 
 用户在测试版页面提交报销申请。项目和金额必填，项目最多 20 个字符，发票必须上传，支付记录截图可选。允许 PDF、JPG、PNG 和 WebP，单个文件不超过 10 MB。上传接口允许两个文件同时提交，文件名不设应用层长度截断。
