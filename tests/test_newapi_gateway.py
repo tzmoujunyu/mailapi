@@ -236,6 +236,34 @@ class GatewayHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code,201,response.text)
         return response.json()['item']
 
+    def test_http_configuration_is_native_only_and_omitted_engine_keeps_native_keys(self):
+        item=self.create()
+        response=self.client.put('/api/admin/api2api/config',headers={'x-test-user':'admin'},
+                                 json={'engine':'legacy','base_url':'https://upstream.invalid/v1','upstream_key':'legacy-secret'})
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertEqual(self.store.api2api_config_public()['engine'],'newapi')
+        self.assertIsNotNone(self.store.authenticate_api_key(item['api_key']))
+        payload={'base_url':'http://127.0.0.1:3001/v1','management_username':'manager','enabled':True}
+        response=self.client.put('/api/admin/api2api/config',headers={'x-test-user':'admin'},json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['engine'],'newapi')
+        self.assertEqual(self.client.put('/api/admin/api2api/config',json=payload).status_code,403)
+        self.assertIsNotNone(self.store.authenticate_api_key(item['api_key']))
+
+    def test_old_shared_configuration_keeps_history_but_cannot_issue_or_relay_keys(self):
+        self.store.configure_api2api({'engine':'legacy','base_url':'https://old-upstream.invalid/v1','upstream_key':'old-secret','enabled':True})
+        item=self.store.create_api_key('alice','Historical')
+        count=len(self.store.list_api_keys('alice'))
+        self.assertEqual(self.client.post('/api/api2api/keys',json={'name':'Blocked'}).status_code,503)
+        self.assertEqual(len(self.store.list_api_keys('alice')),count)
+        row=self.client.get('/api/api2api/keys').json()['items'][0]
+        self.assertFalse(row['enabled'] or row['can_toggle'] or row['can_copy'])
+        self.assertEqual(self.client.put('/api/api2api/keys/'+item['id']+'/enabled',json={'enabled':True}).status_code,503)
+        response=self.client.post('/api2api/v1/chat/completions',headers={'Authorization':'Bearer '+item['api_key']},json={'model':'a'})
+        self.assertEqual(response.status_code,503)
+        self.assertFalse(self.engine.calls)
+        self.assertEqual(self.client.get('/api/api2api/engine').json()['engine'],'newapi')
+
     def test_owner_scoping_validation_and_admin_boundaries(self):
         alice, bob = self.create(), self.create('bob')
         self.assertEqual([row['id'] for row in self.client.get('/api/api2api/keys').json()['items']],[alice['id']])

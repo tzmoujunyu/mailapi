@@ -12,7 +12,7 @@ const apiController = (() => {
   const num = value => Number(value || 0).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN');
   const date = value => value ? new Date(value).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
   const baseUrl = `${location.origin}/api2api/v1`;
-  let isAdmin = false, activeTab = 'overview', keys = [], usage = {items:[]}, engine = {}, quotaUser = null, revokeKey = null, keyDialogVersion = 0;
+  let isAdmin = false, activeTab = 'overview', keys = [], usage = {items:[]}, engine = {}, quotaUser = null, revokeKey = null, keyDialogVersion = 0, adminUsage = [], adminGatewayReady = false;
   function message(id, value, success = false) { $(id).textContent = t(value); $(id).classList.toggle('success',success); }
   function tab(name) {
     if (name === 'settings' && !isAdmin) return;
@@ -22,23 +22,28 @@ const apiController = (() => {
   }
   function renderKeys() {
     const query = $('api-key-search').value.trim().toLowerCase();
-    const filtered = keys.filter(row => `${row.name} ${row.key_prefix}`.toLowerCase().includes(query));
+    const state = $('api-key-filter').value;
+    const filtered = keys.filter(row => {
+      const category = row.revoked ? 'revoked' : row.available_here===false || row.remote_status===3 || row.remote_status===4 || row.can_toggle===false ? 'unavailable' : row.enabled ? 'active' : 'paused';
+      return `${row.name} ${row.key_prefix}`.toLowerCase().includes(query) && (state==='all' || state===category);
+    });
+    $('api-key-count').textContent = `${num(filtered.length)} / ${num(keys.length)} ${t('条密钥')}`;
     $('api-key-list').innerHTML = filtered.map(row => {
-      const status=row.available_here===false?'其他网关 / 模式':row.revoke_pending?'撤销待同步':row.revoked?'密钥已撤销':row.pause_pending?'停用待同步':row.enabled?'可用':row.remote_status===3?'已到期':row.remote_status===4?'额度不足':row.can_toggle===false?'已失效':'已停用';
+      const status=row.available_here===false?'其他网关密钥':row.revoke_pending?'撤销待同步':row.revoked?'密钥已撤销':row.pause_pending?'停用待同步':row.enabled?'可用':row.remote_status===3?'已到期':row.remote_status===4?'额度不足':row.can_toggle===false?'已失效':'已停用';
       const actions=[
         row.can_copy?`<button type="button" class="api-link" data-copy-key="${esc(row.id)}">${esc(t('复制'))}</button>`:'',
         row.can_toggle?`<button type="button" class="api-link" data-toggle-key="${esc(row.id)}" data-key-enabled="${row.enabled || row.pause_pending?'false':'true'}">${esc(t(row.pause_pending?'重试停用':row.enabled?'停用':'启用'))}</button>`:'',
         row.revocable || row.enabled || row.revoke_pending?`<button type="button" class="api-link api-bad" data-revoke-key="${esc(row.id)}">${esc(t(row.revoke_pending?'重试撤销':'撤销密钥'))}</button>`:'',
       ].join('');
-      return `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td>${row.provider==='newapi'?esc(t('网关')):esc(t('共享模式'))}</td><td><span class="${row.enabled?'api-good':'api-dim'}" data-ui-text>${esc(t(status))}</span></td><td>${row.provider==='newapi'?num(row.used_quota):'—'}</td><td>${date(row.created_at)}</td><td>${date(row.last_used_at)}</td><td><div class="api-key-actions">${actions || '—'}</div></td></tr>`;
-    }).join('') || `<tr><td colspan="7" class="api-empty" data-ui-text>${esc(t('没有符合条件的密钥。'))}</td></tr>`;
+      return `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td><span class="${row.enabled?'api-good':'api-dim'}" data-ui-text>${esc(t(status))}</span></td><td class="api-number">${row.provider==='newapi'?num(row.used_quota):'—'}</td><td>${date(row.created_at)}</td><td>${date(row.last_used_at)}</td><td><div class="api-key-actions">${actions || '—'}</div></td></tr>`;
+    }).join('') || `<tr><td colspan="6" class="api-empty" data-ui-text>${esc(t('没有符合条件的密钥。'))}</td></tr>`;
     $('api-active-keys').textContent = num(keys.filter(row => row.enabled).length);
     $('dashboard-keys').textContent = keys.filter(row => row.enabled).length;
   }
   const succeeded = row => row.status_code >= 200 && row.status_code < 300 && !row.error;
   function renderLogs() {
     const query = $('api-log-search').value.trim().toLowerCase(), status = $('api-log-status').value;
-    $('api-usage-rows').innerHTML = usage.items.filter(row => (!query || String(row.model).toLowerCase().includes(query)) && (status === 'all' || (status === 'success') === succeeded(row))).map(row => `<tr><td>${date(row.created_at)}</td><td data-i18n-skip>${esc(row.model || '—')}</td><td>${num(row.prompt_tokens)}</td><td>${num(row.completion_tokens)}</td><td>${num(row.total_tokens)}</td><td>${num(row.request_ms)} ms</td><td><span class="${succeeded(row) ? 'api-good' : 'api-bad'}">${esc(row.status_code)}${row.error && row.status_code < 400 ? ' · '+esc(t('流中断')) : ''}</span></td></tr>`).join('') || `<tr><td colspan="7" class="api-empty" data-ui-text>${esc(t('暂无符合条件的调用记录。'))}</td></tr>`;
+    $('api-usage-rows').innerHTML = usage.items.filter(row => (!query || String(row.model).toLowerCase().includes(query)) && (status === 'all' || (status === 'success') === succeeded(row))).map(row => `<tr><td>${date(row.created_at)}</td><td data-i18n-skip>${esc(row.model || '—')}</td><td class="api-number">${num(row.prompt_tokens)}</td><td class="api-number">${num(row.completion_tokens)}</td><td class="api-number">${num(row.total_tokens)}</td><td class="api-number">${num(row.request_ms)} ms</td><td><span class="${succeeded(row) ? 'api-good' : 'api-bad'}">${esc(row.status_code)}${row.error && row.status_code < 400 ? ' · '+esc(t('流中断')) : ''}</span></td></tr>`).join('') || `<tr><td colspan="7" class="api-empty" data-ui-text>${esc(t('暂无符合条件的调用记录。'))}</td></tr>`;
   }
   function renderUsage() {
     for (const [id, field] of Object.entries({'dashboard-requests':'requests','dashboard-tokens':'total_tokens','dashboard-input':'prompt_tokens','dashboard-output':'completion_tokens','api-metric-requests':'requests','api-metric-tokens':'total_tokens','api-input-total':'prompt_tokens','api-output-total':'completion_tokens'})) $(id).textContent = num(usage[field]);
@@ -51,10 +56,9 @@ const apiController = (() => {
     renderLogs();
   }
   function renderEngine() {
-    const native = engine.engine === 'newapi';
-    $('api-engine-description').textContent = t(native ? '密钥由网关签发，本站管理入口和用户身份。' : '共享模式使用本站密钥，转发时使用管理员配置的上游凭据。');
-    $('api-metric-quota').textContent = native && engine.linked ? num(engine.quota) : '—';
-    $('api-quota-hint').textContent = t(native ? engine.linked ? 'quota 点 · 以网关为准' : '创建密钥后关联独立网关账户' : '当前共享模式不管理额度');
+    $('api-engine-description').textContent = t('密钥由网关签发，本站管理入口和用户身份。');
+    $('api-metric-quota').textContent = engine.linked ? num(engine.quota) : '—';
+    $('api-quota-hint').textContent = t(engine.linked ? 'quota 点 · 以网关为准' : '创建密钥后关联独立网关账户');
     $('api-models').innerHTML = engine.models?.length ? engine.models.map(name => `<span data-i18n-skip>${esc(name)}</span>`).join('') : `<p class="api-hint" data-ui-text>${esc(t('创建密钥后获取可用模型，或由管理员配置渠道。'))}</p>`;
     const series = engine.series || [], totals = new Map();
     for (const row of series) {
@@ -76,32 +80,36 @@ const apiController = (() => {
     const failure = results.find(result => result.status === 'rejected');
     if (failure) message('api-key-status',failure.reason.message);
   }
-  function modeFields() {
-    const native = $('api-config-engine').value === 'newapi';
-    $('api-native-fields').hidden = !native;
-    $('api-legacy-field').hidden = native;
-    $('api-config-username').required = native;
-    $('api-config-quota').required = native;
-    $('api-open-channel').disabled = !native;
-    $('api-verify').disabled = !native;
-  }
   async function loadChannels() {
-    if ($('api-config-engine').value !== 'newapi') { $('api-channels').textContent = t('原共享模式由现有上游提供模型。'); return; }
+    if (!adminGatewayReady) { $('api-channels').textContent = t('请先配置并启用网关连接。'); return; }
     try {
       const data = await api('/api/admin/api2api/channels');
       $('api-channels').innerHTML = data.items.map(row => `<div class="api-channel"><div><strong data-i18n-skip>${esc(row.name)}</strong><span class="${row.status===1 ? 'api-good' : 'api-dim'}" data-ui-text>${esc(t(row.status===1 ? '启用' : '停用'))}</span></div><p data-i18n-skip>${esc(row.base_url)}</p><p data-i18n-skip>${esc(row.models)}</p></div>`).join('') || `<p class="api-empty" data-ui-text>${esc(t('暂无渠道，请添加上游连接。'))}</p>`;
     } catch (error) { $('api-channels').textContent = t(error.message); }
   }
+  function renderAdminUsage() {
+    const query = $('api-user-search').value.trim().toLowerCase();
+    const filtered = adminUsage.filter(row => `${row.username || row.user_id} ${row.user_note || ''}`.toLowerCase().includes(query));
+    $('api-user-count').textContent = `${num(filtered.length)} / ${num(adminUsage.length)} ${t('位用户')}`;
+    $('admin-api-usage-rows').innerHTML = filtered.map(row => `<tr><td data-i18n-skip>${esc(row.username || row.user_id)}<small>${esc(row.user_note)}</small></td><td class="api-number">${num(row.requests)}</td><td class="api-number">${num(row.prompt_tokens)}</td><td class="api-number">${num(row.completion_tokens)}</td><td class="api-number">${num(row.total_tokens)}</td><td><button type="button" class="api-link" data-quota-user="${esc(row.user_id)}" data-quota-name="${esc(row.username || row.user_id)}" ${adminGatewayReady?'':'disabled'}>${esc(t('调整额度'))}</button></td></tr>`).join('') || `<tr><td colspan="6" class="api-empty" data-ui-text>${esc(t(query?'没有符合条件的用户。':'创建密钥或发起调用后显示用户。'))}</td></tr>`;
+  }
   async function loadAdmin() {
     const [config,data] = await Promise.all([api('/api/admin/api2api/config'),api('/api/admin/api2api/usage')]);
-    $('api-config-engine').value = config.configured ? config.engine || 'legacy' : 'newapi';
-    $('api-config-url').value = config.base_url || '';
-    $('api-config-enabled').checked = config.enabled === true;
-    $('api-config-models').value = (config.model_allowlist || []).join(',');
-    $('api-config-username').value = config.management_username || '';
-    $('api-config-quota').value = config.initial_quota || 0;
-    modeFields();
-    $('admin-api-usage-rows').innerHTML = data.items.map(row => `<tr><td data-i18n-skip>${esc(row.username || row.user_id)}<small>${esc(row.user_note)}</small></td><td>${num(row.requests)}</td><td>${num(row.prompt_tokens)}</td><td>${num(row.completion_tokens)}</td><td>${num(row.total_tokens)}</td><td>${config.engine === 'newapi' ? `<button type="button" class="api-link" data-quota-user="${esc(row.user_id)}" data-quota-name="${esc(row.username || row.user_id)}">${esc(t('调整额度'))}</button>` : '—'}</td></tr>`).join('') || `<tr><td colspan="6" class="api-empty" data-ui-text>${esc(t('创建密钥或发起调用后显示用户。'))}</td></tr>`;
+    const native = config.configured && config.engine==='newapi';
+    adminGatewayReady = native && config.enabled===true;
+    $('api-config-url').value = native ? config.base_url : '';
+    $('api-config-enabled').checked = adminGatewayReady;
+    $('api-config-models').value = native ? (config.model_allowlist || []).join(',') : '';
+    $('api-config-username').value = native ? config.management_username : '';
+    $('api-config-quota').value = native ? config.initial_quota || 0 : 0;
+    $('api-connection-status').textContent = t(native ? adminGatewayReady ? '已启用' : '已停用' : '未配置');
+    $('api-connection-status').classList.toggle('api-good',adminGatewayReady);
+    $('api-connection-url').textContent = native ? config.base_url : t('尚未配置网关连接');
+    $('api-connection-hint').textContent = t(native ? '上游地址和密钥请在渠道中配置。' : '请填写独立网关连接；历史密钥和记录继续保留。');
+    $('api-open-channel').disabled = !adminGatewayReady;
+    $('api-verify').disabled = !adminGatewayReady;
+    adminUsage = data.items;
+    renderAdminUsage();
     await loadChannels();
   }
   async function copy(value, id) {
@@ -116,7 +124,6 @@ const apiController = (() => {
     $('api-key-form').hidden = false;
     $('api-key-form').reset();
     $('api-config-password').value = '';
-    $('api-config-key').value = '';
     $('api-channel-key').value = '';
   }
   $('api2api-base-url').textContent = baseUrl;
@@ -128,6 +135,8 @@ const apiController = (() => {
   document.querySelectorAll('[data-api-close]').forEach(node => node.addEventListener('click',() => $(node.dataset.apiClose).close()));
   $('api-key-dialog').addEventListener('close',clearSecrets);
   $('api-channel-dialog').addEventListener('close',() => $('api-channel-form').reset());
+  $('api-config-dialog').addEventListener('close',() => { $('api-config-password').value = ''; });
+  $('api-open-config').addEventListener('click',() => { message('api-config-status',''); $('api-config-dialog').showModal(); });
   $('api-open-key').addEventListener('click',() => { clearSecrets(); $('api-key-title').textContent=t('创建 API 密钥'); message('api-key-form-status',''); $('api-key-dialog').showModal(); });
   $('api-open-channel').addEventListener('click',() => { message('api-channel-status',''); $('api-channel-dialog').showModal(); });
   $('api-show-example').addEventListener('click',() => {
@@ -135,9 +144,10 @@ const apiController = (() => {
     $('api-example-dialog').showModal();
   });
   $('api-key-search').addEventListener('input',renderKeys);
+  $('api-key-filter').addEventListener('change',renderKeys);
+  $('api-user-search').addEventListener('input',renderAdminUsage);
   $('api-log-search').addEventListener('input',renderLogs);
   $('api-log-status').addEventListener('change',renderLogs);
-  $('api-config-engine').addEventListener('change',modeFields);
   $('api-refresh').addEventListener('click',async () => { const button = $('api-refresh'); button.disabled = true; message('api-key-status',''); try { await Promise.all([load(),isAdmin ? loadAdmin() : null]); } catch(error) { message('api-key-status',error.message); } finally { button.disabled = false; } });
   $('api-key-form').addEventListener('submit',async event => {
     event.preventDefault();
@@ -196,11 +206,12 @@ const apiController = (() => {
   $('api-config-form').addEventListener('submit',async event => {
     event.preventDefault(); const button = event.submitter || $('api-config-form').querySelector('[type="submit"]'); button.disabled = true;
     try {
-      await send('/api/admin/api2api/config','PUT',{engine:$('api-config-engine').value,base_url:$('api-config-url').value,upstream_key:$('api-config-key').value,management_username:$('api-config-username').value,management_password:$('api-config-password').value,initial_quota:Number($('api-config-quota').value),enabled:$('api-config-enabled').checked,model_allowlist:$('api-config-models').value.split(',').map(value => value.trim()).filter(Boolean)});
-      message('api-config-status','配置已保存',true);
+      await send('/api/admin/api2api/config','PUT',{engine:'newapi',base_url:$('api-config-url').value,management_username:$('api-config-username').value,management_password:$('api-config-password').value,initial_quota:Number($('api-config-quota').value),enabled:$('api-config-enabled').checked,model_allowlist:$('api-config-models').value.split(',').map(value => value.trim()).filter(Boolean)});
+      $('api-config-dialog').close();
+      message('api-key-status','配置已保存',true);
       await Promise.all([load(),loadAdmin()]);
     } catch(error) { message('api-config-status',error.message); }
-    finally { $('api-config-password').value = ''; $('api-config-key').value = ''; button.disabled = false; }
+    finally { $('api-config-password').value = ''; button.disabled = false; }
   });
   $('api-verify').addEventListener('click',async () => { const button = $('api-verify'); button.disabled = true; try { await send('/api/admin/api2api/verify','POST',{}); message('api-config-status','网关连接正常',true); } catch(error) { message('api-config-status',error.message); } finally { button.disabled = false; } });
   $('api-channel-form').addEventListener('submit',async event => {
@@ -218,6 +229,6 @@ const apiController = (() => {
   });
   window.addEventListener('hashchange',() => { if (location.hash !== '#view-api2api') { document.querySelectorAll('#view-api2api dialog[open]').forEach(node => node.close()); clearSecrets(); } });
   window.addEventListener('pagehide',clearSecrets);
-  document.addEventListener('site:language',() => { renderKeys(); renderUsage(); renderEngine(); });
+  document.addEventListener('site:language',() => { renderKeys(); renderUsage(); renderEngine(); if(isAdmin)renderAdminUsage(); });
   return {start(admin) { isAdmin = admin; $('api-admin-tab').hidden = !admin; tab(activeTab); },load,loadAdmin};
 })();

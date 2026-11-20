@@ -828,18 +828,15 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         if store.api2api_config_public().get('engine') == 'newapi':
             return {'items':await gateway.list_keys(user['id'])}
         rows = store.list_api_keys(user['id'])
-        return {'items':[{**row,'available_here':row['provider']=='legacy',
+        return {'items':[{**row,'available_here':False,
                           'revocable':not row['revoked'], 'can_copy':False,
-                          'can_toggle':row['provider']=='legacy' and not row['revoked'],
-                          'enabled':row['enabled'] and not row['revoked'] and row['provider']=='legacy'} for row in rows]}
+                          'can_toggle':False, 'enabled':False} for row in rows]}
 
     @router.post("/api/api2api/keys", status_code=201)
     async def create_user_key(request: Request):
         user = current_user(request)
         payload = await gateway_payload(request)
-        if store.api2api_config_public().get('engine') == 'newapi':
-            return {'item':await gateway.create_key(user['id'],payload.get('name'))}
-        return {"item": store.create_api_key(user["id"], payload.get("name"))}
+        return {'item':await gateway.create_key(user['id'],payload.get('name'))}
 
     @router.post('/api/api2api/keys/{key_id}/reveal')
     async def reveal_user_key(key_id: str, request: Request):
@@ -851,6 +848,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def set_user_key_enabled(key_id: str, request: Request):
         user = current_user(request)
         payload = await gateway_payload(request)
+        gateway.config()
         await gateway.set_key_enabled(key_id,user['id'],payload.get('enabled'))
         return {'ok':True}
 
@@ -874,7 +872,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def user_engine_info(request: Request):
         user = current_user(request)
         if store.api2api_config_public().get('engine') != 'newapi':
-            return {'engine':'legacy','linked':False,'models':store.api2api_config_public().get('model_allowlist',[])}
+            return {'engine':'newapi','linked':False,'models':[]}
         return await gateway.info(user['id'])
 
     @router.get("/api/admin/api2api/config")
@@ -887,6 +885,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         require_admin(request)
         try:
             payload = await gateway_payload(request)
+            if payload.get('engine', 'newapi') != 'newapi':
+                raise TestFeatureError('本站固定使用网关原生密钥，不支持切换转发模式')
+            payload['engine'] = 'newapi'
             if urlsplit(str(payload.get('base_url',''))).netloc == request.url.netloc:
                 raise TestFeatureError('网关不能指向网站自身')
             return store.configure_api2api(payload)
@@ -964,15 +965,12 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         if not owner or owner.get('status','active') != 'active':
             return JSONResponse({'error':{'message':'API owner is unavailable','type':'authentication_error'}},status_code=401)
         config = store.api2api_config_public()
-        if not config.get('configured') or not config['enabled']:
+        if not config.get('configured') or not config['enabled'] or config.get('engine') != 'newapi':
             return JSONResponse({"error": {"message": "API2API is not configured", "type": "configuration_error"}}, status_code=503)
-        native = config.get('engine') == 'newapi'
-        if (native and (key['provider'] != 'newapi' or key['engine_origin'] != config['base_url'][:-3])) or (not native and key['provider'] != 'legacy'):
+        if key['provider'] != 'newapi' or key['engine_origin'] != config['base_url'][:-3]:
             return JSONResponse({'error':{'message':'API key does not belong to the active gateway','type':'authentication_error'}},status_code=401)
         if '\\' in proxy_path or any(part in {'.','..'} for part in proxy_path.split('/')):
             return JSONResponse({'error':{'message':'Invalid API path','type':'invalid_request_error'}},status_code=400)
-        if not native:
-            config = store.api2api_config()
         body = await request.body()
         model = ""
         try:
@@ -988,7 +986,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 timeout=httpx.Timeout(connect=5,read=None,write=30,pool=5), follow_redirects=False, trust_env=False,
             )
         target = config["base_url"].rstrip("/") + "/" + proxy_path.lstrip("/")
-        headers = {"Authorization": f"Bearer {raw_key if native else config['upstream_key']}", "Accept": request.headers.get("accept", "*/*"), "Accept-Encoding": "identity"}
+        headers = {"Authorization": f"Bearer {raw_key}", "Accept": request.headers.get("accept", "*/*"), "Accept-Encoding": "identity"}
         if request.headers.get("content-type"):
             headers["Content-Type"] = request.headers["content-type"]
         for name in ('openai-beta','openai-project','openai-organization','idempotency-key','x-client-request-id'):

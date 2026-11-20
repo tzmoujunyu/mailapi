@@ -70,12 +70,15 @@ test('admin uses native management fields and clears the submitted secret',async
     return null;
   });
   w.apiUnderTest.start(true); await w.apiUnderTest.loadAdmin();
-  assert.equal(el('api-native-fields').hidden,false);
-  assert.equal(el('api-legacy-field').hidden,true);
+  assert.equal(el('api-config-engine'),null);
+  assert.equal(el('api-legacy-field'),null);
+  el('api-open-config').click();
+  assert.equal(el('api-config-dialog').open,true);
   el('api-config-password').value='test-management-secret'; submit('api-config-form'); await tick();
   const sent = JSON.parse(calls.find(([url,options]) => url==='/api/admin/api2api/config' && options.method==='PUT')[1].body);
   assert.equal(sent.engine,'newapi'); assert.equal(sent.management_password,'test-management-secret');
   assert.equal(el('api-config-password').value,'');
+  assert.equal(el('api-config-dialog').open,false);
   assert.ok(!w.document.body.textContent.includes('test-management-secret'));
 });
 
@@ -124,4 +127,38 @@ test('manual copy fallback clears its full key on close and late copy results ca
   delay=true;el('api-key-list').querySelector('[data-copy-key]').click();await tick();
   w.location.hash='#view-finance';await tick();resolveCopy({api_key:'sk-late-copy-fixture'});await tick();
   assert.equal(el('api-key-dialog').open,false);assert.equal(el('new-api-key').textContent,'');
+});
+
+test('key search and state filters combine without changing total active keys',async t=>{
+  const {w,el}=setup(t,url=>url==='/api/api2api/keys'?{items:[
+    {id:'a',name:'Laptop',key_prefix:'sk-alpha',enabled:true,can_toggle:true},
+    {id:'b',name:'Laptop paused',key_prefix:'sk-beta',enabled:false,can_toggle:true},
+    {id:'c',name:'Archived',key_prefix:'sk-old',enabled:false,revoked:true,can_toggle:false},
+  ]}:null);
+  await w.apiUnderTest.load();
+  el('api-key-filter').value='paused';el('api-key-filter').dispatchEvent(new w.Event('change'));
+  assert.equal(el('api-key-list').querySelectorAll('tr').length,1);
+  assert.match(el('api-key-list').textContent,/Laptop paused/);
+  assert.equal(el('api-active-keys').textContent,'1');
+  assert.equal(el('api-key-count').textContent,'1 / 3 条密钥');
+  el('api-key-search').value='alpha';el('api-key-search').dispatchEvent(new w.Event('input'));
+  assert.match(el('api-key-list').textContent,/没有符合条件/);
+  el('api-key-filter').value='all';el('api-key-filter').dispatchEvent(new w.Event('change'));
+  assert.match(el('api-key-list').textContent,/Laptop/);
+  assert.ok(!el('api-key-list').textContent.includes('Laptop paused'));
+});
+
+test('admin user search matches notes and old connection data is not reused as a native gateway',async t=>{
+  const {w,el}=setup(t,url=>{
+    if(url==='/api/admin/api2api/config')return {configured:true,engine:'legacy',base_url:'https://old-upstream.invalid/v1',enabled:true};
+    if(url==='/api/admin/api2api/usage')return {items:[{user_id:'a',username:'alice',user_note:'Agent A',requests:7},{user_id:'b',username:'bob',user_note:'Agent B',requests:3}]};
+  });
+  w.apiUnderTest.start(true);await w.apiUnderTest.loadAdmin();
+  assert.equal(el('api-config-url').value,'');
+  assert.equal(el('api-open-channel').disabled,true);
+  el('api-user-search').value='agent b';el('api-user-search').dispatchEvent(new w.Event('input'));
+  assert.equal(el('admin-api-usage-rows').querySelectorAll('tr').length,1);
+  assert.match(el('admin-api-usage-rows').textContent,/bob/);
+  assert.equal(el('api-user-count').textContent,'1 / 2 位用户');
+  assert.equal(el('admin-api-usage-rows').querySelector('button').disabled,true);
 });
