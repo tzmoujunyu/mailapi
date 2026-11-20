@@ -23,6 +23,7 @@ class EngineFixture:
         self.users = {'manager': {'id': 1, 'password': 'management-secret'}}
         self.tokens = {}
         self.fail_delete = False
+        self.fail_toggle = False
 
     def response(self, data=None, status=200, success=True):
         return httpx.Response(status, json={'success': success, 'data': data, 'message': ''})
@@ -58,6 +59,13 @@ class EngineFixture:
             return self.response()
         if path == '/api/token/search':
             return self.response({'items': [x for x in self.tokens.values() if x['user_id'] == owner and x['name'] == request.url.params['keyword']]})
+        if path == '/api/token/' and request.method == 'PUT':
+            assert request.url.params['status_only']=='true'
+            assert self.tokens[body['id']]['user_id']==owner
+            if self.fail_toggle:
+                return httpx.Response(503)
+            self.tokens[body['id']]['status']=body['status']
+            return self.response()
         if path == '/api/token/':
             return self.response({'items': [x for x in self.tokens.values() if x['user_id'] == owner], 'total': len(self.tokens)})
         if path.endswith('/key'):
@@ -143,6 +151,52 @@ class NewAPIGatewayTests(unittest.IsolatedAsyncioTestCase):
             self.store.configure_api2api({'engine':'newapi','base_url':'http://public.example/v1',
                                          'management_username':'manager','management_password':'secret','enabled':True})
 
+    async def test_pause_resume_and_on_demand_copy_keep_the_same_key_without_plaintext_storage(self):
+        item=await self.gateway.create_key('alice','A')
+        self.assertEqual(await self.gateway.reveal_key(item['id'],'alice'),item['api_key'])
+        with self.assertRaises(NewAPIError) as error:
+            await self.gateway.reveal_key(item['id'],'bob')
+        self.assertEqual(error.exception.status_code,404)
+        await self.gateway.set_key_enabled(item['id'],'alice',False)
+        self.assertIsNone(self.store.authenticate_api_key(item['api_key']))
+        paused=(await self.gateway.list_keys('alice'))[0]
+        self.assertFalse(paused['revoked'])
+        self.assertFalse(paused['enabled'])
+        self.assertTrue(paused['can_copy'] and paused['can_toggle'])
+        self.assertFalse(paused['revoke_pending'])
+        self.assertEqual(await self.gateway.reveal_key(item['id'],'alice'),item['api_key'])
+        await self.gateway.set_key_enabled(item['id'],'alice',True)
+        self.assertEqual(self.store.authenticate_api_key(item['api_key'])['user_id'],'alice')
+        self.assertEqual(self.engine.tokens[1]['status'],1)
+        disk=b''.join(path.read_bytes() for path in self.store.root.iterdir() if path.is_file())
+        self.assertNotIn(item['api_key'].encode(),disk)
+        await self.gateway.revoke_key(item['id'],'alice')
+        for operation in (self.gateway.reveal_key(item['id'],'alice'),self.gateway.set_key_enabled(item['id'],'alice',True)):
+            with self.assertRaises(NewAPIError) as error:
+                await operation
+            self.assertEqual(error.exception.status_code,409)
+
+    async def test_failed_gateway_toggle_blocks_locally_and_can_be_retried(self):
+        item=await self.gateway.create_key('alice','A')
+        self.engine.fail_toggle=True
+        for enabled in (False,True):
+            with self.assertRaises(NewAPIError):
+                await self.gateway.set_key_enabled(item['id'],'alice',enabled)
+            self.assertIsNone(self.store.authenticate_api_key(item['api_key']))
+        paused=(await self.gateway.list_keys('alice'))[0]
+        self.assertTrue(paused['pause_pending'])
+        self.assertFalse(paused['revoke_pending'])
+        self.engine.fail_toggle=False
+        await self.gateway.set_key_enabled(item['id'],'alice',True)
+        self.assertIsNotNone(self.store.authenticate_api_key(item['api_key']))
+
+    async def test_revoke_cannot_be_undone_by_a_concurrent_enable(self):
+        item=await self.gateway.create_key('alice','A')
+        await asyncio.gather(self.gateway.revoke_key(item['id'],'alice'),self.gateway.set_key_enabled(item['id'],'alice',True),return_exceptions=True)
+        self.assertTrue(self.store.gateway_key(item['id'])['revoked'])
+        self.assertIsNone(self.store.authenticate_api_key(item['api_key']))
+        self.assertFalse(self.engine.tokens)
+
     async def test_refresh_keeps_distinct_users_and_does_not_send_shared_client_cookies(self):
         await self.gateway.create_key('alice','A')
         await self.gateway.create_key('bob','B')
@@ -195,6 +249,24 @@ class GatewayHttpTests(unittest.TestCase):
         self.assertNotIn('never-return',channels.text)
         self.assertNotIn('management-secret',self.client.get('/api/admin/api2api/config',headers={'x-test-user':'admin'}).text)
         self.assertTrue(self.client.get('/api/api2api/engine').json()['linked'])
+
+    def test_key_copy_and_enabled_routes_require_ownership_and_do_not_cache_secrets(self):
+        item=self.create()
+        base='/api/api2api/keys/'+item['id']
+        copied=self.client.post(base+'/reveal')
+        self.assertEqual(copied.status_code,200,copied.text)
+        self.assertEqual(copied.json()['api_key'],item['api_key'])
+        self.assertIn('no-store',copied.headers['cache-control'])
+        self.assertEqual(self.client.post(base+'/reveal',headers={'x-test-user':'bob'}).status_code,404)
+        self.assertEqual(self.client.put(base+'/enabled',headers={'x-test-user':'bob'},json={'enabled':False}).status_code,404)
+        self.assertEqual(self.client.put(base+'/enabled',json={'enabled':1}).status_code,400)
+        self.assertEqual(self.client.put(base+'/enabled',json={'enabled':False}).status_code,200)
+        self.assertIsNone(self.store.authenticate_api_key(item['api_key']))
+        self.assertEqual(self.client.put(base+'/enabled',json={'enabled':True}).status_code,200)
+        self.assertIsNotNone(self.store.authenticate_api_key(item['api_key']))
+        self.client.delete(base)
+        self.assertEqual(self.client.put(base+'/enabled',json={'enabled':True}).status_code,409)
+        self.assertEqual(self.client.post(base+'/reveal').status_code,409)
 
     def test_native_relay_preserves_bytes_avoids_management_and_checks_current_owner(self):
         key = self.create()

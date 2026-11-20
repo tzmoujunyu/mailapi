@@ -137,3 +137,42 @@ body.test-ui-page.home-page section[id] { scroll-margin-top: calc(var(--test-hea
 .site-announcement-dialog [type="submit"] { justify-self: end; padding: 8px 15px; border: 0; border-radius: 9px; background: var(--test-primary-fill); color: #fff; cursor: pointer; }
 .notice-error { color: var(--theme-danger-text, #b91c1c); font-size: 12px; }
 .test-ui-page .header-notice-panel [hidden], .test-ui-page .site-announcement-dialog [hidden], .test-ui-page .site-language [hidden], .test-ui-header [hidden] { display: none !important; }
+
+/* Every feature page uses the finance heading's 21px size and 22px inset. */
+body.test-ui-page .workspace-page-heading {
+  box-sizing:border-box; display:flex; align-items:center; justify-content:space-between;
+  flex-wrap:wrap; gap:12px; min-height:37px; border:0; background:transparent;
+}
+body.test-ui-page .workspace-page-heading :is(h1,h2),
+body.test-ui-page:is(.test-ui-admin,.test-ui-access) .workspace-page-heading :is(h1,h2) {
+  display:flex; align-items:center; min-height:37px;
+  margin:0; color:var(--test-ink); font-size:21px; line-height:1.5; font-weight:600; letter-spacing:normal;
+}
+body.test-ui-features .main { padding:22px 22px 48px; }
+body.test-ui-features .content { max-width:none; }
+body.test-ui-features .main > .topbar.workspace-page-heading { min-height:37px; margin:0 0 18px; padding:0; }
+body.test-ui-features .workspace-view { padding-top:0; }
+body.test-ui-page.test-ui-admin .topbar.workspace-page-heading,
+body.test-ui-page.test-ui-access .access-page-header.workspace-page-heading,
+body.test-ui-page.home-page .resources-page-heading { max-width:none; margin:22px 22px 18px; padding:0; }
+body.test-ui-page.test-ui-admin .content,
+body.test-ui-page.test-ui-access main { max-width:none; margin:0; padding:0 22px 48px; }
+body.test-ui-page.home-page .container { width:auto; max-width:none; margin:18px 22px 48px; padding:0; }
+body.test-ui-page .home-directory-inner { max-width:none; padding-inline:22px; }
+body.test-ui-page.home-page #chatgpt-title { font-size:20px; font-weight:600; }
+body.test-ui-features:has(#view-api2api.active) .main,
+body.test-ui-features:has(#view-finance.active) .main { padding:22px 22px 30px; }
+@media (max-width:720px) {
+  body.test-ui-features .main,
+  body.test-ui-features:has(#view-api2api.active) .main,
+  body.test-ui-features:has(#view-finance.active) .main { padding:18px 12px 28px; }
+  body.test-ui-page.test-ui-admin .topbar.workspace-page-heading,
+  body.test-ui-page.test-ui-access .access-page-header.workspace-page-heading,
+  body.test-ui-page.home-page .resources-page-heading { margin:18px 12px; }
+  body.test-ui-page.test-ui-admin .content,
+  body.test-ui-page.test-ui-access main { padding-inline:12px; }
+  body.test-ui-page.home-page .container { margin-inline:12px; }
+  body.test-ui-page .home-directory-inner { padding-inline:12px; }
+}
+body.test-ui-features:has(#view-api2api.active) .content,
+body.test-ui-features:has(#view-finance.active) .content { max-width:none; }

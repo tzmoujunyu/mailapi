@@ -23,7 +23,15 @@ const apiController = (() => {
   function renderKeys() {
     const query = $('api-key-search').value.trim().toLowerCase();
     const filtered = keys.filter(row => `${row.name} ${row.key_prefix}`.toLowerCase().includes(query));
-    $('api-key-list').innerHTML = filtered.map(row => `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td>${row.provider === 'newapi' ? 'NewAPI' : t('共享模式')}</td><td><span class="${row.enabled ? 'api-good' : 'api-dim'}" data-ui-text>${esc(t(row.enabled ? '可用' : row.available_here === false ? '其他网关 / 模式' : row.revoke_pending ? '待完成撤销' : '已撤销'))}</span></td><td>${row.provider === 'newapi' ? num(row.used_quota) : '—'}</td><td>${date(row.created_at)}</td><td>${date(row.last_used_at)}</td><td>${row.revocable || row.enabled || row.revoke_pending ? `<button type="button" class="api-link api-bad" data-revoke-key="${esc(row.id)}">${esc(t(row.revoke_pending ? '重试撤销' : '撤销'))}</button>` : '—'}</td></tr>`).join('') || `<tr><td colspan="7" class="api-empty" data-ui-text>${esc(t('没有符合条件的密钥。'))}</td></tr>`;
+    $('api-key-list').innerHTML = filtered.map(row => {
+      const status=row.available_here===false?'其他网关 / 模式':row.revoke_pending?'撤销待同步':row.revoked?'密钥已撤销':row.pause_pending?'停用待同步':row.enabled?'可用':row.remote_status===3?'已到期':row.remote_status===4?'额度不足':row.can_toggle===false?'已失效':'已停用';
+      const actions=[
+        row.can_copy?`<button type="button" class="api-link" data-copy-key="${esc(row.id)}">${esc(t('复制'))}</button>`:'',
+        row.can_toggle?`<button type="button" class="api-link" data-toggle-key="${esc(row.id)}" data-key-enabled="${row.enabled || row.pause_pending?'false':'true'}">${esc(t(row.pause_pending?'重试停用':row.enabled?'停用':'启用'))}</button>`:'',
+        row.revocable || row.enabled || row.revoke_pending?`<button type="button" class="api-link api-bad" data-revoke-key="${esc(row.id)}">${esc(t(row.revoke_pending?'重试撤销':'撤销密钥'))}</button>`:'',
+      ].join('');
+      return `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td>${row.provider==='newapi'?esc(t('网关')):esc(t('共享模式'))}</td><td><span class="${row.enabled?'api-good':'api-dim'}" data-ui-text>${esc(t(status))}</span></td><td>${row.provider==='newapi'?num(row.used_quota):'—'}</td><td>${date(row.created_at)}</td><td>${date(row.last_used_at)}</td><td><div class="api-key-actions">${actions || '—'}</div></td></tr>`;
+    }).join('') || `<tr><td colspan="7" class="api-empty" data-ui-text>${esc(t('没有符合条件的密钥。'))}</td></tr>`;
     $('api-active-keys').textContent = num(keys.filter(row => row.enabled).length);
     $('dashboard-keys').textContent = keys.filter(row => row.enabled).length;
   }
@@ -44,10 +52,9 @@ const apiController = (() => {
   }
   function renderEngine() {
     const native = engine.engine === 'newapi';
-    $('api-engine-badge').textContent = native ? 'NewAPI' : t('共享模式');
-    $('api-engine-description').textContent = t(native ? '密钥由 NewAPI 签发，本站管理入口和用户身份。' : '共享模式使用本站密钥，转发时使用管理员配置的上游凭据。');
+    $('api-engine-description').textContent = t(native ? '密钥由网关签发，本站管理入口和用户身份。' : '共享模式使用本站密钥，转发时使用管理员配置的上游凭据。');
     $('api-metric-quota').textContent = native && engine.linked ? num(engine.quota) : '—';
-    $('api-quota-hint').textContent = t(native ? engine.linked ? 'quota 点 · 以 NewAPI 为准' : '创建密钥后关联独立网关账户' : '当前共享模式不管理额度');
+    $('api-quota-hint').textContent = t(native ? engine.linked ? 'quota 点 · 以网关为准' : '创建密钥后关联独立网关账户' : '当前共享模式不管理额度');
     $('api-models').innerHTML = engine.models?.length ? engine.models.map(name => `<span data-i18n-skip>${esc(name)}</span>`).join('') : `<p class="api-hint" data-ui-text>${esc(t('创建密钥后获取可用模型，或由管理员配置渠道。'))}</p>`;
     const series = engine.series || [], totals = new Map();
     for (const row of series) {
@@ -121,7 +128,7 @@ const apiController = (() => {
   document.querySelectorAll('[data-api-close]').forEach(node => node.addEventListener('click',() => $(node.dataset.apiClose).close()));
   $('api-key-dialog').addEventListener('close',clearSecrets);
   $('api-channel-dialog').addEventListener('close',() => $('api-channel-form').reset());
-  $('api-open-key').addEventListener('click',() => { clearSecrets(); message('api-key-form-status',''); $('api-key-dialog').showModal(); });
+  $('api-open-key').addEventListener('click',() => { clearSecrets(); $('api-key-title').textContent=t('创建 API 密钥'); message('api-key-form-status',''); $('api-key-dialog').showModal(); });
   $('api-open-channel').addEventListener('click',() => { message('api-channel-status',''); $('api-channel-dialog').showModal(); });
   $('api-show-example').addEventListener('click',() => {
     $('api-example').textContent = `curl '${baseUrl}/chat/completions' \\\n  -H 'Authorization: Bearer YOUR_API_KEY' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({model:engine.models?.[0] || 'YOUR_MODEL',messages:[{role:'user',content:'Hello'}],stream:true})}'`;
@@ -154,13 +161,31 @@ const apiController = (() => {
     } catch(error) { message('api-key-form-status',error.message); }
     finally { button.disabled = false; }
   });
-  $('api-key-list').addEventListener('click',event => {
-    const button = event.target.closest('[data-revoke-key]');
-    if (!button) return;
-    revokeKey = button.dataset.revokeKey;
-    $('api-revoke-name').textContent = keys.find(row => row.id === revokeKey)?.name || '';
-    message('api-revoke-status','');
-    $('api-revoke-dialog').showModal();
+  $('api-key-list').addEventListener('click',async event => {
+    const button=event.target.closest('button');
+    if(!button || button.disabled)return;
+    if(button.dataset.revokeKey){
+      revokeKey=button.dataset.revokeKey;
+      $('api-revoke-name').textContent=keys.find(row=>row.id===revokeKey)?.name || '';
+      message('api-revoke-status','');$('api-revoke-dialog').showModal();return;
+    }
+    button.disabled=true;
+    try{
+      if(button.dataset.copyKey){
+        const version=keyDialogVersion;
+        const data=await send(`/api/api2api/keys/${encodeURIComponent(button.dataset.copyKey)}/reveal`,'POST',{});
+        if(version!==keyDialogVersion || !$('view-api2api').isConnected || location.hash!=='#view-api2api')return;
+        try{await navigator.clipboard.writeText(data.api_key);message('api-key-status','密钥已复制',true);}
+        catch{clearSecrets();$('api-key-title').textContent=t('复制 API 密钥');$('new-api-key').textContent=data.api_key;$('api-key-form').hidden=true;$('api-key-result').hidden=false;$('api-key-dialog').showModal();}
+      }
+      if(button.dataset.toggleKey){
+        const enabled=button.dataset.keyEnabled==='true';
+        await send(`/api/api2api/keys/${encodeURIComponent(button.dataset.toggleKey)}/enabled`,'PUT',{enabled});
+        message('api-key-status',enabled?'密钥已启用':'密钥已停用，可随时重新启用',true);
+        await load();
+      }
+    }catch(error){message('api-key-status',error.message);if(button.dataset.toggleKey)await load();}
+    finally{button.disabled=false;}
   });
   $('api-revoke-form').addEventListener('submit',async event => {
     event.preventDefault(); const button = event.submitter || $('api-revoke-form').querySelector('[type="submit"]'); button.disabled = true;
@@ -177,7 +202,7 @@ const apiController = (() => {
     } catch(error) { message('api-config-status',error.message); }
     finally { $('api-config-password').value = ''; $('api-config-key').value = ''; button.disabled = false; }
   });
-  $('api-verify').addEventListener('click',async () => { const button = $('api-verify'); button.disabled = true; try { await send('/api/admin/api2api/verify','POST',{}); message('api-config-status','NewAPI 连接正常',true); } catch(error) { message('api-config-status',error.message); } finally { button.disabled = false; } });
+  $('api-verify').addEventListener('click',async () => { const button = $('api-verify'); button.disabled = true; try { await send('/api/admin/api2api/verify','POST',{}); message('api-config-status','网关连接正常',true); } catch(error) { message('api-config-status',error.message); } finally { button.disabled = false; } });
   $('api-channel-form').addEventListener('submit',async event => {
     event.preventDefault(); const button = event.submitter || $('api-channel-form').querySelector('[type="submit"]'); button.disabled = true;
     try { await send('/api/admin/api2api/channels','POST',{name:$('api-channel-name').value,base_url:$('api-channel-url').value,api_key:$('api-channel-key').value,models:$('api-channel-models').value.split(',').map(value => value.trim()).filter(Boolean)}); $('api-channel-dialog').close(); await Promise.all([loadChannels(),load()]); }

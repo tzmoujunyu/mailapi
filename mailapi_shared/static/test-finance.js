@@ -314,5 +314,5 @@ const financeController = (() => {
     const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download='approved-finance.zip';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }));
   document.addEventListener('site:language',()=>{renderNotices();render();});
-  return {load,start(value){admin=value;$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);$('fin-subtitle').textContent=t(admin?'审核申请与管理报销资料':'查看公告、提交报销和跟进审核');selectTab(admin?'review':'mine');}};
+  return {load,start(value){admin=value;$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');}};
 })();

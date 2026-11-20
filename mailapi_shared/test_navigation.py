@@ -17,6 +17,14 @@ SHARED_STYLES = {"/static/theme.css", "/static/session.css"}
 
 
 def prepare_workspace_page(page, name):
+    if name == 'home':
+        page = page.replace('<nav class="home-directory"', '<header class="workspace-page-heading resources-page-heading"><h1>资源</h1></header><nav class="home-directory"', 1)
+        page = page.replace('<h1 id="chatgpt-title">GPT账号</h1>', '<h2 id="chatgpt-title">GPT账号</h2>', 1)
+    elif name == 'admin':
+        page = page.replace('<header class="topbar">', '<header class="topbar workspace-page-heading">', 1)
+    elif name == 'access':
+        page = page.replace('<header class="access-page-header">', '<header class="access-page-header workspace-page-heading">', 1)
+
     def script(match):
         source = re.search(r'\bsrc="([^"]+)"', match.group(1))
         return match.group(0) if source and source.group(1) in SHARED_SCRIPTS else ""

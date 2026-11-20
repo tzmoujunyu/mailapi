@@ -44,6 +44,21 @@ class TestFeatureStoreTests(unittest.TestCase):
         self.assertEqual(summary["total_tokens"], 8)
         self.assertEqual(self.store.usage_summary("user-b")["requests"], 0)
 
+    def test_old_revoked_keys_migrate_as_permanent_but_new_paused_keys_remain_reversible(self):
+        old=self.store.create_api_key('a','Old')
+        self.store.revoke_api_key(old['id'],'a')
+        with self.store._connect() as db:
+            db.execute('ALTER TABLE api2api_keys DROP COLUMN revoked')
+        migrated=TestFeatureStore(self.data,self.keyring)
+        self.assertTrue(migrated.gateway_key(old['id'])['revoked'])
+        self.assertFalse(migrated.set_api_key_enabled(old['id'],'a',True))
+        current=migrated.create_api_key('a','Current')
+        self.assertTrue(migrated.set_api_key_enabled(current['id'],'a',False))
+        reopened=TestFeatureStore(self.data,self.keyring)
+        self.assertFalse(reopened.gateway_key(current['id'])['revoked'])
+        self.assertTrue(reopened.set_api_key_enabled(current['id'],'a',True))
+        self.assertIsNotNone(reopened.authenticate_api_key(current['api_key']))
+
     def test_finance_metadata_and_announcements_persist(self):
         stored = self.data / "finance_files" / "invoice.pdf"
         stored.write_bytes(b"invoice")

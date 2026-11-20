@@ -176,6 +176,14 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                         assert b'[DONE]' in b''.join(chunks)
                     assert stream_forwarded==[True,True], 'Website buffered the stream'
                     assert web.get('/api/api2api/usage').json()['total_tokens']==16
+                    copied = web.post('/api/api2api/keys/'+alice['id']+'/reveal')
+                    assert copied.status_code==200 and copied.json()['api_key']==alice['api_key']
+                    assert 'no-store' in copied.headers['cache-control']
+                    assert web.put('/api/api2api/keys/'+alice['id']+'/enabled',json={'enabled':False}).status_code==200
+                    assert web.post('/api2api/v1/chat/completions',json=payload,headers=bearer).status_code==401
+                    assert client.post('/v1/chat/completions',json=payload,headers=bearer).status_code>=400
+                    assert web.put('/api/api2api/keys/'+alice['id']+'/enabled',json={'enabled':True}).status_code==200
+                    assert web.post('/api2api/v1/chat/completions',json=payload,headers=bearer).status_code==200
                     info = web.get('/api/api2api/engine')
                     assert info.status_code==200 and info.json()['linked'], ('engine info',info.status_code)
                     channels = web.get('/api/admin/api2api/channels',headers={'x-test-user':'admin'})
@@ -195,7 +203,7 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
 
             print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,
                               'streaming_before_completion':True,'website_http_native_keys':True,
-                              'separate_engine_identities':True,'revocation_enforced':True,
+                              'pause_resume_and_copy':True,'separate_engine_identities':True,'revocation_enforced':True,
                               'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)
     finally:
         stream_received.set()

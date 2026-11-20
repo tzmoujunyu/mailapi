@@ -161,12 +161,15 @@ class TestFeatureStore:
                                   ('management_password', "TEXT NOT NULL DEFAULT ''"),
                                   ('initial_quota', 'INTEGER NOT NULL DEFAULT 0')],
                 'api2api_keys': [('provider', "TEXT NOT NULL DEFAULT 'legacy'"),
-                                ('remote_id', 'INTEGER'), ('engine_origin', "TEXT NOT NULL DEFAULT ''")],
+                                ('remote_id', 'INTEGER'), ('engine_origin', "TEXT NOT NULL DEFAULT ''"),
+                                ('revoked','INTEGER NOT NULL DEFAULT 0')],
             }.items():
                 existing = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
                 for name, definition in fields:
                     if name not in existing:
                         db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
+                        if table == 'api2api_keys' and name == 'revoked':
+                            db.execute('UPDATE api2api_keys SET revoked=1 WHERE enabled=0')
             columns = {row[1] for row in db.execute("PRAGMA table_info(finance_applications)")}
             if 'supersedes_event_id' not in {row[1] for row in db.execute('PRAGMA table_info(finance_events)')}:
                 db.execute('ALTER TABLE finance_events ADD COLUMN supersedes_event_id TEXT REFERENCES finance_events(id)')
@@ -203,14 +206,14 @@ class TestFeatureStore:
 
     @staticmethod
     def _base_url(value: Any) -> str:
-        value = TestFeatureStore._text(value, "NewAPI 地址", 2048, required=True).rstrip("/")
+        value = TestFeatureStore._text(value, "网关地址", 2048, required=True).rstrip("/")
         try:
             parsed = urlsplit(value)
             valid = parsed.scheme in {"http", "https"} and bool(parsed.hostname)
         except ValueError:
             valid = False
         if not valid or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise TestFeatureError("NewAPI 地址须为不含账号、查询参数和片段的 HTTP/HTTPS 地址")
+            raise TestFeatureError("网关地址须为不含账号、查询参数和片段的 HTTP/HTTPS 地址")
         return value
 
     def _seal_upstream_key(self, value: str) -> str:
@@ -253,14 +256,14 @@ class TestFeatureStore:
                 except ValueError:
                     loopback = parsed.hostname == 'localhost'
                 if parsed.scheme != 'https' and not loopback:
-                    raise TestFeatureError('NewAPI 管理连接须使用 HTTPS，本机回环测试除外')
+                    raise TestFeatureError('网关管理连接须使用 HTTPS，本机回环测试除外')
                 if not base_url.endswith('/v1'):
-                    raise TestFeatureError('NewAPI 网关地址须以 /v1 结尾')
-                username = self._text(payload.get('management_username'), 'NewAPI 管理账户', 80, required=True)
+                    raise TestFeatureError('网关地址须以 /v1 结尾')
+                username = self._text(payload.get('management_username'), '网关管理账户', 80, required=True)
                 password = payload.get('management_password')
                 if password:
                     if not isinstance(password, str) or len(password) > 4096:
-                        raise TestFeatureError('NewAPI 管理凭据长度无效')
+                        raise TestFeatureError('网关管理凭据长度无效')
                     management_password = self.seal_gateway_secret(password, 'management:'+base_url+':'+username)
                 elif current and current['engine'] == engine and current['base_url'] == base_url and current['management_username'] == username:
                     management_password = current['management_password']
@@ -272,7 +275,7 @@ class TestFeatureStore:
             elif raw_key in (None, "") and current and current['engine'] == 'legacy':
                 sealed = str(current['upstream_key'])
             else:
-                raw_key = self._text(raw_key, "NewAPI API Key", 4096, required=True)
+                raw_key = self._text(raw_key, "网关 API Key", 4096, required=True)
                 sealed = self._seal_upstream_key(raw_key)
             db.execute(
                 """INSERT INTO api2api_config(id, base_url, upstream_key, enabled, model_allowlist, updated_at)
@@ -321,7 +324,7 @@ class TestFeatureStore:
 
     def seal_gateway_secret(self, value, scope):
         if not self.keyring:
-            raise TestFeatureError('NewAPI 接入需要独立测试加密密钥', 409)
+            raise TestFeatureError('网关接入需要独立测试加密密钥', 409)
         return json.dumps(self.keyring.seal(value, 'test-feature', scope, 'secret'), separators=(',', ':'))
 
     def open_gateway_secret(self, value, scope):
@@ -379,7 +382,7 @@ class TestFeatureStore:
             return None
         digest = hashlib.sha256(raw.encode()).hexdigest()
         with closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM api2api_keys WHERE key_hash=? AND enabled=1", (digest,)).fetchone()
+            row = db.execute("SELECT * FROM api2api_keys WHERE key_hash=? AND enabled=1 AND revoked=0", (digest,)).fetchone()
             if not row:
                 return None
         return dict(row)
@@ -393,6 +396,7 @@ class TestFeatureStore:
         return [{
             "id": row["id"], "user_id": row["user_id"], "name": row["name"],
             "key_prefix": row["key_prefix"], "enabled": bool(row["enabled"]),
+            'revoked':bool(row['revoked']),
             "created_at": row["created_at"], "last_used_at": row["last_used_at"],
             'provider':row['provider'], 'remote_id':row['remote_id'], 'engine_origin':row['engine_origin'],
         } for row in rows]
@@ -400,10 +404,15 @@ class TestFeatureStore:
     def revoke_api_key(self, key_id: str, user_id: Optional[str] = None) -> bool:
         with self._lock, closing(self._connect()) as db, db:
             if user_id:
-                result = db.execute("UPDATE api2api_keys SET enabled=0 WHERE id=? AND user_id=?", (key_id, user_id))
+                result = db.execute("UPDATE api2api_keys SET enabled=0,revoked=1 WHERE id=? AND user_id=?", (key_id, user_id))
             else:
-                result = db.execute("UPDATE api2api_keys SET enabled=0 WHERE id=?", (key_id,))
+                result = db.execute("UPDATE api2api_keys SET enabled=0,revoked=1 WHERE id=?", (key_id,))
             return result.rowcount == 1
+
+    def set_api_key_enabled(self, key_id, user_id, enabled):
+        with self._lock, closing(self._connect()) as db, db:
+            return db.execute('UPDATE api2api_keys SET enabled=? WHERE id=? AND user_id=? AND revoked=0',
+                              (int(enabled),key_id,user_id)).rowcount == 1
 
     def record_usage(self, *, key_id: str, user_id: str, model: str, prompt_tokens: int,
                      completion_tokens: int, total_tokens: int, status_code: int,
@@ -820,8 +829,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             return {'items':await gateway.list_keys(user['id'])}
         rows = store.list_api_keys(user['id'])
         return {'items':[{**row,'available_here':row['provider']=='legacy',
-                          'revocable':bool(row['enabled']),
-                          'enabled':row['enabled'] and row['provider']=='legacy'} for row in rows]}
+                          'revocable':not row['revoked'], 'can_copy':False,
+                          'can_toggle':row['provider']=='legacy' and not row['revoked'],
+                          'enabled':row['enabled'] and not row['revoked'] and row['provider']=='legacy'} for row in rows]}
 
     @router.post("/api/api2api/keys", status_code=201)
     async def create_user_key(request: Request):
@@ -830,6 +840,19 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         if store.api2api_config_public().get('engine') == 'newapi':
             return {'item':await gateway.create_key(user['id'],payload.get('name'))}
         return {"item": store.create_api_key(user["id"], payload.get("name"))}
+
+    @router.post('/api/api2api/keys/{key_id}/reveal')
+    async def reveal_user_key(key_id: str, request: Request):
+        user = current_user(request)
+        raw = await gateway.reveal_key(key_id,user['id'])
+        return JSONResponse({'api_key':raw},headers={'Cache-Control':'no-store, private','Pragma':'no-cache'})
+
+    @router.put('/api/api2api/keys/{key_id}/enabled')
+    async def set_user_key_enabled(key_id: str, request: Request):
+        user = current_user(request)
+        payload = await gateway_payload(request)
+        await gateway.set_key_enabled(key_id,user['id'],payload.get('enabled'))
+        return {'ok':True}
 
     @router.delete("/api/api2api/keys/{key_id}")
     async def revoke_user_key(key_id: str, request: Request):

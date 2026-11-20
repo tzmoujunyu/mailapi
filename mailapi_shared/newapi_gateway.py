@@ -37,7 +37,7 @@ class NewAPIGateway:
     def config(self):
         config = self.store.api2api_config()
         if not config or config.get('engine') != 'newapi' or not config['enabled']:
-            raise NewAPIError('NewAPI 网关尚未启用', 503)
+            raise NewAPIError('网关尚未启用', 503)
         return config
 
     def management(self, config):
@@ -65,7 +65,7 @@ class NewAPIGateway:
                 data = response.json().get('data') or {}
                 token = data.get('access_token')
                 if response.status_code != 200 or not token:
-                    raise NewAPIError('NewAPI 管理或关联账户认证失败，请检查独立管理凭据')
+                    raise NewAPIError('网关管理或关联账户认证失败，请检查独立管理凭据')
                 cookie = response.cookies.get('new_api_refresh')
                 result = {'token':token, 'expires':float(data.get('access_expires_at') or time.time()+600),
                           'cookie':('new_api_refresh='+cookie) if cookie else previous.get('cookie',''),
@@ -75,7 +75,7 @@ class NewAPIGateway:
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
                 if isinstance(error, NewAPIError):
                     raise
-                raise NewAPIError('无法连接或认证 NewAPI，请检查网关连接') from None
+                raise NewAPIError('无法连接或认证网关，请检查网关连接') from None
 
     async def request(self, credential, method, path, *, json=None, params=None):
         for attempt in range(2):
@@ -87,12 +87,12 @@ class NewAPIGateway:
                     continue
                 data = response.json()
                 if response.status_code >= 400 or data.get('success') is not True:
-                    raise NewAPIError('NewAPI 操作失败，请检查网关配置、权限或额度')
+                    raise NewAPIError('网关操作失败，请检查网关配置、权限或额度')
                 return data.get('data')
             except (httpx.HTTPError, ValueError, TypeError) as error:
                 if isinstance(error, NewAPIError):
                     raise
-                raise NewAPIError('NewAPI 暂时不可用，请稍后重试') from None
+                raise NewAPIError('网关暂时不可用，请稍后重试') from None
 
     async def verify(self):
         config = self.config()
@@ -134,7 +134,7 @@ class NewAPIGateway:
         found = await self.request(user,'GET','/api/token/search',params={'keyword':remote_name,'size':100})
         matches = [row for row in found['items'] if row['name']==remote_name]
         if len(matches) != 1:
-            raise NewAPIError('无法确认 NewAPI 新密钥，请检查网关中的未关联令牌')
+            raise NewAPIError('无法确认网关新密钥，请检查网关中的未关联令牌')
         remote_id = int(matches[0]['id'])
         try:
             result = await self.request(user,'POST',f'/api/token/{remote_id}/key')
@@ -142,7 +142,7 @@ class NewAPIGateway:
             if not raw.startswith('sk-'):
                 raw = 'sk-'+raw
             if not raw or len(raw)>260:
-                raise NewAPIError('NewAPI 返回了无效密钥')
+                raise NewAPIError('网关返回了无效密钥')
             return self.store.register_gateway_key(user_id,name,item_id,remote_id,user['origin'],raw)
         except Exception:
             try:
@@ -168,31 +168,78 @@ class NewAPIGateway:
         for row in rows:
             current = remote.get(row['remote_id'])
             item = {key:value for key,value in row.items() if key not in {'remote_id','engine_origin','user_id'}}
-            item['enabled'] = bool(row['enabled'] and current and current.get('status')==1)
+            item['enabled'] = bool(row['enabled'] and not row['revoked'] and current and current.get('status')==1)
             item['available_here'] = row['provider']=='newapi' and row['engine_origin']==origin
-            item['revoke_pending'] = bool(not row['enabled'] and current and current.get('status')==1)
-            item['revocable'] = bool(row['enabled'] or item['revoke_pending'])
+            item['revoke_pending'] = bool(row['revoked'] and current)
+            item['revocable'] = bool(not row['revoked'] or item['revoke_pending'])
+            item['can_copy'] = bool(item['available_here'] and current and not row['revoked'])
+            item['can_toggle'] = bool(item['available_here'] and current and not row['revoked'])
+            item['pause_pending'] = bool(not row['enabled'] and not row['revoked'] and current and current.get('status')==1)
             if current:
-                item.update(used_quota=current.get('used_quota',0),remaining_quota=current.get('remain_quota',0),
+                item.update(remote_status=current.get('status'),used_quota=current.get('used_quota',0),remaining_quota=current.get('remain_quota',0),
                             unlimited=bool(current.get('unlimited_quota')),expired_at=current.get('expired_time',-1))
             result.append(item)
         return result
 
     async def revoke_key(self, key_id, user_id=None):
+        async with self.locks.setdefault(('key',key_id),asyncio.Lock()):
+            row = self.store.gateway_key(key_id,user_id)
+            if not row:
+                raise NewAPIError('未找到 API Key',404)
+            self.store.revoke_api_key(key_id,row['user_id'])
+            if row['provider'] != 'newapi':
+                return
+            config = self.config()
+            if row['engine_origin'] != config['base_url'][:-3]:
+                raise NewAPIError('本站已停用密钥；请连接原网关完成上游撤销',409)
+            try:
+                user = await self.identity(row['user_id'])
+                await self.request(user,'DELETE',f'/api/token/{row["remote_id"]}')
+            except NewAPIError:
+                raise NewAPIError('本站已停用密钥，网关撤销暂未完成，请重试') from None
+
+    def own_key(self, key_id, user_id):
         row = self.store.gateway_key(key_id,user_id)
         if not row:
             raise NewAPIError('未找到 API Key',404)
-        self.store.revoke_api_key(key_id,row['user_id'])
-        if row['provider'] != 'newapi':
-            return
-        config = self.config()
-        if row['engine_origin'] != config['base_url'][:-3]:
-            raise NewAPIError('本站已停用密钥；请连接原网关完成上游撤销',409)
-        try:
-            user = await self.identity(row['user_id'])
-            await self.request(user,'DELETE',f'/api/token/{row["remote_id"]}')
-        except NewAPIError:
-            raise NewAPIError('本站已停用密钥，NewAPI 撤销暂未完成，请重试') from None
+        if row['revoked']:
+            raise NewAPIError('密钥已撤销，无法恢复或复制',409)
+        config = self.config() if row['provider']=='newapi' else self.store.api2api_config_public()
+        expected = config['base_url'][:-3] if config.get('engine')=='newapi' else ''
+        if row['provider'] != config.get('engine','legacy') or (row['provider']=='newapi' and row['engine_origin'] != expected):
+            raise NewAPIError('密钥不属于当前网关模式',409)
+        return row
+
+    async def reveal_key(self, key_id, user_id):
+        async with self.locks.setdefault(('key',key_id),asyncio.Lock()):
+            row = self.own_key(key_id,user_id)
+            if row['provider'] != 'newapi':
+                raise NewAPIError('旧共享模式密钥只保存哈希，无法再次复制，请创建新的网关密钥',409)
+            user = await self.identity(user_id)
+            data = await self.request(user,'POST',f'/api/token/{row["remote_id"]}/key')
+            raw = data.get('key') if isinstance(data,dict) else None
+            if not isinstance(raw,str) or not raw or len(raw)>260:
+                raise NewAPIError('网关返回了无效密钥')
+            raw = raw if raw.startswith('sk-') else 'sk-'+raw
+            if hashlib.sha256(raw.encode()).hexdigest() != row['key_hash']:
+                raise NewAPIError('网关密钥与本站记录不匹配，请重新创建',409)
+            return raw
+
+    async def set_key_enabled(self, key_id, user_id, enabled):
+        if type(enabled) is not bool:
+            raise NewAPIError('启用状态必须是布尔值',400)
+        async with self.locks.setdefault(('key',key_id),asyncio.Lock()):
+            row = self.own_key(key_id,user_id)
+            self.store.set_api_key_enabled(key_id,user_id,False)
+            if row['provider']=='newapi':
+                user = await self.identity(user_id)
+                try:
+                    await self.request(user,'PUT','/api/token/',params={'status_only':'true'},
+                                       json={'id':row['remote_id'],'status':1 if enabled else 2})
+                except NewAPIError:
+                    raise NewAPIError('网关启用失败，密钥保持停用' if enabled else '本站已停用密钥，网关同步失败，请重试') from None
+            if enabled and not self.store.set_api_key_enabled(key_id,user_id,True):
+                raise NewAPIError('密钥状态已变化，请刷新',409)
 
     async def info(self, user_id):
         config = self.config()

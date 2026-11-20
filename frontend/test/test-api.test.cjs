@@ -89,3 +89,39 @@ test('revocation uses a website dialog and waits for explicit confirmation',asyn
   assert.ok(calls.some(([url,options]) => url==='/api/api2api/keys/one' && options.method==='DELETE'));
   assert.equal(el('api-revoke-dialog').open,false);
 });
+
+test('key list copies on demand without retaining plaintext and pauses then resumes the same key',async t=>{
+  const secret='sk-owned-key-for-copy-only';let enabled=true,copied='';
+  const {w,el,calls}=setup(t,(url,options)=>{
+    if(url==='/api/api2api/keys')return {items:[{id:'one',name:'Development',key_prefix:'sk-owned',provider:'newapi',enabled,revoked:false,available_here:true,can_copy:true,can_toggle:true,revocable:true}]};
+    if(url.endsWith('/reveal'))return {api_key:secret};
+    if(url.endsWith('/enabled')){enabled=JSON.parse(options.body).enabled;return {ok:true};}
+  });
+  Object.defineProperty(w.navigator,'clipboard',{value:{writeText:async value=>{copied=value;}}});
+  await w.apiUnderTest.load();
+  el('api-key-list').querySelector('[data-copy-key]').click();await tick();
+  assert.equal(copied,secret);assert.ok(!w.document.body.textContent.includes(secret));
+  el('api-key-list').querySelector('[data-toggle-key]').click();await tick();
+  assert.equal(enabled,false);assert.ok(el('api-key-list').textContent.includes('已停用'));
+  assert.equal(el('api-key-list').querySelector('[data-toggle-key]').textContent,'启用');
+  el('api-key-list').querySelector('[data-toggle-key]').click();await tick();
+  assert.equal(enabled,true);assert.equal(el('api-key-list').querySelector('[data-toggle-key]').textContent,'停用');
+  assert.deepEqual(calls.filter(([url])=>url.endsWith('/enabled')).map(([,options])=>JSON.parse(options.body).enabled),[false,true]);
+  assert.equal(w.localStorage.length,0);assert.equal(w.sessionStorage.length,0);
+});
+
+test('manual copy fallback clears its full key on close and late copy results cannot open a hidden page',async t=>{
+  let resolveCopy,delay=false;
+  const {w,el}=setup(t,url=>{
+    if(url==='/api/api2api/keys')return {items:[{id:'one',name:'Development',provider:'newapi',enabled:true,can_copy:true}]};
+    if(url.endsWith('/reveal'))return delay?new Promise(resolve=>{resolveCopy=resolve;}):{api_key:'sk-manual-copy-fixture'};
+  });
+  await w.apiUnderTest.load();
+  el('api-key-list').querySelector('[data-copy-key]').click();await tick();
+  assert.equal(el('api-key-dialog').open,true);assert.equal(el('api-key-title').textContent,'复制 API 密钥');
+  assert.equal(el('new-api-key').textContent,'sk-manual-copy-fixture');
+  el('api-key-dialog').close();assert.equal(el('new-api-key').textContent,'');
+  delay=true;el('api-key-list').querySelector('[data-copy-key]').click();await tick();
+  w.location.hash='#view-finance';await tick();resolveCopy({api_key:'sk-late-copy-fixture'});await tick();
+  assert.equal(el('api-key-dialog').open,false);assert.equal(el('new-api-key').textContent,'');
+});
