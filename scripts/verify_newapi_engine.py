@@ -4,6 +4,8 @@ Run with the local uv environment and --binary pointing at the official macOS
 arm64 v1.0.0-rc.51 release. No website or production data is read or changed.
 """
 import argparse
+import asyncio
+from base64 import b64encode
 import hashlib
 import json
 import os
@@ -11,12 +13,21 @@ from pathlib import Path
 import secrets
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
+from fastapi import FastAPI, Request
+import uvicorn
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from mailapi_shared.credential_crypto import CredentialKeyring
+from mailapi_shared.newapi_gateway import NewAPIGateway
+from mailapi_shared.test_features import install_test_features
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary', type=Path, required=True)
@@ -118,7 +129,76 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                     if b'fixture-response' in b''.join(chunks): stream_received.set()
                 assert b'[DONE]' in b''.join(chunks)
             assert stream_forwarded==[True], 'Stream did not reach the client before completion'
-            print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,'streaming_before_completion':True,'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)
+            key_file = work/'website-key.json'
+            key_file.write_text(json.dumps({'namespace':'engine-check','active':'one','keys':{'one':b64encode(AESGCM.generate_key(bit_length=256)).decode()}}))
+            key_file.chmod(0o600)
+            website_data = work/'website-data'
+            website = FastAPI()
+            users = {name:{'id':name,'username':name,'role':'admin' if name=='admin' else 'user','status':'active'} for name in ('alice-test','bob-test','admin')}
+            class FixtureAccounts:
+                def get_user(self, user_id, **kwargs):
+                    return users.get(user_id)
+            website.state.site_accounts = FixtureAccounts()
+            @website.middleware('http')
+            async def fixture_session(request: Request, call_next):
+                # This fixture-only identity shortcut is never installed in the website.
+                request.state.site_user = users.get(request.headers.get('x-test-user','alice-test'))
+                return await call_next(request)
+            store = install_test_features(website,work,website_data,CredentialKeyring(key_file,data_dirs=(website_data,)))
+            store.configure_api2api({'engine':'newapi','base_url':f'http://127.0.0.1:{port}/v1','management_username':'mailapitest',
+                                     'management_password':password,'initial_quota':1_000_000,'enabled':True,'model_allowlist':['gpt-4o-mini']})
+            web_socket = socket.socket()
+            web_socket.bind(('127.0.0.1',0))
+            web_port = web_socket.getsockname()[1]
+            server = uvicorn.Server(uvicorn.Config(website,log_level='error',access_log=False))
+            web_thread = threading.Thread(target=lambda:server.run(sockets=[web_socket]),daemon=True)
+            web_thread.start()
+            try:
+                for _ in range(100):
+                    if server.started: break
+                    time.sleep(.05)
+                assert server.started, 'Website readiness timeout'
+                with httpx.Client(base_url=f'http://127.0.0.1:{web_port}',timeout=20,trust_env=False) as web:
+                    alice = web.post('/api/api2api/keys',json={'name':'Alice development'}).json()['item']
+                    bob = web.post('/api/api2api/keys',json={'name':'Bob development'},headers={'x-test-user':'bob-test'}).json()['item']
+                    assert [row['id'] for row in web.get('/api/api2api/keys').json()['items']]==[alice['id']]
+                    assert web.delete('/api/api2api/keys/'+bob['id']).status_code==404
+                    bearer = {'Authorization':'Bearer '+alice['api_key']}
+                    result = web.post('/api2api/v1/chat/completions',json=payload,headers=bearer)
+                    assert result.status_code==200, ('website relay status',result.status_code)
+                    assert result.json()['choices'][0]['message']['content']=='fixture-response'
+                    assert seen[-1]==payload
+                    stream_received.clear()
+                    with web.stream('POST','/api2api/v1/chat/completions',json={**payload,'stream':True,'stream_options':{'include_usage':True}},headers=bearer) as result:
+                        assert result.status_code==200
+                        chunks=[]
+                        for chunk in result.iter_bytes():
+                            chunks.append(chunk)
+                            if b'fixture-response' in b''.join(chunks): stream_received.set()
+                        assert b'[DONE]' in b''.join(chunks)
+                    assert stream_forwarded==[True,True], 'Website buffered the stream'
+                    assert web.get('/api/api2api/usage').json()['total_tokens']==16
+                    info = web.get('/api/api2api/engine')
+                    assert info.status_code==200 and info.json()['linked'], ('engine info',info.status_code)
+                    channels = web.get('/api/admin/api2api/channels',headers={'x-test-user':'admin'})
+                    assert channels.status_code==200 and channels.json()['items'], ('channels',channels.status_code)
+                    assert 'fixture-upstream-only' not in channels.text
+                    assert web.delete('/api/api2api/keys/'+alice['id']).status_code==200
+                    assert web.post('/api2api/v1/chat/completions',json=payload,headers=bearer).status_code==401
+                    assert client.post('/v1/chat/completions',json=payload,headers=bearer).status_code==401
+                    assert web.post('/api2api/v1/chat/completions',json=payload,headers={'Authorization':'Bearer '+bob['api_key']}).status_code==200
+                    disk = b''.join(p.read_bytes() for p in website_data.iterdir() if p.is_file())
+                    assert alice['api_key'].encode() not in disk
+                    assert password.encode() not in disk
+            finally:
+                server.should_exit=True
+                web_thread.join(timeout=10)
+                web_socket.close()
+
+            print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,
+                              'streaming_before_completion':True,'website_http_native_keys':True,
+                              'separate_engine_identities':True,'revocation_enforced':True,
+                              'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)
     finally:
         stream_received.set()
         process.terminate()

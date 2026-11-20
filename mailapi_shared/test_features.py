@@ -6,11 +6,13 @@ write production resource pools or website-account data.
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import io
+import ipaddress
 import json
 import mimetypes
 import os
@@ -43,7 +45,7 @@ ALLOWED_FINANCE_TYPES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
-API_KEY_PATTERN = re.compile(r"^mk_[A-Za-z0-9_-]{32,}$")
+API_KEY_PATTERN = re.compile(r"^(?:mk_|sk-)[A-Za-z0-9_-]{24,256}$")
 SCHEMA = """
 PRAGMA user_version = 1;
 CREATE TABLE IF NOT EXISTS api2api_config (
@@ -66,6 +68,11 @@ CREATE TABLE IF NOT EXISTS api2api_usage (
     error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_api2api_usage_user_time ON api2api_usage(user_id, created_at);
+CREATE TABLE IF NOT EXISTS newapi_users (
+    origin TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL,
+    credential TEXT NOT NULL, remote_id INTEGER, initialized INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(origin, user_id)
+);
 CREATE TABLE IF NOT EXISTS finance_applications (
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, username TEXT NOT NULL,
     user_note TEXT NOT NULL, groups_json TEXT NOT NULL, project TEXT NOT NULL,
@@ -145,6 +152,18 @@ class TestFeatureStore:
         os.chmod(self.path, 0o600)
         with closing(self._connect()) as db, db:
             db.executescript(SCHEMA)
+            for table, fields in {
+                'api2api_config': [('engine', "TEXT NOT NULL DEFAULT 'legacy'"),
+                                  ('management_username', "TEXT NOT NULL DEFAULT ''"),
+                                  ('management_password', "TEXT NOT NULL DEFAULT ''"),
+                                  ('initial_quota', 'INTEGER NOT NULL DEFAULT 0')],
+                'api2api_keys': [('provider', "TEXT NOT NULL DEFAULT 'legacy'"),
+                                ('remote_id', 'INTEGER'), ('engine_origin', "TEXT NOT NULL DEFAULT ''")],
+            }.items():
+                existing = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+                for name, definition in fields:
+                    if name not in existing:
+                        db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
             columns = {row[1] for row in db.execute("PRAGMA table_info(finance_applications)")}
             if "updated_at" not in columns:
                 db.execute("ALTER TABLE finance_applications ADD COLUMN updated_at TEXT")
@@ -202,6 +221,12 @@ class TestFeatureStore:
 
     def configure_api2api(self, payload: dict[str, Any]) -> dict[str, Any]:
         base_url = self._base_url(payload.get("base_url"))
+        engine = payload.get('engine', 'legacy')
+        if engine not in {'legacy', 'newapi'}:
+            raise TestFeatureError('未知的 API 引擎')
+        initial_quota = payload.get('initial_quota', 0)
+        if type(initial_quota) is not int or not 0 <= initial_quota <= 1_000_000_000:
+            raise TestFeatureError('初始额度须为 0–1000000000 的整数')
         enabled = payload.get("enabled", True) is True
         models = payload.get("model_allowlist", [])
         if not isinstance(models, list) or any(not isinstance(model, str) for model in models):
@@ -214,10 +239,33 @@ class TestFeatureStore:
         if len(model_allowlist) > 100:
             raise TestFeatureError("模型限制最多 100 个")
         with self._lock, closing(self._connect()) as db, db:
-            current = db.execute("SELECT upstream_key FROM api2api_config WHERE id=1").fetchone()
+            current = db.execute("SELECT * FROM api2api_config WHERE id=1").fetchone()
+            username, management_password = '', ''
+            if engine == 'newapi':
+                parsed = urlsplit(base_url)
+                try:
+                    loopback = ipaddress.ip_address(parsed.hostname).is_loopback
+                except ValueError:
+                    loopback = parsed.hostname == 'localhost'
+                if parsed.scheme != 'https' and not loopback:
+                    raise TestFeatureError('NewAPI 管理连接须使用 HTTPS，本机回环测试除外')
+                if not base_url.endswith('/v1'):
+                    raise TestFeatureError('NewAPI 网关地址须以 /v1 结尾')
+                username = self._text(payload.get('management_username'), 'NewAPI 管理账户', 80, required=True)
+                password = payload.get('management_password')
+                if password:
+                    if not isinstance(password, str) or len(password) > 4096:
+                        raise TestFeatureError('NewAPI 管理凭据长度无效')
+                    management_password = self.seal_gateway_secret(password, 'management:'+base_url+':'+username)
+                elif current and current['engine'] == engine and current['base_url'] == base_url and current['management_username'] == username:
+                    management_password = current['management_password']
+                else:
+                    raise TestFeatureError('首次连接或更换网关时须填写独立管理凭据')
             raw_key = payload.get("upstream_key")
-            if raw_key in (None, "") and current:
-                sealed = str(current[0])
+            if engine == 'newapi':
+                sealed = self._seal_upstream_key('')
+            elif raw_key in (None, "") and current and current['engine'] == 'legacy':
+                sealed = str(current['upstream_key'])
             else:
                 raw_key = self._text(raw_key, "NewAPI API Key", 4096, required=True)
                 sealed = self._seal_upstream_key(raw_key)
@@ -229,6 +277,8 @@ class TestFeatureStore:
                    model_allowlist=excluded.model_allowlist, updated_at=excluded.updated_at""",
                 (base_url, sealed, int(enabled), json.dumps(model_allowlist, ensure_ascii=False), _now()),
             )
+            db.execute('UPDATE api2api_config SET engine=?,management_username=?,management_password=?,initial_quota=? WHERE id=1',
+                       (engine, username, management_password, initial_quota))
         return self.api2api_config_public()
 
     def api2api_config(self) -> Optional[dict[str, Any]]:
@@ -237,24 +287,75 @@ class TestFeatureStore:
         if not row:
             return None
         return {
+            'engine': row['engine'],
             "base_url": row["base_url"],
             "upstream_key": self._open_upstream_key(row["upstream_key"]),
             "enabled": bool(row["enabled"]),
             "model_allowlist": json.loads(row["model_allowlist"]),
+            'management_username': row['management_username'],
+            'management_password': self.open_gateway_secret(row['management_password'], 'management:'+row['base_url']+':'+row['management_username']) if row['management_password'] else '',
+            'initial_quota': row['initial_quota'],
         }
 
     def api2api_config_public(self) -> dict[str, Any]:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM api2api_config WHERE id=1").fetchone()
         if not row:
-            return {"configured": False, "base_url": "", "enabled": False, "model_allowlist": [], "has_upstream_key": False}
+            return {"configured": False, 'engine':'legacy', "base_url": "", "enabled": False, "model_allowlist": [], "has_upstream_key": False}
         return {
+            'engine': row['engine'],
             "configured": True,
             "base_url": row["base_url"],
             "enabled": bool(row["enabled"]),
             "model_allowlist": json.loads(row["model_allowlist"]),
             "has_upstream_key": bool(row["upstream_key"]),
+            'management_username': row['management_username'],
+            'has_management_password': bool(row['management_password']),
+            'initial_quota': row['initial_quota'],
         }
+
+    def seal_gateway_secret(self, value, scope):
+        if not self.keyring:
+            raise TestFeatureError('NewAPI 接入需要独立测试加密密钥', 409)
+        return json.dumps(self.keyring.seal(value, 'test-feature', scope, 'secret'), separators=(',', ':'))
+
+    def open_gateway_secret(self, value, scope):
+        if not self.keyring:
+            raise CredentialCryptoError('缺少测试加密密钥')
+        return self.keyring.open(json.loads(value), 'test-feature', scope, 'secret')
+
+    def gateway_user(self, origin, user_id, *, create=True):
+        scope = 'newapi-user:'+origin+':'+user_id
+        with self._lock, closing(self._connect()) as db, db:
+            row = db.execute('SELECT * FROM newapi_users WHERE origin=? AND user_id=?', (origin,user_id)).fetchone()
+            if not row and not create:
+                return None
+            if not row:
+                username = 'mw_'+hashlib.sha256(user_id.encode()).hexdigest()[:16]
+                credential = self.seal_gateway_secret(secrets.token_urlsafe(40), scope)
+                db.execute('INSERT INTO newapi_users(origin,user_id,username,credential) VALUES(?,?,?,?)', (origin,user_id,username,credential))
+                row = db.execute('SELECT * FROM newapi_users WHERE origin=? AND user_id=?', (origin,user_id)).fetchone()
+        return {**dict(row), 'password':self.open_gateway_secret(row['credential'],scope)}
+
+    def finish_gateway_user(self, origin, user_id, remote_id):
+        with self._lock, closing(self._connect()) as db, db:
+            db.execute('UPDATE newapi_users SET remote_id=?, initialized=1 WHERE origin=? AND user_id=?', (remote_id,origin,user_id))
+
+    def register_gateway_key(self, user_id, name, item_id, remote_id, origin, raw):
+        now = _now()
+        with self._lock, closing(self._connect()) as db, db:
+            db.execute('INSERT INTO api2api_keys(id,user_id,name,key_hash,key_prefix,created_at,provider,remote_id,engine_origin) VALUES(?,?,?,?,?,?,\'newapi\',?,?)',
+                       (item_id,user_id,name,hashlib.sha256(raw.encode()).hexdigest(),raw[:12],now,remote_id,origin))
+        return {'id':item_id,'name':name,'api_key':raw,'key_prefix':raw[:12],'provider':'newapi','created_at':now}
+
+    def gateway_key(self, key_id, user_id=None):
+        with closing(self._connect()) as db:
+            query, args = 'SELECT * FROM api2api_keys WHERE id=?', [key_id]
+            if user_id is not None:
+                query += ' AND user_id=?'
+                args.append(user_id)
+            row = db.execute(query,args).fetchone()
+        return dict(row) if row else None
 
     def create_api_key(self, user_id: str, name: Any) -> dict[str, Any]:
         name = self._text(name, "API Key 名称", MAX_API_KEY_NAME, required=True)
@@ -272,12 +373,10 @@ class TestFeatureStore:
         if not isinstance(raw, str) or not API_KEY_PATTERN.fullmatch(raw):
             return None
         digest = hashlib.sha256(raw.encode()).hexdigest()
-        now = _now()
-        with self._lock, closing(self._connect()) as db, db:
+        with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM api2api_keys WHERE key_hash=? AND enabled=1", (digest,)).fetchone()
             if not row:
                 return None
-            db.execute("UPDATE api2api_keys SET last_used_at=? WHERE id=?", (now, row["id"]))
         return dict(row)
 
     def list_api_keys(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
@@ -290,6 +389,7 @@ class TestFeatureStore:
             "id": row["id"], "user_id": row["user_id"], "name": row["name"],
             "key_prefix": row["key_prefix"], "enabled": bool(row["enabled"]),
             "created_at": row["created_at"], "last_used_at": row["last_used_at"],
+            'provider':row['provider'], 'remote_id':row['remote_id'], 'engine_origin':row['engine_origin'],
         } for row in rows]
 
     def revoke_api_key(self, key_id: str, user_id: Optional[str] = None) -> bool:
@@ -310,6 +410,7 @@ class TestFeatureStore:
                 (key_id, user_id, model[:MAX_MODEL_NAME], max(0, prompt_tokens), max(0, completion_tokens),
                  max(0, total_tokens), status_code, max(0, request_ms), error[:200], _now()),
             )
+            db.execute('UPDATE api2api_keys SET last_used_at=? WHERE id=?', (_now(),key_id))
 
     def usage_summary(self, user_id: Optional[str] = None) -> dict[str, Any]:
         with closing(self._connect()) as db:
@@ -484,12 +585,19 @@ def _parse_amount(value: Any) -> int:
 
 
 def _usage_from_payload(payload: Any) -> tuple[int, int, int]:
+    if isinstance(payload, dict) and isinstance(payload.get('response'),dict):
+        payload = payload['response']
     usage = payload.get("usage") if isinstance(payload, dict) else None
     if not isinstance(usage, dict):
         return 0, 0, 0
-    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-    total = int(usage.get("total_tokens") or prompt + completion)
+    try:
+        prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        total = int(usage.get("total_tokens") or prompt + completion)
+        if max(prompt,completion,total)>2**63-1:
+            return 0,0,0
+    except (ValueError,TypeError,OverflowError):
+        return 0,0,0
     return max(0, prompt), max(0, completion), max(0, total)
 
 
@@ -509,13 +617,29 @@ class _StreamUsage:
             if value in {b"", b"[DONE]"}:
                 continue
             try:
-                self.usage = _usage_from_payload(json.loads(value))
+                payload = json.loads(value)
+                source = payload.get('response',payload) if isinstance(payload,dict) else {}
+                if isinstance(source,dict) and isinstance(source.get('usage'),dict):
+                    self.usage = _usage_from_payload(payload)
             except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
                 continue
+        if len(self.buffer)>1024*1024:
+            self.buffer = b''
 
 
 def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optional[CredentialKeyring]):
     store = TestFeatureStore(data_dir, keyring)
+    from .newapi_gateway import NewAPIGateway, NewAPIError
+    gateway = NewAPIGateway(store)
+    app.state.newapi_gateway = gateway
+
+    @app.exception_handler(NewAPIError)
+    async def newapi_failure(request, error):
+        return JSONResponse({'detail':str(error)},status_code=error.status_code)
+
+    @app.exception_handler(TestFeatureError)
+    async def feature_failure(request, error):
+        return JSONResponse({'detail':str(error)},status_code=error.status_code)
     from .site_announcements import install_site_announcements
     install_site_announcements(app, store)
     router = APIRouter()
@@ -532,6 +656,18 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         if user.get("role") not in ADMIN_ROLES:
             raise HTTPException(403, "需要管理员权限")
         return user
+
+    async def gateway_payload(request):
+        body = await request.body()
+        if len(body)>65536:
+            raise HTTPException(413,'请求内容过长')
+        try:
+            payload = json.loads(body)
+        except (ValueError,UnicodeDecodeError,RecursionError):
+            raise HTTPException(400,'请求必须是 JSON 对象') from None
+        if not isinstance(payload,dict):
+            raise HTTPException(400,'请求必须是 JSON 对象')
+        return payload
 
     def user_snapshot(request: Request):
         user = current_user(request)
@@ -617,7 +753,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     @router.get("/api/test-features/status")
     def feature_status(request: Request):
         user = current_user(request)
-        return {"role": user["role"], "api2api": store.api2api_config_public()}
+        config = store.api2api_config_public()
+        return {"role": user["role"], "api2api": {key:config.get(key) for key in ('engine','configured','enabled')}}
 
     @router.get("/api/test-ui/views/{name}.js")
     def workspace_controller(name: str, request: Request):
@@ -645,19 +782,29 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return request.app.state.site_accounts.set_interface_preferences(current_user(request)["id"], payload)
 
     @router.get("/api/api2api/keys")
-    def list_user_keys(request: Request):
+    async def list_user_keys(request: Request):
         user = current_user(request)
-        return {"items": store.list_api_keys(user["id"])}
+        if store.api2api_config_public().get('engine') == 'newapi':
+            return {'items':await gateway.list_keys(user['id'])}
+        rows = store.list_api_keys(user['id'])
+        return {'items':[{**row,'available_here':row['provider']=='legacy',
+                          'enabled':row['enabled'] and row['provider']=='legacy'} for row in rows]}
 
     @router.post("/api/api2api/keys", status_code=201)
     async def create_user_key(request: Request):
         user = current_user(request)
-        payload = await request.json()
+        payload = await gateway_payload(request)
+        if store.api2api_config_public().get('engine') == 'newapi':
+            return {'item':await gateway.create_key(user['id'],payload.get('name'))}
         return {"item": store.create_api_key(user["id"], payload.get("name"))}
 
     @router.delete("/api/api2api/keys/{key_id}")
-    def revoke_user_key(key_id: str, request: Request):
+    async def revoke_user_key(key_id: str, request: Request):
         user = current_user(request)
+        row = store.gateway_key(key_id,user['id'])
+        if row and row['provider']=='newapi':
+            await gateway.revoke_key(key_id,user['id'])
+            return {'ok':True}
         if not store.revoke_api_key(key_id, user["id"]):
             raise HTTPException(404, "未找到 API Key")
         return {"ok": True}
@@ -666,6 +813,13 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     def user_api_usage(request: Request):
         user = current_user(request)
         return store.usage_summary(user["id"])
+
+    @router.get('/api/api2api/engine')
+    async def user_engine_info(request: Request):
+        user = current_user(request)
+        if store.api2api_config_public().get('engine') != 'newapi':
+            return {'engine':'legacy','linked':False,'models':store.api2api_config_public().get('model_allowlist',[])}
+        return await gateway.info(user['id'])
 
     @router.get("/api/admin/api2api/config")
     def admin_api_config(request: Request):
@@ -676,9 +830,42 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def save_api_config(request: Request):
         require_admin(request)
         try:
-            return store.configure_api2api(await request.json())
+            payload = await gateway_payload(request)
+            if urlsplit(str(payload.get('base_url',''))).netloc == request.url.netloc:
+                raise TestFeatureError('网关不能指向网站自身')
+            return store.configure_api2api(payload)
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
+
+    @router.post('/api/admin/api2api/verify')
+    async def verify_api_engine(request: Request):
+        require_admin(request)
+        return await gateway.verify()
+
+    @router.get('/api/admin/api2api/channels')
+    async def list_api_channels(request: Request):
+        require_admin(request)
+        return {'items':await gateway.channels()}
+
+    @router.post('/api/admin/api2api/channels',status_code=201)
+    async def add_api_channel(request: Request):
+        require_admin(request)
+        try:
+            payload = await gateway_payload(request)
+            target = urlsplit(str(payload.get('base_url','')))
+            if target.netloc == request.url.netloc:
+                raise TestFeatureError('上游不能指向网站自身')
+            return await gateway.add_channel(payload)
+        except TestFeatureError as error:
+            raise HTTPException(error.status_code,str(error)) from error
+
+    @router.put('/api/admin/api2api/users/{user_id}/quota')
+    async def change_api_quota(user_id: str, request: Request):
+        require_admin(request)
+        if not request.app.state.site_accounts.get_user(user_id):
+            raise HTTPException(404,'未找到网站账户')
+        payload = await gateway_payload(request)
+        return await gateway.set_quota(user_id,payload.get('quota'))
 
     @router.get("/api/admin/api2api/keys")
     def admin_api_keys(request: Request):
@@ -686,8 +873,12 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return {"items": store.list_api_keys()}
 
     @router.delete("/api/admin/api2api/keys/{key_id}")
-    def admin_revoke_api_key(key_id: str, request: Request):
+    async def admin_revoke_api_key(key_id: str, request: Request):
         require_admin(request)
+        row = store.gateway_key(key_id)
+        if row and row['provider']=='newapi':
+            await gateway.revoke_key(key_id)
+            return {'ok':True}
         if not store.revoke_api_key(key_id):
             raise HTTPException(404, "未找到 API Key")
         return {"ok": True}
@@ -695,7 +886,14 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     @router.get("/api/admin/api2api/usage")
     def admin_api_usage(request: Request):
         require_admin(request)
-        return {"items": store.usage_by_user()}
+        rows = {row['user_id']:row for row in store.usage_by_user()}
+        for key in store.list_api_keys():
+            rows.setdefault(key['user_id'],{'user_id':key['user_id'],'requests':0,'prompt_tokens':0,'completion_tokens':0,'total_tokens':0})
+        for row in rows.values():
+            account = request.app.state.site_accounts.get_user(row['user_id'],include_note=True)
+            row['username'] = account['username'] if account else '已删除账户'
+            row['user_note'] = account.get('note','') if account else ''
+        return {"items": list(rows.values())}
 
     @router.api_route("/api2api/v1/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     async def api2api_proxy(proxy_path: str, request: Request):
@@ -706,9 +904,19 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         key = store.authenticate_api_key(raw_key)
         if not key:
             return JSONResponse({"error": {"message": "Invalid API key", "type": "authentication_error"}}, status_code=401)
-        config = store.api2api_config()
-        if not config or not config["enabled"] or not config["upstream_key"]:
+        owner = request.app.state.site_accounts.get_user(key['user_id'],include_status=True)
+        if not owner or owner.get('status','active') != 'active':
+            return JSONResponse({'error':{'message':'API owner is unavailable','type':'authentication_error'}},status_code=401)
+        config = store.api2api_config_public()
+        if not config.get('configured') or not config['enabled']:
             return JSONResponse({"error": {"message": "API2API is not configured", "type": "configuration_error"}}, status_code=503)
+        native = config.get('engine') == 'newapi'
+        if (native and (key['provider'] != 'newapi' or key['engine_origin'] != config['base_url'][:-3])) or (not native and key['provider'] != 'legacy'):
+            return JSONResponse({'error':{'message':'API key does not belong to the active gateway','type':'authentication_error'}},status_code=401)
+        if '\\' in proxy_path or any(part in {'.','..'} for part in proxy_path.split('/')):
+            return JSONResponse({'error':{'message':'Invalid API path','type':'invalid_request_error'}},status_code=400)
+        if not native:
+            config = store.api2api_config()
         body = await request.body()
         model = ""
         try:
@@ -721,19 +929,23 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         if client_holder["client"] is None:
             client_holder["client"] = httpx.AsyncClient(
                 limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
-                timeout=httpx.Timeout(120.0, connect=10.0), follow_redirects=False,
+                timeout=httpx.Timeout(connect=5,read=None,write=30,pool=5), follow_redirects=False, trust_env=False,
             )
         target = config["base_url"].rstrip("/") + "/" + proxy_path.lstrip("/")
-        headers = {"Authorization": f"Bearer {config['upstream_key']}", "Accept": request.headers.get("accept", "*/*"), "Accept-Encoding": "identity"}
+        headers = {"Authorization": f"Bearer {raw_key if native else config['upstream_key']}", "Accept": request.headers.get("accept", "*/*"), "Accept-Encoding": "identity"}
         if request.headers.get("content-type"):
             headers["Content-Type"] = request.headers["content-type"]
+        for name in ('openai-beta','openai-project','openai-organization','idempotency-key','x-client-request-id'):
+            if name in request.headers:
+                headers[name] = request.headers[name]
         started = time.perf_counter()
         try:
             upstream_request = client_holder["client"].build_request(request.method, target, params=list(request.query_params.multi_items()), headers=headers, content=body)
             upstream = await client_holder["client"].send(upstream_request, stream=True)
             response_type = upstream.headers.get("content-type", "")
-            response_headers = {name: value for name, value in upstream.headers.items() if name.lower() in {"content-type", "cache-control"}}
+            response_headers = {name: value for name, value in upstream.headers.items() if name.lower() in {"content-type", "cache-control",'retry-after','x-request-id'}}
             if "text/event-stream" in response_type:
+                response_headers.update({'X-Accel-Buffering':'no','Cache-Control':'no-cache'})
                 collector = _StreamUsage()
 
                 async def stream_body():
@@ -743,6 +955,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                             yield chunk
                     finally:
                         await upstream.aclose()
+                        collector.feed(b'\n')
                         prompt, completion, total = collector.usage
                         store.record_usage(key_id=key["id"], user_id=key["user_id"], model=model,
                                            prompt_tokens=prompt, completion_tokens=completion, total_tokens=total,
@@ -1009,6 +1222,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
 
     @app.on_event("shutdown")
     async def close_test_feature_client():
+        await gateway.close()
         client = client_holder["client"]
         if client is not None:
             await client.aclose()
