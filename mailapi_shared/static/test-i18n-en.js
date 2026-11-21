@@ -1,5 +1,7 @@
 window.MILVLG_EN = {
   "正在加载…": "Loading…",
+  "新增小组列": "Add group column",
+  "选择日志时间范围": "Select log date range",
   "页面加载失败，请重试": "Could not load this page. Please try again.",
   "主页": "Home",
   "资源": "Resources",

@@ -36,6 +36,14 @@ body.test-ui-page:not(.test-ui-login) { --test-header-height: 56px; padding-top:
 }
 body:not(.dock-expanded) .test-ui-nav a:hover .test-ui-nav-tooltip,
 body:not(.dock-expanded) .test-ui-nav a:focus-visible .test-ui-nav-tooltip { display: block; }
+.test-has-tooltips .test-ui-nav-tooltip { display: none !important; }
+.test-control-tooltip {
+  box-sizing: border-box; position: fixed; inset: auto; margin: 0; z-index: 1000;
+  max-width: min(280px, calc(100vw - 16px)); padding: 7px 10px; border: 0; border-radius: 7px;
+  background: var(--test-ink); color: var(--test-card); box-shadow: 0 3px 12px #0002;
+  font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere;
+}
+.test-control-tooltip[hidden] { display: none; }
 .test-ui-header .test-ui-account { display: block; }
 .test-ui-header .test-ui-avatar-button { display: grid; place-items: center; width: 36px; height: 36px; min-height: 36px; padding: 0; border: 0; background: transparent; cursor: pointer; }
 .test-ui-header .test-ui-avatar { flex: none; width: 32px; height: 32px; background: var(--test-primary-fill); box-shadow: none; }

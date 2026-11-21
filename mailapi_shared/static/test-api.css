@@ -99,6 +99,9 @@ body.test-ui-features:has(#view-api2api.active) .content { max-width:none; }
 #view-api2api .api-key-expiry, #view-api2api #api-key-list td:nth-child(2) { white-space:nowrap; }
 #view-api2api button.api-icon-button { width:30px; height:30px; min-height:30px; padding:6px; border:0; background:transparent; }
 #view-api2api button.api-icon-button:hover { background:var(--api-soft); }
+#view-api2api .api-key-actions .api-icon-button { width:36px; height:36px; min-height:36px; }
+#view-api2api .api-key-actions .api-icon-button:focus-visible { outline:2px solid var(--api-accent); outline-offset:2px; }
+@media (pointer:coarse) { #view-api2api .api-key-actions .api-icon-button { width:44px; height:44px; min-height:44px; } }
 #view-api2api button.api-icon-button.api-bad { color:light-dark(#bd333c,#ff9ca3); }
 #view-api2api button.api-icon-button.api-good { color:light-dark(#147746,#78d6a4); }
 #view-api2api .api-key-menu { position:fixed; inset:auto; margin:0; width:180px; padding:6px; border:1px solid var(--api-line); border-radius:10px; background:var(--api-panel); color:var(--api-text); box-shadow:0 8px 30px #0002; }
