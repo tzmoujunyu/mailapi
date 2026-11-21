@@ -34,6 +34,32 @@ def series(value):
     return sorted(result,key=lambda row:row['ts'])
 
 
+def billing_metadata(raw):
+    """Public pricing contract only; never forward arbitrary engine fields."""
+    result = {key:raw[key] for key in ('billing_mode','billing_expr') if isinstance(raw.get(key),str)}
+    schema = raw.get('billing_usage_schema')
+    if isinstance(schema,dict):
+        result['billing_usage_schema'] = {name:{key:value for key,value in definition.items()
+                                               if key in {'type','unit','unitLabel','enum','enumLabels','description'}}
+                                          for name,definition in schema.items() if isinstance(definition,dict)}
+        examples = raw.get('billing_usage_examples')
+        if isinstance(examples,list):
+            result['billing_usage_examples'] = [
+                {'label':text(row.get('label'),500),
+                 'facts':{key:value for key,value in row['facts'].items() if key in schema and
+                          (isinstance(value,str) or type(value) is bool or number(value) is not None)}}
+                for row in examples if isinstance(row,dict) and isinstance(row.get('facts'),dict)]
+    variants = raw.get('billing_plugin_variants')
+    if isinstance(variants,list):
+        result['billing_plugin_variants'] = [
+            {**billing_metadata({key:value for key,value in row.items() if key!='billing_plugin_variants'}),
+             'plugin_key':text(row.get('plugin_key')),'plugin_name':text(row.get('plugin_name'))}
+            for row in variants if isinstance(row,dict)]
+    if raw.get('ordinary_pricing') is True:
+        result['ordinary_pricing'] = True
+    return result
+
+
 def catalog(names, groups, pricing, status, performance, allowlist):
     groups = list(groups) if isinstance(groups,dict) else []
     pricing_ok = isinstance(pricing,dict) and isinstance(pricing.get('data'),list)
@@ -65,7 +91,9 @@ def catalog(names, groups, pricing, status, performance, allowlist):
         if raw.get('billing_expr') or raw.get('billing_plugin_variants') or raw.get('billing_mode') not in {None,'','ratio'}:
             kind = 'dynamic'
         prices = {}
-        if kind=='token':
+        ratio_pricing = raw.get('ordinary_pricing') is True or any(
+            isinstance(row,dict) and row.get('billing_mode')=='ratio' for row in raw.get('billing_plugin_variants') or [])
+        if raw.get('quota_type')==0 and (kind=='token' or ratio_pricing):
             ratio = number(raw.get('model_ratio'))
             if ratio is not None and number(ratio*2) is not None:
                 prices['input'] = ratio*2  # Native model ratios are USD / 500K input tokens.
@@ -75,7 +103,7 @@ def catalog(names, groups, pricing, status, performance, allowlist):
                         product = number(ratio*2*value)
                         if product is not None:
                             prices[key] = product
-        elif kind=='request':
+        elif raw.get('quota_type')==1 and (kind=='request' or ratio_pricing):
             price = number(raw.get('model_price'))
             if price is not None:
                 prices['request'] = price
@@ -90,7 +118,9 @@ def catalog(names, groups, pricing, status, performance, allowlist):
         items.append({'id':name,'vendor':vendors.get(raw.get('vendor_id')) or text(raw.get('owner_by')),
                       'description':text(raw.get('description'),2000),'tags':strings(tags),
                       'groups':[{'id':group,'ratio':number(ratios.get(group))} for group in model_groups],
-                      'endpoints':supported,'billing':kind,'prices':prices,
+                      'endpoints':supported,'billing':kind,'base_billing':'request' if raw.get('quota_type')==1 else 'token',
+                      'prices':prices, 'dynamic_pricing':billing_metadata(raw),
+                      'auto_groups':[group for group in strings(pricing.get('auto_groups')) if group in model_groups],
                       'performance':metrics(summary),'recent':recent})
     currency = {'symbol':'$','standard_rate':1,'recharge_rate':None}
     mode = status.get('quota_display_type')

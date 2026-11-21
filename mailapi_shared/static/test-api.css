@@ -274,18 +274,81 @@ body:has(#view-api2api dialog[open]) { overflow:hidden; }
 #view-api2api .api-model-table .api-catalog-prices { min-width:140px; margin-bottom:0; }
 #view-api2api .api-model-table .api-model-table-name { display:flex; gap:9px; align-items:center; text-align:left; max-width:280px; white-space:normal; overflow-wrap:anywhere; }
 #view-api2api .api-catalog-badge { display:inline-block; max-width:100%; margin:2px; padding:3px 6px; border:1px solid var(--api-line); border-radius:6px; background:var(--api-soft); font-size:11px; overflow-wrap:anywhere; }
-#view-api2api .api-model-dialog { width:min(880px,calc(100vw - 28px)); }
+#view-api2api .api-model-dialog { width:min(960px,calc(100vw - 28px)); }
 #view-api2api .api-model-dialog .api-dialog-heading > div:first-child { min-width:0; }
+#view-api2api .api-model-dialog .api-dialog-heading { position:sticky; top:-20px; z-index:3; padding:12px 0; background:var(--api-panel); }
 #view-api2api .api-model-dialog h3 { overflow-wrap:anywhere; }
-#view-api2api .api-model-detail-tabs { display:flex; gap:6px; padding-bottom:12px; margin-bottom:16px; border-bottom:1px solid var(--api-line); }
-#view-api2api .api-model-detail-tabs button { min-height:32px; padding:5px 14px; border:0; font-size:13px; color:var(--api-muted); }
-#view-api2api .api-model-detail-tabs button[aria-pressed="true"] { background:var(--api-tint); color:var(--api-accent); }
+#view-api2api .api-model-detail-tabs { display:flex; gap:4px; padding:4px; margin-bottom:20px; border-radius:12px; background:var(--api-soft); }
+#view-api2api .api-model-detail-tabs button { flex:1; min-height:34px; padding:5px 14px; border:0; font-size:13px; color:var(--api-muted); background:transparent; }
+#view-api2api .api-model-detail-tabs button[aria-pressed="true"] { background:var(--api-panel); color:var(--api-text); box-shadow:0 1px 4px #00000012; }
 #view-api2api .api-model-dialog h4 { margin:22px 0 12px; font-size:14px; }
 #view-api2api .api-model-dialog section > p { line-height:1.7; overflow-wrap:anywhere; }
 #view-api2api .api-model-detail-meta { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
 #view-api2api .api-model-detail-meta dt { color:var(--api-muted); font-size:12px; margin-bottom:7px; }
 #view-api2api .api-model-detail-meta dd { margin:0; font-size:13px; }
 #view-api2api .api-model-dialog table { min-width:580px; }
+#view-api2api .api-detail-section { margin-top:20px; padding:20px; border:1px solid var(--api-line); border-radius:16px; background:var(--api-panel); }
+#view-api2api .api-detail-section h4:first-child { margin-top:0; }
+#view-api2api .api-pricing-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px; }
+#view-api2api .api-pricing-title h4 { margin:0; }
+#view-api2api .api-pricing-title .api-segment button { min-height:28px; padding:3px 10px; font-size:11px; }
+#view-api2api .api-detail-prices { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:0 0 20px; }
+#view-api2api .api-detail-prices > div { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 14px; border:1px solid var(--api-line); border-radius:12px; background:var(--api-soft); }
+#view-api2api .api-detail-prices > div.is-primary { display:block; padding:16px; }
+#view-api2api .api-detail-prices dt { color:var(--api-muted); font-size:12px; overflow-wrap:anywhere; }
+#view-api2api .api-detail-prices dd { margin:0; font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }
+#view-api2api .api-detail-prices .is-primary dd { margin-top:9px; font-size:22px; }
+#view-api2api .api-detail-prices dd small { margin-left:5px; color:var(--api-muted); font-size:11px; font-weight:400; }
+#view-api2api .api-pricing-provider + .api-pricing-provider { margin-top:24px; padding-top:8px; border-top:1px solid var(--api-line); }
+#view-api2api .api-pricing-provider h5 { font-size:13px; font-weight:600; margin:20px 0 10px; }
+#view-api2api .api-dynamic-heading { display:flex; align-items:center; gap:10px; margin:20px 0; }
+#view-api2api .api-dynamic-heading .api-catalog-kind { flex:none; margin:0; }
+#view-api2api .api-dynamic-heading p { margin:0; font-size:12px; color:var(--api-muted); }
+#view-api2api .api-tier-table-wrap { border:1px solid var(--api-line); border-radius:12px; }
+#view-api2api .api-model-dialog .api-tier-table { width:100%; min-width:520px; }
+#view-api2api .api-tier-table th { text-align:left; font-weight:500; }
+#view-api2api .api-tier-table th:first-child { min-width:165px; max-width:280px; }
+#view-api2api .api-tier-table th small { display:block; margin-top:4px; font-size:10px; font-weight:400; }
+#view-api2api .api-tier-table :is(th,td) { padding:12px; font-size:12px; }
+#view-api2api .api-tier-table tbody th { background:transparent; }
+#view-api2api .api-tier-label { display:inline-block; padding:3px 7px; background:var(--api-tint); color:var(--api-accent); border-radius:6px; font-size:11px; overflow-wrap:anywhere; }
+#view-api2api .api-tier-table .api-tier-condition { line-height:1.6; font-size:11px; color:var(--api-muted); white-space:normal; overflow-wrap:anywhere; }
+#view-api2api .api-pricing-group { margin:10px 0; border:1px solid var(--api-line); border-radius:12px; overflow:hidden; }
+#view-api2api .api-pricing-group > summary { display:flex; align-items:center; gap:10px; padding:12px 14px; cursor:pointer; font-size:12px; }
+#view-api2api .api-pricing-group > summary::after { content:'⌄'; margin-left:auto; color:var(--api-muted); transform:rotate(-90deg); transition:transform .15s; }
+#view-api2api .api-pricing-group[open] > summary::after { transform:none; }
+#view-api2api .api-pricing-group > summary b { color:var(--api-muted); font-size:11px; font-weight:500; }
+#view-api2api .api-pricing-group .api-tier-table-wrap { border:0; border-top:1px solid var(--api-line); border-radius:0; }
+#view-api2api .api-pricing-rules { padding:0; list-style:none; font-size:12px; border:1px solid var(--api-line); border-radius:12px; overflow:hidden; }
+#view-api2api .api-pricing-rules li { display:flex; gap:12px; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid var(--api-line); overflow-wrap:anywhere; }
+#view-api2api .api-pricing-rules li:last-child { border:0; }
+#view-api2api .api-pricing-rules b { color:var(--api-accent); white-space:nowrap; }
+#view-api2api .api-pricing-expression { margin-top:20px; font-size:12px; color:var(--api-muted); }
+#view-api2api .api-pricing-expression summary { cursor:pointer; }
+#view-api2api .api-pricing-expression pre { font-size:11px; white-space:pre-wrap; overflow-wrap:anywhere; padding:12px; border-radius:10px; background:var(--api-soft); color:var(--api-text); }
+#view-api2api .api-pricing-examples > div { display:flex; justify-content:space-between; gap:12px; padding:9px 0; font-size:12px; }
+#view-api2api .api-pricing-examples dd { margin:0; font-variant-numeric:tabular-nums; }
+#view-api2api .api-auto-groups { font-size:12px; overflow-wrap:anywhere; color:var(--api-muted); }
+#view-api2api .api-catalog-tier-note { margin:0 0 12px; font-size:10px; color:var(--api-muted); }
+#view-api2api .api-model-metrics.api-overview-metrics { gap:0; border:1px solid var(--api-line); border-radius:14px; overflow:hidden; }
+#view-api2api .api-model-metrics.api-overview-metrics > div { border:0; border-radius:0; background:var(--api-panel); }
+#view-api2api .api-model-metrics.api-overview-metrics > div + div { border-left:1px solid var(--api-line); }
+@media (max-width:600px) {
+  #view-api2api .api-detail-section { padding:14px; border-radius:14px; }
+  #view-api2api .api-detail-prices { grid-template-columns:1fr; }
+  #view-api2api .api-detail-prices > div.is-primary { display:flex; padding:12px 14px; }
+  #view-api2api .api-detail-prices .is-primary dd { font-size:18px; margin-top:0; }
+  #view-api2api .api-model-dialog .api-tier-table { min-width:0; }
+  #view-api2api .api-tier-table :is(thead,thead tr) { display:none; }
+  #view-api2api .api-tier-table :is(tbody,tr) { display:block; }
+  #view-api2api .api-tier-table tr { padding:12px; border-bottom:1px solid var(--api-line); }
+  #view-api2api .api-tier-table tr:last-child { border-bottom:0; }
+  #view-api2api .api-tier-table tbody :is(th,td) { display:block; padding:4px 0; border:0; text-align:left; max-width:none; min-width:0; }
+  #view-api2api .api-tier-table tbody td { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; }
+  #view-api2api .api-tier-table td::before { content:attr(data-label); color:var(--api-muted); font-size:11px; overflow-wrap:anywhere; }
+  #view-api2api .api-dynamic-heading { align-items:flex-start; }
+  #view-api2api .api-model-metrics.api-overview-metrics strong { font-size:17px; }
+}
 #view-api2api .api-model-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
 #view-api2api .api-model-metrics > div { padding:15px; background:var(--api-soft); border:1px solid var(--api-line); border-radius:10px; }
 #view-api2api .api-model-metrics span { display:block; color:var(--api-muted); font-size:12px; }

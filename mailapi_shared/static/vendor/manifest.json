@@ -21,5 +21,27 @@
       "dependencies.json": "cacf004d4ff45dc8001dbb7adc62be3bdfdb75fef23053c90b8943179ebda20b",
       "LICENSES.txt": "a2292abb8ae863c73242d0778a705b58bcc66edd986674dc3cf40cd346557ee0"
     }
+  },
+  {
+    "package": "billing-expression",
+    "version": "design-reference-2026-11-21",
+    "license": "AGPL-3.0-or-later",
+    "source": "frontend/api-billing.ts",
+    "sha256": {
+      "billing.js": "d5478164e830a494138bb19c4c6737ee1ae1374d767fba5a2e54a6d14cff8957",
+      "LICENSE": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef",
+      "NOTICE.md": "928555c3cc4900943c8e8697d9d0bcdeff58e4084bcbbd9ff4b7bcf3d07dadc2",
+      "source/lib/billing-expr.ts": "37d6f517979bf22c116691c6bfbd732ef578f861f3a3b8c55a1cecff13132e6b",
+      "source/lib/billing-expression/condition-display.ts": "8b4316bfb36952d442c4111745a3215187621283570abdbddcaecd33d52c5def",
+      "source/lib/billing-expression/display.ts": "626946eea78a5360db1ee0bbdcc3bfb90639268ab754a5794824e55f1fe87067",
+      "source/lib/billing-expression/parser.ts": "7abf08309df8976b7dff2867ac0a2b6aa6eeb8efa0ca4c0b79e469d5d5d4ec1a",
+      "source/lib/billing-expression/runtime.ts": "11133fb5985d3d0f517373efb8017ca6a39832ff1abc18e4884e4f7829df8871",
+      "source/lib/billing-expression/structure.ts": "f5e8f335bf8d09b16bac066587860b684f33cf0345d38d0862b94b0627e770c8",
+      "source/lib/billing-expression/task-display.ts": "02f88b321aea76597c3b6833d3b020670386e30569b9791a19c0fb6300ed32c0",
+      "source/lib/billing-expression/types.ts": "e02e9b5db09519bbbb46113d88ba9e7146d82775d998491ec2f96ac15248e8c3",
+      "source/lib/task-expr.ts": "6abdfb0c4a14f0389d77a913219fdcf60235efad405680d36b2451153a77c050",
+      "source/lib/task-matrix-display.ts": "1c764f18169474b4c516d4dcee4b10e2cc80d5c8ec18d9d1c2ad4083f15c9795",
+      "source/types.ts": "2a5a4ffd7a9fdb5cae3ea1dfb35de284c9d5c7b73d7ce7bdafe2c456f89e459a"
+    }
   }
 ]

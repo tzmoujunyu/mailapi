@@ -15,13 +15,27 @@ const apiModelCatalog = (() => {
   const items = () => state.data?.items || [];
   const groupNames = row => (row.groups || []).map(group=>group.id);
   const endpointLabel = row => endpointNames[row.id] || row.id;
+  const providers = row => window.MilvlgBilling?.analyze(row) || [];
+  const summary = row => {
+    const dynamic=window.MilvlgBilling?.summarize(row);
+    if(row.billing==='dynamic' && providers(row).length)return dynamic || [];
+    return Object.entries(row.prices || {}).map(([key,value])=>({key,value,label:priceNames[key] || key,unit:key==='request'?'request':'token'}));
+  };
+  const entryValue = entry => entry.value;
+  const entryUnit = entry => {
+    const language=document.documentElement.lang || 'zh-CN',label=entry.unitLabel;
+    const custom=typeof label==='string'?label:label?.[language] || label?.[language.split('-')[0]] || label?.en;
+    return entry.unit==='token'?`/ 1${state.unit}`:entry.unit==='count' && custom?'/ '+custom:t(({request:'/ 次',image:'/ 张',second:'/ 秒',credit:'/ 积分'})[entry.unit] || '/ 单位');
+  };
+  const entryAmount = (entry,multiple=1,value=entry.value) => amount(numeric(multiple)?value*multiple:null,entry.unit!=='token');
+  const entryLabel = entry => entry.schema?entry.label:t(entry.label);
   function feedback(value,detail=false){$(detail?'api-model-detail-feedback':'api-model-feedback').textContent=value;}
   function ratio(row,group=state.filters.group){
     const values=(row.groups || []).filter(value=>!group || value.id===group).map(value=>value.ratio).filter(numeric);
     return values.length?Math.min(...values):null;
   }
   function price(row,field,group=state.filters.group){
-    const value=row.prices?.[field],multiple=ratio(row,group);
+    const entry=summary(row).find(value=>value.key===field),value=entry?entryValue(entry):null,multiple=ratio(row,group);
     if(!numeric(value) || multiple===null)return null;
     return value*multiple;
   }
@@ -75,9 +89,10 @@ const apiModelCatalog = (() => {
   function badges(values){return values.length?values.map(value=>`<span class="api-catalog-badge" data-i18n-skip>${esc(value)}</span>`).join(''):'—';}
   function brand(row){return `<span class="api-model-brand" aria-hidden="true">${esc((row.vendor || 'M').slice(0,2).toUpperCase())}</span>`;}
   function prices(row){
-    const fields=row.billing==='request'?['request']:['input','output',...(numeric(row.prices?.cache_read)?['cache_read']:[])];
-    if(row.billing==='dynamic' || !Object.keys(row.prices || {}).length)return `<p class="api-catalog-price-empty">${esc(t(row.billing==='dynamic'?'按实际用量与请求条件计费':'价格信息暂未提供'))}</p>`;
-    return `<dl class="api-catalog-prices">${fields.map(field=>`<div><dt>${esc(t(priceNames[field]))}</dt><dd>${esc(amount(price(row,field),row.billing==='request'))}<small data-i18n-skip>${esc(unit(row))}</small></dd></div>`).join('')}</dl>`;
+    const entries=summary(row).slice(0,3);
+    if(!entries.length)return `<p class="api-catalog-price-empty">${esc(t(row.billing==='dynamic'?'查看完整计费规则':'价格信息暂未提供'))}</p>`;
+    const dynamic=providers(row),count=dynamic.reduce((sum,value)=>sum+value.tiers.length,0);
+    return `<dl class="api-catalog-prices">${entries.map(entry=>`<div><dt data-i18n-skip>${esc(entryLabel(entry))}</dt><dd>${esc(entryAmount(entry,ratio(row)))}${numeric(entry.max) && entry.max!==entry.value?' – '+esc(entryAmount(entry,ratio(row),entry.max)):''}<small data-i18n-skip>${esc(entryUnit(entry))}</small></dd></div>`).join('')}</dl>${row.billing==='dynamic'?`<p class="api-catalog-tier-note">${esc(t('分档定价'))} · ${num(count)} ${esc(t('档位'))}${dynamic.some(value=>value.rules.length)?' · '+esc(t('请求附加倍率')):''}</p>`:''}`;
   }
   function uptime(row){
     const points=(row.recent || []).filter(value=>numeric(value.success_rate));
@@ -113,11 +128,27 @@ const apiModelCatalog = (() => {
     }catch(error){if(seq===state.seq && error.name!=='AbortError'){state.data=null;feedback(t(error.message));for(const id of ['api-model-grid','api-model-rows','api-model-pager','api-model-facets','api-model-count','api-model-total','api-model-price-note'])$(id).textContent='';$('api-model-dialog').close();}}
     finally{if(seq===state.seq)state.loading=false;}
   }
+  function tierTable(provider,multiple,label){
+    const columns=[...new Map(provider.tiers.flatMap(tier=>tier.entries).map(entry=>[entry.key,entry])).values()];
+    if(!provider.tiers.length)return `<p class="api-hint">${esc(t('此表达式不能拆为固定单价，请查看完整计费规则。'))}</p>`;
+    return `<div class="api-table-wrap api-tier-table-wrap"><table class="api-tier-table" aria-label="${esc(label)}"><thead><tr><th>${esc(t('档位与适用条件'))}</th>${columns.map(entry=>`<th><span data-i18n-skip>${esc(entryLabel(entry))}</span><small data-i18n-skip>${esc(entryUnit(entry))}</small></th>`).join('')}</tr></thead><tbody>${provider.tiers.map((tier,index)=>{
+      const condition=window.MilvlgBilling.tierCondition(tier,provider.schema,document.documentElement.lang || 'zh-CN') || t(index?'其他情况（前序条件均不满足）':'全部请求');
+      return `<tr><th><span class="api-tier-label" data-i18n-skip>${esc(tier.label || t('默认'))}</span><small class="api-tier-condition" data-i18n-skip>${esc(condition)}</small></th>${columns.map(column=>{const entry=tier.entries.find(value=>value.key===column.key);return `<td data-label="${esc(entryLabel(column)+' '+entryUnit(column))}" class="api-number">${entry?esc(entryAmount(entry,multiple)):'—'}</td>`;}).join('')}</tr>`;
+    }).join('')}</tbody></table></div>`;
+  }
+  function priceSummary(entries,multiple=1){
+    return `<dl class="api-detail-prices">${entries.map(entry=>`<div class="${['input','output','request'].includes(entry.key)?'is-primary':''}"><dt data-i18n-skip>${esc(entryLabel(entry))}</dt><dd>${esc(entryAmount(entry,multiple))}${numeric(entry.max) && entry.max!==entry.value?' – '+esc(entryAmount(entry,multiple,entry.max)):''}<small data-i18n-skip>${esc(entryUnit(entry))}</small></dd></div>`).join('')}</dl>`;
+  }
+  function dynamicPricing(row){
+    const data=providers(row);
+    if(!data.length)return `<p class="api-hint">${esc(t('价格信息暂未提供'))}</p>`;
+    return data.map(provider=>`<section class="api-pricing-provider">${provider.label?`<h4 data-i18n-skip>${esc(provider.label==='常规调用'?t(provider.label):provider.label)}</h4>`:''}<h5>${esc(t('基础价格'))}</h5>${priceSummary(provider.summary)}<div class="api-dynamic-heading"><span class="api-catalog-kind">${esc(t('动态计费'))}</span><p>${esc(t('价格根据用量档位和请求条件动态调整'))}</p></div><h5>${esc(t('分档价格表'))}</h5><p class="api-hint">${esc(t('按从上到下的顺序匹配档位；表中为基础倍率 1 的价格。'))}</p>${tierTable(provider,1,t('分档价格表'))}${provider.tiers.some(tier=>tier.imageCount)?`<p class="api-hint">${esc(t('图像请求的费用还会乘以图像数量。'))}</p>`:''}${provider.rules.length?`<h5>${esc(t('请求附加倍率'))}</h5><ul class="api-pricing-rules">${provider.rules.map(rule=>`<li><span data-i18n-skip>${esc(window.MilvlgBilling.condition(rule.condition,document.documentElement.lang || 'zh-CN'))}</span><b>×${num(rule.multiplier)}</b></li>`).join('')}</ul><p class="api-hint">${esc(t('仅实际命中的规则生效；未命中时倍率为 1，规则组合以完整表达式为准。'))}</p>`:''}${provider.examples.length?`<h5>${esc(t('用量示例'))}</h5><dl class="api-pricing-examples">${provider.examples.map(example=>`<div><dt data-i18n-skip>${esc(example.label)}</dt><dd>${esc(amount(example.total,true))}</dd></div>`).join('')}</dl>`:''}<h4>${esc(t('按分组定价'))}</h4>${(row.groups || []).map(group=>`<details class="api-pricing-group" open><summary><span data-i18n-skip>${esc(group.id)}</span><b>${numeric(group.ratio)?'×'+num(group.ratio):'—'}</b></summary>${tierTable(provider,group.ratio,t('按分组定价')+' '+group.id)}</details>`).join('')}<details class="api-pricing-expression" ${provider.special?'open':''}><summary>${esc(t('完整计费规则'))}</summary><pre data-i18n-skip>${esc(provider.expression || t('价格信息暂未提供'))}</pre></details></section>`).join('');
+  }
   function overview(){
     if(!selected)return;
     const row=selected,fields=Object.keys(row.prices || {});
     const priceRow=(label,multiple)=>`<tr><th data-i18n-skip>${esc(label)}</th>${fields.map(field=>`<td class="api-number">${esc(amount(numeric(multiple)?row.prices[field]*multiple:null,row.billing==='request'))}</td>`).join('')}</tr>`;
-    $('api-model-overview').innerHTML=`<p data-i18n-skip>${esc(row.description || t('暂无描述。'))}</p><dl class="api-model-detail-meta"><div><dt>${esc(t('供应商'))}</dt><dd data-i18n-skip>${esc(row.vendor || '—')}</dd></div><div><dt>${esc(t('计费类型'))}</dt><dd>${esc(t(kindNames[row.billing] || '定价未提供'))}</dd></div><div><dt>${esc(t('分组'))}</dt><dd>${badges(groupNames(row))}</dd></div><div><dt>${esc(t('模型标签'))}</dt><dd>${badges(row.tags || [])}</dd></div></dl><h4>${esc(t('定价'))}</h4>${fields.length?`<div class="api-table-wrap"><table aria-label="${esc(t('按分组定价'))}"><thead><tr><th>${esc(t('分组'))}</th>${fields.map(field=>`<th class="api-number">${esc(t(priceNames[field]))}</th>`).join('')}</tr></thead><tbody>${priceRow(t('基础价格'),1)}${(row.groups || []).map(group=>priceRow(group.id+(numeric(group.ratio)?' ×'+num(group.ratio):''),group.ratio)).join('')}</tbody></table></div>`:`<p class="api-hint">${esc(t(row.billing==='dynamic'?'动态计费按实际请求条件计算，具体扣费可在使用日志中查看。':'价格信息暂未提供'))}</p>`}<p class="api-hint">${esc(unit(row))}${row.billing==='request'?'':` ${esc(t('Token 单位'))}`} · ${esc(t('最终费用以使用日志为准。'))}</p><h4>${esc(t('端点'))}</h4>${badges((row.endpoints || []).map(endpointLabel))}<p class="api-hint">${esc(t('性能指标为站点近 24 小时汇总，不代表个人调用记录。'))}</p>`;
+    $('api-model-overview').innerHTML=`<div class="api-model-metrics api-overview-metrics"><div><span>TPS</span><strong>${throughput(row.performance?.avg_tps)}</strong></div><div><span>${esc(t('平均延迟'))}</span><strong>${latency(row.performance?.avg_latency_ms)}</strong></div><div><span>${esc(t('成功率'))}</span><strong>${numeric(row.performance?.success_rate)?num(row.performance.success_rate,2)+'%':'—'}</strong></div></div><section class="api-detail-section"><div class="api-pricing-title"><h4>${esc(t('定价'))}</h4><div class="api-segment" role="group" aria-label="${esc(t('Token 单位'))}">${['M','K'].map(value=>`<button type="button" data-catalog-unit="${value}" aria-pressed="${state.unit===value}" data-i18n-skip>/1${value}</button>`).join('')}</div></div>${row.billing==='dynamic'?dynamicPricing(row):`${priceSummary(summary(row))}<h4>${esc(t('按分组定价'))}</h4>${fields.length?`<div class="api-table-wrap"><table aria-label="${esc(t('按分组定价'))}"><thead><tr><th>${esc(t('分组'))}</th>${fields.map(field=>`<th class="api-number">${esc(t(priceNames[field]))}</th>`).join('')}</tr></thead><tbody>${priceRow(t('基础价格'),1)}${(row.groups || []).map(group=>priceRow(group.id+(numeric(group.ratio)?' ×'+num(group.ratio):''),group.ratio)).join('')}</tbody></table></div>`:`<p class="api-hint">${esc(t('价格信息暂未提供'))}</p>`}`}${row.auto_groups?.length?`<p class="api-auto-groups">${esc(t('自动分组链'))} → <span data-i18n-skip>${esc(row.auto_groups.join(' → '))}</span></p>`:''}<p class="api-hint">${esc(t('最终费用以使用日志为准。'))}</p></section><section class="api-detail-section"><h4>${esc(t('模型'))}</h4><p data-i18n-skip>${esc(row.description || t('暂无描述。'))}</p><dl class="api-model-detail-meta"><div><dt>${esc(t('供应商'))}</dt><dd data-i18n-skip>${esc(row.vendor || '—')}</dd></div><div><dt>${esc(t('计费类型'))}</dt><dd>${esc(t(kindNames[row.billing] || '定价未提供'))}</dd></div><div><dt>${esc(t('分组'))}</dt><dd>${badges(groupNames(row))}</dd></div><div><dt>${esc(t('端点'))}</dt><dd>${badges((row.endpoints || []).map(endpointLabel))}</dd></div>${row.tags?.length?`<div><dt>${esc(t('模型标签'))}</dt><dd>${badges(row.tags)}</dd></div>`:''}</dl></section>`;
   }
   function chart(points,field,label,suffix){
     const data=(points || []).filter(row=>numeric(row.ts) && numeric(row[field]));

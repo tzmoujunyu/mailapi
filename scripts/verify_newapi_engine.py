@@ -35,6 +35,7 @@ expected_sha256 = '56d434ee244496d078825558562878a63f8c4af8798c3a1238c907e5915c1
 if hashlib.sha256(binary.read_bytes()).hexdigest() != expected_sha256:
     parser.error('Expected the official macOS arm64 v1.0.0-rc.51 release checksum')
 seen = []
+probe_usage = None
 stream_received = threading.Event()
 stream_forwarded = []
 
@@ -49,7 +50,7 @@ class Upstream(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers['Content-Length']))
         body = json.loads(raw)
         seen.append(body)
-        usage = {'prompt_tokens': 3, 'completion_tokens': 5, 'total_tokens': 8}
+        usage = probe_usage or {'prompt_tokens': 3, 'completion_tokens': 5, 'total_tokens': 8}
         if body.get('stream'):
             first = b'data: {"id":"fixture","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"fixture-response"},"finish_reason":null}]}\n\n'
             first += b'data: {"id":"fixture","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}\n\n'
@@ -255,7 +256,35 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                 web_thread.join(timeout=10)
                 web_socket.close()
 
-            print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,
+            # Compare the vendored display parser against real native settlement,
+            # including both sides of a tier boundary and a request multiplier.
+            expression='(len <= 200000 ? tier("base", p * 1.25 + c * 10 + cr * 0.125) : tier("long", p * 2.5 + c * 15 + cr * 0.25)) * (param("service_tier") == "priority" ? 1.5 : 1)'
+            call(client,'PUT','/api/option/',json={'key':'billing_setting.billing_expr','value':json.dumps({'gpt-4o-mini':expression})})
+            call(client,'PUT','/api/option/',json={'key':'billing_setting.billing_mode','value':json.dumps({'gpt-4o-mini':'tiered_expr'})})
+            display_script='''const fs=require('fs'),vm=require('vm');const input=JSON.parse(fs.readFileSync(0,'utf8'));
+const scope={window:{},Intl,Date};vm.runInNewContext(fs.readFileSync(input.bundle,'utf8'),scope);
+const b=scope.window.MilvlgBilling;console.log(JSON.stringify({tiers:b.analyze({id:'test',dynamic_pricing:{billing_expr:input.expression}})[0].tiers,
+result:b.evaluate(input.expression,input.context)}));'''
+            for prompt,service_tier,expected_tier in ((200000,'standard','base'),(200001,'standard','long'),(200001,'priority','long')):
+                probe_usage={'prompt_tokens':prompt,'completion_tokens':5,'total_tokens':prompt+5}
+                result=client.post('/v1/chat/completions',json={**payload,'service_tier':service_tier},headers=headers)
+                assert result.status_code==200, ('Tiered relay',result.status_code,result.text[:200])
+                parser_input={'bundle':str(Path(__file__).resolve().parents[1]/'mailapi_shared/static/vendor/billing-expression/billing.js'),'expression':expression,
+                              'context':{'tokens':{'p':prompt,'len':prompt,'c':5,'cr':0},'request':{'body':{'service_tier':service_tier}}}}
+                display=json.loads(subprocess.check_output(['node','-e',display_script],input=json.dumps(parser_input).encode()))
+                assert len(display['tiers'])==2 and display['result']['matchedTier']==expected_tier
+                quoted_quota=int(display['result']['cost']*.5+.5)
+                for _ in range(50):
+                    with sqlite3.connect(work/'newapi.db') as db:
+                        record=db.execute('SELECT quota,other FROM logs WHERE type=2 AND prompt_tokens=? ORDER BY id DESC LIMIT 1',(prompt,)).fetchone()
+                    if record and record[0]==quoted_quota:
+                        break
+                    time.sleep(.1)
+                assert record and record[0]==quoted_quota, ('Native/display quote mismatch',prompt,service_tier,quoted_quota,record[0] if record else None)
+                metadata=json.loads(record[1])
+                assert metadata.get('matched_tier')==expected_tier, ('Native tier trace',metadata)
+            probe_usage=None
+            print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,'tiered_pricing_native_parity':True,
                               'streaming_before_completion':True,'website_http_native_keys':True,
                               'pause_resume_and_copy':True,'retained_logs_145_rows':True,'full_export_cleanup':True,'model_catalog':True,'key_limit_edit':True,'caller_ip_enforced':True,'spoofed_ip_headers_rejected':True,'admin_only_audit':True,'separate_engine_identities':True,'revocation_enforced':True,
                               'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)

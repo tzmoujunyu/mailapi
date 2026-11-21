@@ -32,6 +32,23 @@ class ModelCatalogTests(unittest.TestCase):
         row=catalog(['free'],{'default':''},self.pricing(raw),{},None,[])['items'][0]
         self.assertEqual(row['prices'],{'input':0,'output':0})
 
+    def test_dynamic_contract_preserves_rules_and_public_task_fields_without_raw_admin_data(self):
+        expression='len <= 200000 ? tier("base", p * 1.25 + c * 10) : tier("long", p * 2.5 + c * 15)'
+        raw={'model_name':'dynamic','quota_type':0,'billing_mode':'tiered_expr','billing_expr':expression,
+             'enable_groups':['default'],'private_config':'secret',
+             'billing_plugin_variants':[{'plugin_key':'video','plugin_name':'Video','billing_expr':'tier("base", u("duration") * 0.2)',
+               'credential':'secret','billing_usage_schema':{'duration':{'type':'number','unit':'second','credential':'secret'}},
+               'billing_usage_examples':[{'label':'10 seconds','facts':{'duration':10,'secret':'credential'}}]}]}
+        pricing=self.pricing(raw);pricing['auto_groups']=['private','default']
+        row=catalog(['dynamic'],{'default':''},pricing,{},None,[])['items'][0]
+        self.assertEqual(row['dynamic_pricing']['billing_expr'],expression)
+        variant=row['dynamic_pricing']['billing_plugin_variants'][0]
+        self.assertEqual(variant['billing_usage_schema'],{'duration':{'type':'number','unit':'second'}})
+        self.assertEqual(variant['billing_usage_examples'][0]['facts'],{'duration':10})
+        self.assertNotIn('credential',variant)
+        self.assertNotIn('private_config',row)
+        self.assertEqual(row['auto_groups'],['default'])
+
     def test_request_price_and_configured_recharge_currency_have_distinct_rates(self):
         raw={'model_name':'image','quota_type':1,'model_price':.02,'enable_groups':['default']}
         result=catalog(['image'],{'default':''},self.pricing(raw),

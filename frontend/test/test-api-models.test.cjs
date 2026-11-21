@@ -17,6 +17,7 @@ function setup(t,data,handler){
     dialog.close=()=>{dialog.removeAttribute('open');dialog.dispatchEvent(new w.Event('close'));};
   }
   w.fetch=async(url,options={})=>{calls.push([url,options]);const result=await handler?.(url,options);return result?.ok===false?result:{ok:true,json:async()=>result || data};};
+  w.eval(fs.readFileSync(path.join(assets,'vendor/billing-expression/billing.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(assets,'test-api-models.js'),'utf8')+'\nwindow.catalog=apiModelCatalog;');
   const change=(id,value)=>{el(id).value=value;el(id).dispatchEvent(new w.Event('change',{bubbles:true}));};
   const click=selector=>w.document.querySelector(selector).click();
@@ -94,4 +95,29 @@ test('catalog failure clears stale cards and details; absent recharge conversion
   click('[data-catalog-detail="one"]');failure=true;await w.catalog.load();
   assert.equal(el('api-model-grid').textContent,'');assert.equal(el('api-model-dialog').open,false);
   assert.equal(el('api-model-price-note').textContent,'');assert.equal(el('api-model-feedback').textContent,'Unavailable');
+});
+
+test('dynamic detail contains all tiers and group quotes; /1K and recharge controls change real prices',async t=>{
+  const expression='(len <= 200000 ? tier("base", p * 1.25 + c * 10 + cr * 0.125 + cc * 1.5625 + cc1h * 2.5) : tier("long", p * 2.5 + c * 15 + cr * 0.25 + cc * 3.125 + cc1h * 5)) * (param("service_tier") == "priority" ? 1.5 : 1)';
+  const {w,el,click}=setup(t,catalog([model('dynamic',{billing:'dynamic',prices:{},dynamic_pricing:{billing_expr:expression}})]));
+  await w.catalog.load();assert.match(el('api-model-grid').textContent,/\$0\.625/);
+  click('[data-catalog-detail="dynamic"]');
+  const overview=el('api-model-overview');assert.match(overview.textContent,/分档价格表/);
+  assert.match(overview.textContent,/缓存写入（1小时）/);assert.match(overview.textContent,/priority/);
+  const tables=overview.querySelectorAll('.api-tier-table');assert.equal(tables.length,3);
+  assert.equal(tables[0].tBodies[0].rows.length,2);assert.match(tables[0].textContent,/\$1\.25/);
+  assert.match(tables[2].textContent,/\$0\.625/);
+  click('#api-model-overview [data-catalog-unit="K"]');
+  assert.match(overview.querySelector('.api-tier-table').textContent,/\$0\.00125/);
+  el('api-model-dialog-close').click();click('[data-catalog-price="recharge"]');click('[data-catalog-detail="dynamic"]');
+  assert.match(overview.querySelector('.api-tier-table').textContent,/\$0\.001/);
+  assert.ok(!overview.querySelector('script'));
+});
+
+test('task token prices divide only once, while second prices ignore token unit changes',async t=>{
+  const {w,el,click}=setup(t,catalog([model('task',{billing:'dynamic',prices:{},dynamic_pricing:{billing_expr:'tier("base", u("tokens") * 2 / 1000000 + u("seconds") * 0.5)',billing_usage_schema:{tokens:{type:'number',unit:'token'},seconds:{type:'number',unit:'second'}}}})]));
+  await w.catalog.load();click('[data-catalog-detail="task"]');
+  assert.match(el('api-model-overview').querySelector('.api-tier-table').textContent,/\$2\$0\.5/);
+  click('#api-model-overview [data-catalog-unit="K"]');
+  assert.match(el('api-model-overview').querySelector('.api-tier-table').textContent,/\$0\.002\$0\.5/);
 });
