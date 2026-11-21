@@ -1018,6 +1018,10 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def available_api_models(request: Request):
         return JSONResponse(await gateway.models(current_user(request)['id']),headers={'Cache-Control':'no-store, private'})
 
+    @router.get('/api/api2api/models/performance')
+    async def api_model_performance(request: Request, model: str=Query(...,min_length=1,max_length=120)):
+        return JSONResponse(await gateway.model_performance(current_user(request)['id'],model),headers={'Cache-Control':'no-store, private'})
+
     def api_log_filters(request, page, page_size, start_timestamp, end_timestamp, log_type, *, export=False):
         allowed = {'page','page_size','start_timestamp','end_timestamp','type','model_name','key_id','group','request_id','upstream_request_id'}
         if export:

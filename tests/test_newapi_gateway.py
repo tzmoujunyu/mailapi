@@ -30,6 +30,8 @@ class EngineFixture:
         self.logs = []
         self.log_queries = []
         self.corrupt_log_owner = False
+        self.model_names = ['gpt-4o-mini']
+        self.pricing_failure = False
 
     def response(self, data=None, status=200, success=True):
         return httpx.Response(status, json={'success': success, 'data': data, 'message': ''})
@@ -95,11 +97,33 @@ class EngineFixture:
         if path == '/api/user/self':
             return self.response({'id': owner, 'quota': 93, 'used_quota': 7, 'request_count': 1})
         if path == '/api/user/models':
-            return self.response(['gpt-4o-mini'])
+            return self.response(self.model_names)
         if path == '/api/user/self/groups':
             return self.response({'default':'Default'})
         if path == '/api/status':
             return self.response({'quota_per_unit':500000,'quota_display_type':'USD'})
+        if path == '/api/pricing':
+            assert owner!=1
+            if self.pricing_failure:
+                return httpx.Response(503)
+            return httpx.Response(200,json={'success':True,'data':[
+                {'model_name':'gpt-4o-mini','vendor_id':1,'description':'Fixture model','tags':'text,tools',
+                 'quota_type':0,'model_ratio':.075,'completion_ratio':4,'cache_ratio':.5,
+                 'enable_groups':['default','private-group'],'supported_endpoint_types':['openai','gemini'],'private_key':'do-not-return'},
+                {'model_name':'secret-model','vendor_id':2,'description':'hidden model','enable_groups':['private-group']}],
+                'vendors':[{'id':1,'name':'OpenAI'},{'id':2,'name':'hidden-vendor'}],
+                'group_ratio':{'default':1,'private-group':9},
+                'supported_endpoint':{'openai':{'path':'/v1/chat/completions','method':'POST'},'gemini':{'path':'/v1beta/models/{model}:generateContent','method':'POST'}}})
+        if path == '/api/perf-metrics/summary':
+            assert owner!=1
+            return self.response({'models':[{'model_name':'gpt-4o-mini','avg_latency_ms':1200,'avg_tps':40,'success_rate':99.5},
+                                           {'model_name':'secret-model','avg_latency_ms':100,'success_rate':99}]})
+        if path == '/api/perf-metrics':
+            assert owner!=1
+            return self.response({'model_name':request.url.params['model'],'summary':{'success_rate':99.5,'avg_latency_ms':1200,'avg_tps':40},
+                'series':[{'ts':1600000000,'success_rate':99,'avg_latency_ms':1200}],
+                'groups':[{'group':'default','avg_tps':40,'success_rate':99.5},{'group':'private-group','avg_tps':99}],
+                'credential':'do-not-return'})
         if path in {'/api/log/','/api/log/stat'}:
             assert owner==1
             params=dict(request.url.params)
@@ -315,12 +339,43 @@ class GatewayHttpTests(unittest.TestCase):
     def test_model_catalog_is_available_before_issuing_a_personal_key(self):
         response=self.client.post('/api/api2api/models')
         self.assertEqual(response.status_code,200,response.text)
-        self.assertEqual(response.json()['items'],[{'id':'gpt-4o-mini'}])
+        self.assertEqual([row['id'] for row in response.json()['items']],['gpt-4o-mini'])
         self.assertEqual(self.store.list_api_keys('alice'),[])
         alice=self.store.gateway_user('http://127.0.0.1:3001','alice',create=False)
         self.client.post('/api/api2api/models',headers={'x-test-user':'bob'})
         bob=self.store.gateway_user('http://127.0.0.1:3001','bob',create=False)
         self.assertNotEqual(alice['remote_id'],bob['remote_id'])
+
+    def test_catalog_uses_user_permissions_and_public_pricing_without_secrets_or_hidden_groups(self):
+        self.engine.model_names=['gpt-4o-mini','secret-model']
+        self.store.configure_api2api({**self.store.api2api_config_public(),'model_allowlist':['gpt-4o-mini']})
+        response=self.client.post('/api/api2api/models')
+        self.assertEqual(response.status_code,200,response.text)
+        data=response.json();self.assertEqual(len(data['items']),1)
+        row=data['items'][0]
+        self.assertEqual(row['vendor'],'OpenAI')
+        self.assertEqual(row['prices'],{'input':.15,'output':.6,'cache_read':.075})
+        self.assertEqual(row['groups'],[{'id':'default','ratio':1}])
+        self.assertEqual(row['endpoints'],[{'id':'openai','path':'/v1/chat/completions','method':'POST'}])
+        self.assertEqual(row['performance']['success_rate'],99.5)
+        for value in ('secret-model','hidden-vendor','private-group','do-not-return','management-secret','auth-'):
+            self.assertNotIn(value,response.text)
+        self.assertEqual(self.store.list_api_keys('alice'),[])
+        self.engine.pricing_failure=True
+        fallback=self.client.post('/api/api2api/models').json()
+        self.assertFalse(fallback['pricing_available'])
+        self.assertEqual(fallback['items'][0]['id'],'gpt-4o-mini')
+        self.assertEqual(fallback['items'][0]['prices'],{})
+
+    def test_model_performance_checks_access_and_only_exposes_allowed_group_metrics(self):
+        self.client.post('/api/api2api/models')
+        response=self.client.get('/api/api2api/models/performance?model=gpt-4o-mini')
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual([row['id'] for row in response.json()['groups']],['default'])
+        self.assertNotIn('credential',response.text)
+        self.assertNotIn('private-group',response.text)
+        self.assertEqual(self.client.get('/api/api2api/models/performance?model=secret-model').status_code,404)
+        self.assertEqual(self.client.get('/api/api2api/models/performance?model=').status_code,422)
 
     def test_usage_export_contains_all_owned_metadata_and_cleans_success_and_failed_files(self):
         self.create()

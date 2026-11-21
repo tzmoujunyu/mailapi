@@ -178,7 +178,12 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                     assert stream_forwarded==[True,True], 'Website buffered the stream'
                     assert web.get('/api/api2api/usage').json()['total_tokens']==16
                     catalog = web.post('/api/api2api/models')
-                    assert catalog.status_code==200 and {'id':'gpt-4o-mini'} in catalog.json()['items'], 'Model catalog'
+                    assert catalog.status_code==200 and 'gpt-4o-mini' in [row['id'] for row in catalog.json()['items']], 'Model catalog'
+                    model=catalog.json()['items'][0]
+                    assert catalog.json()['pricing_available'] and model['prices']['input']==.15 and model['prices']['output']==.6, ('Native model pricing',model['prices'])
+                    assert model['groups'] and model['endpoints'], 'Native model groups and endpoints'
+                    detail=web.get('/api/api2api/models/performance?model=gpt-4o-mini')
+                    assert detail.status_code==200 and detail.json()['id']=='gpt-4o-mini', ('Native model performance',detail.status_code)
                     own = store.gateway_user(f'http://127.0.0.1:{port}','alice-test',create=False)
                     other = store.gateway_user(f'http://127.0.0.1:{port}','bob-test',create=False)
                     token = store.gateway_key(alice['id'],'alice-test')

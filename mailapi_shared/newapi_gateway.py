@@ -85,7 +85,7 @@ class NewAPIGateway:
                     raise
                 raise NewAPIError('无法连接或认证网关，请检查网关连接') from None
 
-    async def request(self, credential, method, path, *, json=None, params=None):
+    async def request(self, credential, method, path, *, json=None, params=None, envelope=False):
         for attempt in range(2):
             session = await self.session(credential,renew=attempt>0)
             try:
@@ -96,7 +96,7 @@ class NewAPIGateway:
                 data = response.json()
                 if response.status_code >= 400 or data.get('success') is not True:
                     raise NewAPIError('网关操作失败，请检查网关配置、权限或额度')
-                return data.get('data')
+                return data if envelope else data.get('data')
             except (httpx.HTTPError, ValueError, TypeError) as error:
                 if isinstance(error, NewAPIError):
                     raise
@@ -294,12 +294,26 @@ class NewAPIGateway:
                 'models':[name for name in models if not config['model_allowlist'] or name in config['model_allowlist']]}
 
     async def models(self, user_id):
+        from .api_catalog import catalog
         user = await self.identity(user_id)
-        names, groups = await asyncio.gather(self.request(user,'GET','/api/user/models'),
-                                           self.request(user,'GET','/api/user/self/groups'))
+        names, groups = await asyncio.gather(self.request(user,'GET','/api/user/models'), self.request(user,'GET','/api/user/self/groups'))
+        pricing, status, performance = await asyncio.gather(
+            self.request(user,'GET','/api/pricing',envelope=True),self.request(user,'GET','/api/status'),
+            self.request(user,'GET','/api/perf-metrics/summary',params={'hours':24}),return_exceptions=True)
+        return catalog(names,groups,pricing,status,performance,self.config()['model_allowlist'])
+
+    async def model_performance(self, user_id, name):
+        from .api_catalog import performance_details
+        user = await self.identity(user_id)
+        names, groups = await asyncio.gather(self.request(user,'GET','/api/user/models'),self.request(user,'GET','/api/user/self/groups'))
         allowed = self.config()['model_allowlist']
-        return {'items':[{'id':name} for name in sorted(set(names)) if not allowed or name in allowed],
-                'groups':list(groups) if isinstance(groups,dict) else []}
+        if name not in names or (allowed and name not in allowed):
+            raise NewAPIError('未找到可用模型',404)
+        data = await self.request(user,'GET','/api/perf-metrics',params={'model':name,'hours':24})
+        result = performance_details(data,name,list(groups) if isinstance(groups,dict) else [])
+        if result is None:
+            raise NewAPIError('模型性能响应无效')
+        return result
 
     async def log_page(self, user_id, filters, page, page_size, *, include_summary=True):
         config = self.config()
