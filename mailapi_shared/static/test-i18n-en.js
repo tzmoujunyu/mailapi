@@ -1134,4 +1134,9 @@ window.MILVLG_EN = {
   "已有日志导出正在进行，请稍后重试": "A log export is already in progress. Try again shortly.",
   "查看使用日志": "View usage logs",
   "网关聚合数据可能延迟约 5 分钟；使用日志可查询网关保留的历史记录。": "Gateway aggregates may be delayed by about 5 minutes. Usage logs show the history retained by the gateway.",
+  "IP 白名单（支持 CIDR）": "IP whitelist (supports CIDR)",
+  "条 IP 规则": "IP rule(s)",
+  "每行填写一个 IP 或网段，留空不限制。填写后，仅允许列表中的地址调用此密钥。请填写 API 调用设备的出口 IP。": "One IP or network per line. Leave empty for no restriction. Only listed addresses can use this key. Enter the outbound IP of your API client.",
+  "网关另有独立的连接限制，本次编辑不会覆盖该规则。": "The gateway has separate connection restrictions. This edit preserves them.",
+  "IP 白名单格式无效：每行填写一个 IPv4、IPv6 地址或 CIDR 网段，最多 100 条": "Invalid IP whitelist. Enter one IPv4, IPv6 address or CIDR network per line, up to 100 entries.",
 };

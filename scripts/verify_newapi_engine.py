@@ -149,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
             web_socket = socket.socket()
             web_socket.bind(('127.0.0.1',0))
             web_port = web_socket.getsockname()[1]
-            server = uvicorn.Server(uvicorn.Config(website,log_level='error',access_log=False))
+            server = uvicorn.Server(uvicorn.Config(website,log_level='error',access_log=False,proxy_headers=False))
             web_thread = threading.Thread(target=lambda:server.run(sockets=[web_socket]),daemon=True)
             web_thread.start()
             try:
@@ -212,6 +212,16 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                     edited = web.put('/api/api2api/keys/'+alice['id']+'/limits',json={
                         'models':['gpt-4o-mini'],'expired_at':int(time.time())+86400,'revision':editable['limits_revision']})
                     assert edited.status_code==200, ('Native key edit',edited.status_code,edited.json().get('detail'))
+                    for allowed, expected in (('192.0.2.42',403),('127.0.0.1',200),('',200)):
+                        editable=web.get('/api/api2api/keys').json()['items'][0]
+                        result=web.put('/api/api2api/keys/'+alice['id']+'/limits',json={
+                            'models':['gpt-4o-mini'],'expired_at':editable['expired_at'],'allowed_ips':allowed,'revision':editable['limits_revision']})
+                        assert result.status_code==200, ('IP policy edit',result.status_code)
+                        count=len(seen)
+                        result=web.post('/api2api/v1/chat/completions',json=payload,headers={**bearer,'X-Forwarded-For':'192.0.2.42','X-Real-IP':'192.0.2.42'})
+                        assert result.status_code==expected, ('Caller IP enforcement',result.status_code,expected)
+                        assert len(seen)==count+(expected==200), 'Denied IP reached upstream'
+                    assert web.post('/api/api2api/keys/'+alice['id']+'/reveal').json()['api_key']==alice['api_key']
                     copied = web.post('/api/api2api/keys/'+alice['id']+'/reveal')
                     assert copied.status_code==200 and copied.json()['api_key']==alice['api_key']
                     assert 'no-store' in copied.headers['cache-control']
@@ -242,7 +252,7 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
 
             print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,
                               'streaming_before_completion':True,'website_http_native_keys':True,
-                              'pause_resume_and_copy':True,'retained_logs_145_rows':True,'full_export_cleanup':True,'model_catalog':True,'key_limit_edit':True,'admin_only_audit':True,'separate_engine_identities':True,'revocation_enforced':True,
+                              'pause_resume_and_copy':True,'retained_logs_145_rows':True,'full_export_cleanup':True,'model_catalog':True,'key_limit_edit':True,'caller_ip_enforced':True,'spoofed_ip_headers_rejected':True,'admin_only_audit':True,'separate_engine_identities':True,'revocation_enforced':True,
                               'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)
     finally:
         stream_received.set()

@@ -12,6 +12,7 @@ import csv
 from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 import hashlib
 import io
 import ipaddress
@@ -50,6 +51,25 @@ ALLOWED_FINANCE_TYPES = {
     "image/webp": ".webp",
 }
 API_KEY_PATTERN = re.compile(r"^(?:mk_|sk-)[A-Za-z0-9_-]{24,256}$")
+
+
+@lru_cache(maxsize=256)
+def _api_ip_networks(value):
+    if not isinstance(value,str) or len(value)>8192:
+        raise ValueError('Invalid IP policy')
+    entries = [line.strip() for line in value.splitlines() if line.strip()]
+    if len(entries)>100 or any('%' in line for line in entries):
+        raise ValueError('Invalid IP policy')
+    networks = []
+    for entry in entries:
+        network = ipaddress.ip_network(entry,strict=False)
+        if network.version==6 and network.prefixlen>=96 and network.network_address.ipv4_mapped:
+            network = ipaddress.ip_network((network.network_address.ipv4_mapped,network.prefixlen-96),strict=False)
+        if network not in networks:
+            networks.append(network)
+    return tuple(networks)
+
+
 SCHEMA = """
 PRAGMA user_version = 1;
 CREATE TABLE IF NOT EXISTS api2api_config (
@@ -173,7 +193,8 @@ class TestFeatureStore:
                                   ('initial_quota', 'INTEGER NOT NULL DEFAULT 0')],
                 'api2api_keys': [('provider', "TEXT NOT NULL DEFAULT 'legacy'"),
                                 ('remote_id', 'INTEGER'), ('engine_origin', "TEXT NOT NULL DEFAULT ''"),
-                                ('revoked','INTEGER NOT NULL DEFAULT 0')],
+                                ('revoked','INTEGER NOT NULL DEFAULT 0'),
+                                ('caller_ip_allowlist',"TEXT NOT NULL DEFAULT ''")],
             }.items():
                 existing = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
                 for name, definition in fields:
@@ -398,6 +419,36 @@ class TestFeatureStore:
                 return None
         return dict(row)
 
+    @staticmethod
+    def normalize_api_key_ips(value):
+        try:
+            networks = _api_ip_networks(value)
+        except (ValueError,TypeError):
+            raise TestFeatureError('IP 白名单格式无效：每行填写一个 IPv4、IPv6 地址或 CIDR 网段，最多 100 条') from None
+        return '\n'.join(str(network.network_address) if network.prefixlen==network.max_prefixlen else str(network) for network in networks)
+
+    def set_api_key_ips(self, key_id, user_id, value, *, expected):
+        value = self.normalize_api_key_ips(value)
+        with self._lock, closing(self._connect()) as db, db:
+            return db.execute('''UPDATE api2api_keys SET caller_ip_allowlist=?
+                WHERE id=? AND user_id=? AND revoked=0 AND caller_ip_allowlist=?''',
+                (value,key_id,user_id,expected)).rowcount==1
+
+    @staticmethod
+    def api_key_ip_allowed(key, host):
+        policy = key.get('caller_ip_allowlist','')
+        if policy=='':
+            return True
+        try:
+            if not isinstance(host,str) or '%' in host:
+                return False
+            address = ipaddress.ip_address(host)
+            if address.version==6 and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            return any(address.version==network.version and address in network for network in _api_ip_networks(policy))
+        except (ValueError,TypeError):
+            return False
+
     def list_api_keys(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
         with closing(self._connect()) as db:
             if user_id:
@@ -408,6 +459,7 @@ class TestFeatureStore:
             "id": row["id"], "user_id": row["user_id"], "name": row["name"],
             "key_prefix": row["key_prefix"], "enabled": bool(row["enabled"]),
             'revoked':bool(row['revoked']),
+            'allowed_ips':row['caller_ip_allowlist'],
             "created_at": row["created_at"], "last_used_at": row["last_used_at"],
             'provider':row['provider'], 'remote_id':row['remote_id'], 'engine_origin':row['engine_origin'],
         } for row in rows]
@@ -945,7 +997,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def update_user_key_limits(key_id: str, request: Request):
         user = current_user(request)
         payload = await gateway_payload(request)
-        if set(payload)-{'models','expired_at','revision'}:
+        if set(payload)-{'models','expired_at','revision','allowed_ips'}:
             raise HTTPException(400,'密钥限制字段无效')
         key = store.gateway_key(key_id,user['id']) or {'id':key_id}
         return await audited_key_change(user,'updated',key,lambda:gateway.update_key_limits(key_id,user['id'],payload))
@@ -1151,6 +1203,11 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             return JSONResponse({"error": {"message": "API2API is not configured", "type": "configuration_error"}}, status_code=503)
         if key['provider'] != 'newapi' or key['engine_origin'] != config['base_url'][:-3]:
             return JSONResponse({'error':{'message':'API key does not belong to the active gateway','type':'authentication_error'}},status_code=401)
+        # request.client is the socket peer, or the address accepted by the
+        # existing trusted-proxy boundary. Never read caller-supplied IP headers.
+        if not store.api_key_ip_allowed(key,request.client.host if request.client else None):
+            return JSONResponse({'error':{'message':'This API key is not allowed from your IP address',
+                'type':'permission_error','code':'ip_not_allowed'}},status_code=403)
         if '\\' in proxy_path or any(part in {'.','..'} for part in proxy_path.split('/')):
             return JSONResponse({'error':{'message':'Invalid API path','type':'invalid_request_error'}},status_code=400)
         body = await request.body()

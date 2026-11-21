@@ -47,8 +47,10 @@ const apiController = (() => {
       ].join('');
       const models=typeof row.model_limits==='string'?(row.model_limits || t('无限制')):'—';
       const ips=typeof row.allowed_ips==='string'?(row.allowed_ips || t('无限制')):'—';
+      const ipCount=typeof row.allowed_ips==='string'?row.allowed_ips.split('\n').filter(Boolean).length:0;
+      const ipLabel=ipCount?`${num(ipCount)} ${t('条 IP 规则')}`:ips;
       const expiry=row.expired_at===-1?t('永不'):typeof row.expired_at==='number'?new Date(row.expired_at*1000).toLocaleDateString(document.documentElement.lang==='en'?'en-US':'zh-CN'):'—';
-      return `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td><span class="${row.enabled?'api-good':'api-dim'}" data-ui-text>${esc(t(status))}</span></td><td class="api-number">${row.provider==='newapi'?num(row.used_quota):'—'}</td><td><span class="api-key-limits" title="${esc(models)}" data-ui-text>${esc(models)}</span></td><td><span class="api-key-limits" title="${esc(ips)}" data-ui-text>${esc(ips)}</span></td><td class="api-key-time"><small><span>${esc(t('创建时间'))}</span><time title="${esc(date(row.created_at))}" data-i18n-skip>${esc(relative(row.created_at))}</time></small><small><span>${esc(t('最后使用'))}</span><time title="${esc(date(row.last_used_at))}" data-i18n-skip>${esc(relative(row.last_used_at))}</time></small></td><td class="api-key-expiry" data-ui-text>${esc(expiry)}</td><td><div class="api-key-actions">${actions || '—'}</div></td></tr>`;
+      return `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td><span class="${row.enabled?'api-good':'api-dim'}" data-ui-text>${esc(t(status))}</span></td><td class="api-number">${row.provider==='newapi'?num(row.used_quota):'—'}</td><td><span class="api-key-limits" title="${esc(models)}" data-ui-text>${esc(models)}</span></td><td><span class="api-key-limits" title="${esc(ips)}" data-ui-text>${esc(ipLabel)}</span></td><td class="api-key-time"><small><span>${esc(t('创建时间'))}</span><time title="${esc(date(row.created_at))}" data-i18n-skip>${esc(relative(row.created_at))}</time></small><small><span>${esc(t('最后使用'))}</span><time title="${esc(date(row.last_used_at))}" data-i18n-skip>${esc(relative(row.last_used_at))}</time></small></td><td class="api-key-expiry" data-ui-text>${esc(expiry)}</td><td><div class="api-key-actions">${actions || '—'}</div></td></tr>`;
     }).join('') || `<tr><td colspan="8" class="api-empty" data-ui-text>${esc(t('没有符合条件的密钥。'))}</td></tr>`;
     $('api-active-keys').textContent = num(keys.filter(row => row.enabled).length);
     $('dashboard-keys').textContent = keys.filter(row => row.enabled).length;
@@ -196,6 +198,8 @@ const apiController = (() => {
       limitsVersion++;
       $('api-limits-name').textContent=limitsKey.name;
       $('api-limits-models').value=limitsKey.model_limits || '';
+      $('api-limits-ips').value=limitsKey.allowed_ips || '';
+      $('api-limits-gateway-ips').hidden=!limitsKey.gateway_allowed_ips;
       $('api-limits-never').checked=limitsKey.expired_at===-1;
       const expires=new Date(limitsKey.expired_at*1000);
       $('api-limits-expires').value=limitsKey.expired_at>0?new Date(expires.getTime()-expires.getTimezoneOffset()*60000).toISOString().slice(0,16):'';
@@ -243,7 +247,7 @@ const apiController = (() => {
     const models=$('api-limits-models').value.split(/[,\n]/).map(value=>value.trim()).filter(Boolean);
     const expired_at=$('api-limits-never').checked?-1:Math.floor(new Date($('api-limits-expires').value).getTime()/1000);
     try{
-      await send(`/api/api2api/keys/${encodeURIComponent(key.id)}/limits`,'PUT',{models,expired_at,revision:key.limits_revision});
+      await send(`/api/api2api/keys/${encodeURIComponent(key.id)}/limits`,'PUT',{models,expired_at,allowed_ips:$('api-limits-ips').value,revision:key.limits_revision});
       if(version===limitsVersion){$('api-limits-dialog').close();message('api-key-status','密钥限制已更新',true);}
       await load();
     }catch(error){if(version===limitsVersion)message('api-limits-status',error.message);}

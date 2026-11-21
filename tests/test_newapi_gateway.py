@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from mailapi_shared.credential_crypto import CredentialKeyring
 from mailapi_shared.newapi_gateway import NewAPIGateway, NewAPIError
 from mailapi_shared.test_features import TestFeatureStore, install_test_features, _StreamUsage
+from mailapi_shared.web_security import ProxyIngress
 
 
 class EngineFixture:
@@ -244,6 +245,7 @@ class GatewayHttpTests(unittest.TestCase):
         key.chmod(0o600)
         self.users = {name:{'id':name,'username':name,'role':'admin' if name=='admin' else 'user','status':'active'} for name in ('admin','alice','bob')}
         app = FastAPI()
+        self.app = app
         class Site:
             def get_user(_, user_id, **kwargs):
                 return self.users.get(user_id)
@@ -368,6 +370,56 @@ class GatewayHttpTests(unittest.TestCase):
         self.assertEqual(self.client.put(path+'/limits',json={'models':[],'expired_at':-1,'revision':row['limits_revision']}).status_code,200)
         self.assertTrue(self.engine.tokens[1]['model_limits_enabled'])
         self.assertEqual(self.engine.tokens[1]['model_limits'],'gpt-4o-mini')
+
+    def test_ip_edit_preserves_gateway_rules_and_rejects_invalid_stale_and_foreign_changes(self):
+        item=self.create();path='/api/api2api/keys/'+item['id']
+        self.engine.tokens[1]['allow_ips']='127.0.0.1'
+        current=self.client.get('/api/api2api/keys').json()['items'][0]
+        self.assertEqual(current['allowed_ips'],'')
+        self.assertEqual(current['gateway_allowed_ips'],'127.0.0.1')
+        payload={'models':[],'expired_at':-1,'revision':current['limits_revision'],'allowed_ips':'192.0.2.5\n198.51.100.5/24'}
+        response=self.client.put(path+'/limits',json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.engine.tokens[1]['allow_ips'],'127.0.0.1')
+        row=self.client.get('/api/api2api/keys').json()['items'][0]
+        self.assertEqual(row['allowed_ips'],'192.0.2.5\n198.51.100.0/24')
+        self.assertNotEqual(current['limits_revision'],row['limits_revision'])
+        self.assertEqual(self.client.put(path+'/limits',json=payload).status_code,409)
+        self.assertEqual(self.client.put(path+'/limits',headers={'x-test-user':'bob'},json={**payload,'revision':row['limits_revision']}).status_code,404)
+        self.assertEqual(self.client.put(path+'/limits',json={**payload,'revision':row['limits_revision'],'allowed_ips':'example.com'}).status_code,400)
+        self.engine.fail_toggle=True
+        self.assertEqual(self.client.put(path+'/limits',json={**payload,'revision':row['limits_revision'],'allowed_ips':''}).status_code,502)
+        self.assertEqual(self.store.gateway_key(item['id'])['caller_ip_allowlist'],row['allowed_ips'])
+
+    def test_relay_uses_verified_client_ip_not_spoofed_headers_and_skips_blocked_upstream_calls(self):
+        item=self.create()
+        self.store.set_api_key_ips(item['id'],'alice','192.0.2.42',expected='')
+        seen=[]
+        async def upstream(request):
+            seen.append(request)
+            return httpx.Response(200,json={'choices':[]})
+        relay=httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        headers={'Authorization':'Bearer '+item['api_key']}
+        body={'model':'gpt-4o-mini','messages':[]}
+        def caller(address,app=None):
+            client=TestClient(app or self.app,client=(address,12345))
+            self.addCleanup(client.close)
+            return client
+        with patch('mailapi_shared.test_features.httpx.AsyncClient',return_value=relay):
+            blocked=caller('198.51.100.5').post('/api2api/v1/chat/completions',json=body,headers={**headers,'X-Forwarded-For':'192.0.2.42','X-Real-IP':'192.0.2.42','Forwarded':'for=192.0.2.42'})
+            self.assertEqual(blocked.status_code,403,blocked.text)
+            self.assertEqual(blocked.json()['error']['code'],'ip_not_allowed')
+            self.assertEqual(seen,[])
+            self.assertEqual(caller('192.0.2.42').post('/api2api/v1/chat/completions',json=body,headers=headers).status_code,200)
+            self.assertEqual(caller('::ffff:192.0.2.42').get('/api2api/v1/models',headers=headers).status_code,200)
+            ingress=ProxyIngress(self.app,'https://mail.example',['10.0.0.10'])
+            forwarded={**headers,'Host':'mail.example','X-Forwarded-Proto':'https','X-Forwarded-For':'198.51.100.99, 192.0.2.42'}
+            self.assertEqual(caller('10.0.0.10',ingress).post('/api2api/v1/chat/completions',json=body,headers=forwarded).status_code,200)
+            self.assertEqual(caller('10.0.0.10',ingress).post('/api2api/v1/chat/completions',json=body,headers={**forwarded,'X-Forwarded-For':'192.0.2.42, 198.51.100.99'}).status_code,403)
+            self.assertEqual(caller('10.0.0.11',ingress).post('/api2api/v1/chat/completions',json=body,headers=forwarded).status_code,403)
+            self.assertEqual(caller('127.0.0.1',ingress).post('/api2api/v1/chat/completions',json=body,headers=forwarded).status_code,403)
+            self.assertEqual(len(seen),3)
+            self.assertTrue(all('x-forwarded-for' not in request.headers and 'x-real-ip' not in request.headers for request in seen))
 
     def test_audit_tracks_denied_owner_access_and_uncertain_remote_revocation(self):
         item=self.create()

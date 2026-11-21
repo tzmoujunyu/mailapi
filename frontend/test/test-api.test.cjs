@@ -139,20 +139,37 @@ test('key search and state filters combine without changing total active keys',a
   assert.ok(!el('api-key-list').textContent.includes('Laptop paused'));
 });
 
-test('key restriction editor sends only scoped model and expiry fields with a revision',async t=>{
+test('key restriction editor sends personal IP rules with model, expiry and revision fields',async t=>{
   const {w,el,submit,calls}=setup(t,url=>url==='/api/api2api/keys'?{items:[{
     id:'one',name:'Laptop " <img src=x onerror=alert(1)>',key_prefix:'sk-prefix',enabled:true,
-    can_toggle:true,can_edit:true,model_limits:'gpt-4o-mini',expired_at:-1,limits_revision:'revision-1',
+    can_toggle:true,can_edit:true,model_limits:'gpt-4o-mini',expired_at:-1,limits_revision:'revision-1',allowed_ips:'192.0.2.5',gateway_allowed_ips:'127.0.0.1',
   }]}:{ok:true});
   await w.apiUnderTest.load();
   assert.equal(el('api-key-list').querySelector('img'),null);
   el('api-key-list').querySelector('[data-edit-key]').click();
   assert.equal(el('api-limits-dialog').open,true);
   assert.equal(el('api-limits-date-field').hidden,true);
+  assert.equal(el('api-limits-ips').value,'192.0.2.5');
+  assert.equal(el('api-limits-gateway-ips').hidden,false);
+  el('api-limits-ips').value='192.0.2.5\n2001:db8::/32';
   el('api-limits-models').value='gpt-4o-mini,\nmodel-two';submit('api-limits-form');await tick();
   const sent=calls.find(([url,options])=>url.endsWith('/limits') && options.method==='PUT');
-  assert.deepEqual(JSON.parse(sent[1].body),{models:['gpt-4o-mini','model-two'],expired_at:-1,revision:'revision-1'});
+  assert.deepEqual(JSON.parse(sent[1].body),{models:['gpt-4o-mini','model-two'],expired_at:-1,allowed_ips:'192.0.2.5\n2001:db8::/32',revision:'revision-1'});
   assert.equal(el('api-limits-dialog').open,false);
+});
+
+test('invalid IP rules keep the editor open without silently clearing the saved policy',async t=>{
+  const {w,el,submit}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',can_edit:true,allowed_ips:'192.0.2.5',expired_at:-1,limits_revision:'one'}]}:{ok:true});
+  await w.apiUnderTest.load();
+  el('api-key-list').querySelector('[data-edit-key]').click();
+  el('api-limits-ips').value='example.com';
+  w.fetch=async()=>({ok:false,status:400,json:async()=>({detail:'Invalid IP whitelist'})});
+  submit('api-limits-form');await tick();
+  assert.equal(el('api-limits-dialog').open,true);
+  assert.equal(el('api-limits-ips').value,'example.com');
+  assert.equal(el('api-limits-status').textContent,'Invalid IP whitelist');
+  el('api-limits-dialog').close();
+  assert.equal(el('api-limits-ips').value,'');
 });
 
 test('admin user search matches notes and old connection data is not reused as a native gateway',async t=>{

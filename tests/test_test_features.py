@@ -73,6 +73,29 @@ class TestFeatureStoreTests(unittest.TestCase):
         self.assertFalse({row['id'] for row in first['items']} & {row['id'] for row in second['items']})
         self.assertEqual(reopened.api_audit_page(query='%')['total'],0)
 
+    def test_ip_policies_migrate_persist_normalize_and_fail_closed(self):
+        item=self.store.create_api_key('alice','Restricted')
+        with self.store._connect() as db:
+            db.execute('ALTER TABLE api2api_keys DROP COLUMN caller_ip_allowlist')
+        reopened=TestFeatureStore(self.data,self.keyring)
+        self.assertEqual(reopened.gateway_key(item['id'])['caller_ip_allowlist'],'')
+        normalized=reopened.normalize_api_key_ips('192.0.2.42\n192.0.2.42/32\n198.51.100.17/24\n2001:db8::1/32\n::ffff:203.0.113.0/120')
+        self.assertEqual(normalized,'192.0.2.42\n198.51.100.0/24\n2001:db8::/32\n203.0.113.0/24')
+        self.assertTrue(reopened.set_api_key_ips(item['id'],'alice',normalized,expected=''))
+        self.assertFalse(reopened.set_api_key_ips(item['id'],'bob','',expected=normalized))
+        self.assertFalse(reopened.set_api_key_ips(item['id'],'alice','',expected=''))
+        saved=TestFeatureStore(self.data,self.keyring).authenticate_api_key(item['api_key'])
+        for host in ('192.0.2.42','::ffff:192.0.2.42','198.51.100.254','2001:db8:1::1','203.0.113.5'):
+            self.assertTrue(reopened.api_key_ip_allowed(saved,host),host)
+        for host in ('192.0.2.43','198.51.101.1','2001:db9::1','not-an-ip','fe80::1%en0',None):
+            self.assertFalse(reopened.api_key_ip_allowed(saved,host),host)
+        self.assertFalse(reopened.api_key_ip_allowed({'caller_ip_allowlist':'broken'},'192.0.2.42'))
+        self.assertTrue(reopened.set_api_key_ips(item['id'],'alice','',expected=normalized))
+        self.assertTrue(reopened.api_key_ip_allowed(reopened.gateway_key(item['id']),None))
+        for value in ('example.com','192.0.2.*','192.0.2.999','192.0.2.1,192.0.2.2','::1%en0','192.0.2.0/33','::/129','x'*8193,'\n'.join(['192.0.2.1']*101),[],None):
+            with self.assertRaises(TestFeatureError,msg=str(value)[:40]):
+                reopened.normalize_api_key_ips(value)
+
     def test_finance_metadata_and_announcements_persist(self):
         stored = self.data / "finance_files" / "invoice.pdf"
         stored.write_bytes(b"invoice")
