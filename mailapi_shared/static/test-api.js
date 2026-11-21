@@ -1,7 +1,7 @@
 const apiController = (() => {
   const $ = id => document.getElementById(id);
   const t = value => window.SiteLanguage?.t(value) || value;
-  const esc = value => { const node = document.createElement('span'); node.textContent = value == null ? '' : String(value); return node.innerHTML; };
+  const esc = value => { const node = document.createElement('span'); node.textContent = value == null ? '' : String(value); return node.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;'); };
   const api = async (url, options = {}) => {
     const response = await fetch(url, {cache:'no-store',...options});
     const data = await response.json().catch(() => ({}));
@@ -12,11 +12,12 @@ const apiController = (() => {
   const num = value => Number(value || 0).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN');
   const date = value => value ? new Date(value).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
   const baseUrl = `${location.origin}/api2api/v1`;
-  let isAdmin = false, activeTab = 'overview', keys = [], usage = {items:[]}, engine = {}, quotaUser = null, revokeKey = null, keyDialogVersion = 0, adminUsage = [], adminGatewayReady = false;
+  let isAdmin = false, activeTab = 'overview', keys = [], usage = {items:[]}, engine = {}, quotaUser = null, revokeKey = null, keyDialogVersion = 0, adminUsage = [], adminGatewayReady = false, limitsKey = null, limitsVersion = 0;
   function message(id, value, success = false) { $(id).textContent = t(value); $(id).classList.toggle('success',success); }
   function tab(name) {
-    if (name === 'settings' && !isAdmin) return;
+    if ((name === 'settings' || name === 'audit') && !isAdmin) return;
     activeTab = name;
+    apiRecordsController.activate(name);
     document.querySelectorAll('[data-api-tab]').forEach(node => node.setAttribute('aria-pressed',String(node.dataset.apiTab === name)));
     document.querySelectorAll('[data-api-panel]').forEach(node => { node.hidden = node.dataset.apiPanel !== name; });
   }
@@ -28,22 +29,30 @@ const apiController = (() => {
       return `${row.name} ${row.key_prefix}`.toLowerCase().includes(query) && (state==='all' || state===category);
     });
     $('api-key-count').textContent = `${num(filtered.length)} / ${num(keys.length)} ${t('条密钥')}`;
+    const icon = name => `<svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-api-icons.svg#${name}"></use></svg>`;
+    const relative = value => {
+      if(!value)return '—';
+      const age=(new Date(value).getTime()-Date.now())/1000;
+      if(!Number.isFinite(age))return '—';
+      const [unit,step]=Math.abs(age)<3600?['minute',60]:Math.abs(age)<86400?['hour',3600]:['day',86400];
+      return new Intl.RelativeTimeFormat(document.documentElement.lang==='en'?'en':'zh-CN',{numeric:'auto'}).format(Math.round(age/step),unit);
+    };
     $('api-key-list').innerHTML = filtered.map(row => {
       const status=row.available_here===false?'其他网关密钥':row.revoke_pending?'撤销待同步':row.revoked?'密钥已撤销':row.pause_pending?'停用待同步':row.enabled?'可用':row.remote_status===3?'已到期':row.remote_status===4?'额度不足':row.can_toggle===false?'已失效':'已停用';
+      const toggle=row.pause_pending?'重试停用':row.enabled?'停用':'启用';
       const actions=[
-        row.can_copy?`<button type="button" class="api-link" data-copy-key="${esc(row.id)}">${esc(t('复制'))}</button>`:'',
-        row.can_toggle?`<button type="button" class="api-link" data-toggle-key="${esc(row.id)}" data-key-enabled="${row.enabled || row.pause_pending?'false':'true'}">${esc(t(row.pause_pending?'重试停用':row.enabled?'停用':'启用'))}</button>`:'',
-        row.revocable || row.enabled || row.revoke_pending?`<button type="button" class="api-link api-bad" data-revoke-key="${esc(row.id)}">${esc(t(row.revoke_pending?'重试撤销':'撤销密钥'))}</button>`:'',
+        row.can_toggle?`<button type="button" class="api-icon-button ${row.enabled?'api-bad':'api-good'}" data-toggle-key="${esc(row.id)}" data-key-enabled="${row.enabled || row.pause_pending?'false':'true'}" title="${esc(t(toggle))}" aria-label="${esc(t(toggle)+' '+row.name)}">${icon('power')}</button>`:'',
+        row.can_edit?`<button type="button" class="api-icon-button" data-edit-key="${esc(row.id)}" title="${esc(t('编辑限制'))}" aria-label="${esc(t('编辑限制')+' '+row.name)}">${icon('edit')}</button>`:'',
+        row.can_copy || row.revocable || row.enabled || row.revoke_pending?`<button type="button" class="api-icon-button" data-more-key="${esc(row.id)}" title="${esc(t('更多操作'))}" aria-label="${esc(t('更多操作')+' '+row.name)}">${icon('more')}</button>`:'',
       ].join('');
-      return `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td><span class="${row.enabled?'api-good':'api-dim'}" data-ui-text>${esc(t(status))}</span></td><td class="api-number">${row.provider==='newapi'?num(row.used_quota):'—'}</td><td>${date(row.created_at)}</td><td>${date(row.last_used_at)}</td><td><div class="api-key-actions">${actions || '—'}</div></td></tr>`;
-    }).join('') || `<tr><td colspan="6" class="api-empty" data-ui-text>${esc(t('没有符合条件的密钥。'))}</td></tr>`;
+      const models=typeof row.model_limits==='string'?(row.model_limits || t('无限制')):'—';
+      const ips=typeof row.allowed_ips==='string'?(row.allowed_ips || t('无限制')):'—';
+      const expiry=row.expired_at===-1?t('永不'):typeof row.expired_at==='number'?new Date(row.expired_at*1000).toLocaleDateString(document.documentElement.lang==='en'?'en-US':'zh-CN'):'—';
+      return `<tr><td><span data-i18n-skip>${esc(row.name)}</span><small data-i18n-skip>${esc(row.key_prefix)}…</small></td><td><span class="${row.enabled?'api-good':'api-dim'}" data-ui-text>${esc(t(status))}</span></td><td class="api-number">${row.provider==='newapi'?num(row.used_quota):'—'}</td><td><span class="api-key-limits" title="${esc(models)}" data-ui-text>${esc(models)}</span></td><td><span class="api-key-limits" title="${esc(ips)}" data-ui-text>${esc(ips)}</span></td><td class="api-key-time"><small><span>${esc(t('创建时间'))}</span><time title="${esc(date(row.created_at))}" data-i18n-skip>${esc(relative(row.created_at))}</time></small><small><span>${esc(t('最后使用'))}</span><time title="${esc(date(row.last_used_at))}" data-i18n-skip>${esc(relative(row.last_used_at))}</time></small></td><td class="api-key-expiry" data-ui-text>${esc(expiry)}</td><td><div class="api-key-actions">${actions || '—'}</div></td></tr>`;
+    }).join('') || `<tr><td colspan="8" class="api-empty" data-ui-text>${esc(t('没有符合条件的密钥。'))}</td></tr>`;
     $('api-active-keys').textContent = num(keys.filter(row => row.enabled).length);
     $('dashboard-keys').textContent = keys.filter(row => row.enabled).length;
-  }
-  const succeeded = row => row.status_code >= 200 && row.status_code < 300 && !row.error;
-  function renderLogs() {
-    const query = $('api-log-search').value.trim().toLowerCase(), status = $('api-log-status').value;
-    $('api-usage-rows').innerHTML = usage.items.filter(row => (!query || String(row.model).toLowerCase().includes(query)) && (status === 'all' || (status === 'success') === succeeded(row))).map(row => `<tr><td>${date(row.created_at)}</td><td data-i18n-skip>${esc(row.model || '—')}</td><td class="api-number">${num(row.prompt_tokens)}</td><td class="api-number">${num(row.completion_tokens)}</td><td class="api-number">${num(row.total_tokens)}</td><td class="api-number">${num(row.request_ms)} ms</td><td><span class="${succeeded(row) ? 'api-good' : 'api-bad'}">${esc(row.status_code)}${row.error && row.status_code < 400 ? ' · '+esc(t('流中断')) : ''}</span></td></tr>`).join('') || `<tr><td colspan="7" class="api-empty" data-ui-text>${esc(t('暂无符合条件的调用记录。'))}</td></tr>`;
+    apiRecordsController.setKeys(keys);
   }
   function renderUsage() {
     for (const [id, field] of Object.entries({'dashboard-requests':'requests','dashboard-tokens':'total_tokens','dashboard-input':'prompt_tokens','dashboard-output':'completion_tokens','api-metric-requests':'requests','api-metric-tokens':'total_tokens','api-input-total':'prompt_tokens','api-output-total':'completion_tokens'})) $(id).textContent = num(usage[field]);
@@ -52,8 +61,6 @@ const apiController = (() => {
     $('usage-ring').style.setProperty('--input-share',`${split ? 100 * usage.prompt_tokens / split : 0}%`);
     $('dashboard-calls').innerHTML = usage.items.slice(0,3).map(row => `<li><span data-i18n-skip>${esc(row.model || '—')}<small>${date(row.created_at)}</small></span><b>${num(row.total_tokens)} Token</b></li>`).join('') || `<li data-ui-text>${esc(t('暂无调用记录'))}</li>`;
     $('api-metric-duration').textContent = usage.items.length ? `${num(Math.round(usage.items.reduce((sum,row) => sum + row.request_ms,0) / usage.items.length))} ms` : '—';
-    $('api-usage-summary').textContent = t(`请求 ${usage.requests} 次 · 输入 ${usage.prompt_tokens} · 输出 ${usage.completion_tokens} · 总计 ${usage.total_tokens} Token`);
-    renderLogs();
   }
   function renderEngine() {
     $('api-engine-description').textContent = t('密钥由网关签发，本站管理入口和用户身份。');
@@ -79,6 +86,7 @@ const apiController = (() => {
     ]);
     const failure = results.find(result => result.status === 'rejected');
     if (failure) message('api-key-status',failure.reason.message);
+    await apiRecordsController.refresh();
   }
   async function loadChannels() {
     if (!adminGatewayReady) { $('api-channels').textContent = t('请先配置并启用网关连接。'); return; }
@@ -146,8 +154,6 @@ const apiController = (() => {
   $('api-key-search').addEventListener('input',renderKeys);
   $('api-key-filter').addEventListener('change',renderKeys);
   $('api-user-search').addEventListener('input',renderAdminUsage);
-  $('api-log-search').addEventListener('input',renderLogs);
-  $('api-log-status').addEventListener('change',renderLogs);
   $('api-refresh').addEventListener('click',async () => { const button = $('api-refresh'); button.disabled = true; message('api-key-status',''); try { await Promise.all([load(),isAdmin ? loadAdmin() : null]); } catch(error) { message('api-key-status',error.message); } finally { button.disabled = false; } });
   $('api-key-form').addEventListener('submit',async event => {
     event.preventDefault();
@@ -171,14 +177,34 @@ const apiController = (() => {
     } catch(error) { message('api-key-form-status',error.message); }
     finally { button.disabled = false; }
   });
-  $('api-key-list').addEventListener('click',async event => {
+  async function keyAction(event) {
     const button=event.target.closest('button');
     if(!button || button.disabled)return;
-    if(button.dataset.revokeKey){
-      revokeKey=button.dataset.revokeKey;
-      $('api-revoke-name').textContent=keys.find(row=>row.id===revokeKey)?.name || '';
-      message('api-revoke-status','');$('api-revoke-dialog').showModal();return;
+    if(button.dataset.moreKey){
+      const row=keys.find(row=>row.id===button.dataset.moreKey);if(!row)return;
+      revokeKey=row.id;
+      $('api-menu-copy').hidden=!row.can_copy;
+      $('api-menu-copy').dataset.copyKey=row.id;
+      $('api-menu-revoke').hidden=!(row.revocable || row.revoke_pending);
+      const menu=$('api-key-menu'),rect=button.getBoundingClientRect();
+      menu.style.left=`${Math.max(8,Math.min(rect.right-180,window.innerWidth-188))}px`;
+      menu.style.top=`${Math.max(8,Math.min(rect.bottom+6,window.innerHeight-100))}px`;
+      menu.showModal();return;
     }
+    if(button.dataset.editKey){
+      limitsKey=keys.find(row=>row.id===button.dataset.editKey);if(!limitsKey)return;
+      limitsVersion++;
+      $('api-limits-name').textContent=limitsKey.name;
+      $('api-limits-models').value=limitsKey.model_limits || '';
+      $('api-limits-never').checked=limitsKey.expired_at===-1;
+      const expires=new Date(limitsKey.expired_at*1000);
+      $('api-limits-expires').value=limitsKey.expired_at>0?new Date(expires.getTime()-expires.getTimezoneOffset()*60000).toISOString().slice(0,16):'';
+      $('api-limits-date-field').hidden=$('api-limits-never').checked;
+      $('api-limits-expires').required=!$('api-limits-never').checked;
+      message('api-limits-status','');$('api-limits-dialog').showModal();return;
+    }
+    if(!button.dataset.copyKey && !button.dataset.toggleKey)return;
+    if($('api-key-menu').open)$('api-key-menu').close();
     button.disabled=true;
     try{
       if(button.dataset.copyKey){
@@ -195,6 +221,32 @@ const apiController = (() => {
         await load();
       }
     }catch(error){message('api-key-status',error.message);if(button.dataset.toggleKey)await load();}
+    finally{button.disabled=false;}
+  }
+  $('api-key-list').addEventListener('click',keyAction);
+  $('api-key-menu').addEventListener('click',event=>{
+    if(event.target===$('api-key-menu')){const r=event.target.getBoundingClientRect();if(event.clientX<r.left || event.clientX>r.right || event.clientY<r.top || event.clientY>r.bottom)event.target.close();return;}
+    keyAction(event);
+  });
+  $('api-menu-revoke').addEventListener('click',()=>{
+    $('api-key-menu').close();$('api-revoke-name').textContent=keys.find(row=>row.id===revokeKey)?.name || '';
+    message('api-revoke-status','');$('api-revoke-dialog').showModal();
+  });
+  $('api-limits-never').addEventListener('change',()=>{
+    $('api-limits-date-field').hidden=$('api-limits-never').checked;
+    $('api-limits-expires').required=!$('api-limits-never').checked;
+  });
+  $('api-limits-dialog').addEventListener('close',()=>{limitsVersion++;limitsKey=null;$('api-limits-form').reset();});
+  $('api-limits-form').addEventListener('submit',async event=>{
+    event.preventDefault();if(!limitsKey)return;
+    const key=limitsKey,version=limitsVersion,button=event.submitter || $('api-limits-form').querySelector('[type="submit"]');button.disabled=true;
+    const models=$('api-limits-models').value.split(/[,\n]/).map(value=>value.trim()).filter(Boolean);
+    const expired_at=$('api-limits-never').checked?-1:Math.floor(new Date($('api-limits-expires').value).getTime()/1000);
+    try{
+      await send(`/api/api2api/keys/${encodeURIComponent(key.id)}/limits`,'PUT',{models,expired_at,revision:key.limits_revision});
+      if(version===limitsVersion){$('api-limits-dialog').close();message('api-key-status','密钥限制已更新',true);}
+      await load();
+    }catch(error){if(version===limitsVersion)message('api-limits-status',error.message);}
     finally{button.disabled=false;}
   });
   $('api-revoke-form').addEventListener('submit',async event => {
@@ -230,5 +282,5 @@ const apiController = (() => {
   window.addEventListener('hashchange',() => { if (location.hash !== '#view-api2api') { document.querySelectorAll('#view-api2api dialog[open]').forEach(node => node.close()); clearSecrets(); } });
   window.addEventListener('pagehide',clearSecrets);
   document.addEventListener('site:language',() => { renderKeys(); renderUsage(); renderEngine(); if(isAdmin)renderAdminUsage(); });
-  return {start(admin) { isAdmin = admin; $('api-admin-tab').hidden = !admin; tab(activeTab); },load,loadAdmin};
+  return {start(admin) { isAdmin = admin; apiRecordsController.start(admin); $('api-admin-tab').hidden = !admin; tab(activeTab); },load,loadAdmin};
 })();

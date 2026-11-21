@@ -1,5 +1,7 @@
 import asyncio
+import csv
 from base64 import b64encode
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -24,6 +26,9 @@ class EngineFixture:
         self.tokens = {}
         self.fail_delete = False
         self.fail_toggle = False
+        self.logs = []
+        self.log_queries = []
+        self.corrupt_log_owner = False
 
     def response(self, data=None, status=200, success=True):
         return httpx.Response(status, json={'success': success, 'data': data, 'message': ''})
@@ -54,17 +59,20 @@ class EngineFixture:
             return self.response()
         if path == '/api/token/' and request.method == 'POST':
             token_id = len(self.tokens)+1
-            self.tokens[token_id] = {'id': token_id, 'user_id': owner, 'name': body['name'], 'status': 1,
+            self.tokens[token_id] = {**body,'id': token_id, 'user_id': owner, 'name': body['name'], 'status': 1,
                                      'key': f'sk-engine-issued-{token_id:032d}', 'used_quota': 7, 'remain_quota': 93}
             return self.response()
         if path == '/api/token/search':
             return self.response({'items': [x for x in self.tokens.values() if x['user_id'] == owner and x['name'] == request.url.params['keyword']]})
         if path == '/api/token/' and request.method == 'PUT':
-            assert request.url.params['status_only']=='true'
             assert self.tokens[body['id']]['user_id']==owner
             if self.fail_toggle:
                 return httpx.Response(503)
-            self.tokens[body['id']]['status']=body['status']
+            if request.url.params.get('status_only')=='true':
+                self.tokens[body['id']]['status']=body['status']
+            else:
+                assert 'key' not in body and 'status' not in body
+                self.tokens[body['id']].update(body)
             return self.response()
         if path == '/api/token/':
             return self.response({'items': [x for x in self.tokens.values() if x['user_id'] == owner], 'total': len(self.tokens)})
@@ -72,6 +80,10 @@ class EngineFixture:
             token_id = int(path.split('/')[-2])
             assert self.tokens[token_id]['user_id'] == owner
             return self.response({'key': self.tokens[token_id]['key']})
+        if request.method=='GET' and path.startswith('/api/token/') and path.rsplit('/',1)[-1].isdigit():
+            token_id=int(path.rsplit('/',1)[-1])
+            assert self.tokens[token_id]['user_id']==owner
+            return self.response(dict(self.tokens[token_id]))
         if request.method == 'DELETE' and path.startswith('/api/token/'):
             if self.fail_delete:
                 return httpx.Response(503)
@@ -83,6 +95,22 @@ class EngineFixture:
             return self.response({'id': owner, 'quota': 93, 'used_quota': 7, 'request_count': 1})
         if path == '/api/user/models':
             return self.response(['gpt-4o-mini'])
+        if path == '/api/user/self/groups':
+            return self.response({'default':'Default'})
+        if path == '/api/status':
+            return self.response({'quota_per_unit':500000,'quota_display_type':'USD'})
+        if path in {'/api/log/','/api/log/stat'}:
+            assert owner==1
+            params=dict(request.url.params)
+            self.log_queries.append(params)
+            rows=[row for row in self.logs if row['username']==params['username']]
+            if path.endswith('/stat'):
+                return self.response({'quota':sum(row['quota'] for row in rows),'rpm':0,'tpm':0})
+            page,size=int(params['p']),int(params['page_size'])
+            items=[dict(row) for row in rows[(page-1)*size:page*size]]
+            if self.corrupt_log_owner and items:
+                items[0]['user_id']=99999
+            return self.response({'items':items,'total':len(rows)})
         if path == '/api/data/self':
             return self.response([])
         if path == '/api/channel/':
@@ -252,6 +280,94 @@ class GatewayHttpTests(unittest.TestCase):
         self.assertNotIn('management-secret',response.text)
         self.assertNotIn('key_hash',response.text)
         self.assertEqual(rows[-1]['key_id'],item['id'])
+
+    def test_usage_log_pagination_reads_all_retained_rows_and_enforces_exact_owner(self):
+        item=self.create()
+        self.create('bob')
+        alice=self.store.gateway_user('http://127.0.0.1:3001','alice',create=False)
+        bob=self.store.gateway_user('http://127.0.0.1:3001','bob',create=False)
+        for i in range(145,0,-1):
+            self.engine.logs.append({'id':i,'user_id':alice['remote_id'],'username':alice['username'],
+                'created_at':1600000000+i,'type':2,'model_name':'gpt-4o-mini','quota':10,'token_id':1,
+                'prompt_tokens':12,'completion_tokens':24,'use_time':2,'is_stream':True,'group':'default',
+                'request_id':'request-'+str(i),'other':json.dumps({'frt':100,'model_ratio':1,'admin_info':{'api_key':'upstream-secret'}}),
+                'content':'Bearer private-upstream-secret'})
+        self.engine.logs.append({'id':146,'user_id':bob['remote_id'],'username':bob['username'],'quota':999})
+        first=self.client.get('/api/api2api/logs?page_size=100').json()
+        second=self.client.get('/api/api2api/logs?page=2&page_size=100').json()
+        self.assertEqual(first['total'],145)
+        self.assertEqual(len(first['items']),100)
+        self.assertEqual(len(second['items']),45)
+        self.assertFalse({row['id'] for row in first['items']} & {row['id'] for row in second['items']})
+        self.assertEqual(first['items'][0]['token_name'],item['name'])
+        self.assertEqual(first['stats']['quota'],1450)
+        self.assertEqual(first['display']['divisor'],500000)
+        self.assertNotIn('upstream-secret',json.dumps(first))
+        self.assertNotIn('content',first['items'][0])
+        self.assertTrue(all(query['username']==alice['username'] for query in self.engine.log_queries))
+        self.assertEqual(self.client.get('/api/api2api/logs?username='+bob['username']).status_code,400)
+        self.assertEqual(self.client.get('/api/api2api/logs?page=0').status_code,400)
+        self.engine.corrupt_log_owner=True
+        self.assertEqual(self.client.get('/api/api2api/logs').status_code,502)
+
+    def test_model_catalog_is_available_before_issuing_a_personal_key(self):
+        response=self.client.post('/api/api2api/models')
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['items'],[{'id':'gpt-4o-mini'}])
+        self.assertEqual(self.store.list_api_keys('alice'),[])
+        alice=self.store.gateway_user('http://127.0.0.1:3001','alice',create=False)
+        self.client.post('/api/api2api/models',headers={'x-test-user':'bob'})
+        bob=self.store.gateway_user('http://127.0.0.1:3001','bob',create=False)
+        self.assertNotEqual(alice['remote_id'],bob['remote_id'])
+
+    def test_usage_export_contains_all_owned_metadata_and_cleans_success_and_failed_files(self):
+        self.create()
+        owner=self.store.gateway_user('http://127.0.0.1:3001','alice',create=False)
+        for index in range(145,0,-1):
+            self.engine.logs.append({'id':index,'user_id':owner['remote_id'],'username':owner['username'],
+                'created_at':1600000000,'type':2,'model_name':'=HYPERLINK("unsafe")','quota':10,
+                'request_id':str(index),'content':'never-export-content','other':'{"admin_info":{"key":"secret"}}'})
+        response=self.client.get('/api/api2api/logs/export?format=csv')
+        self.assertEqual(response.status_code,200,response.text)
+        rows=list(csv.DictReader(io.StringIO(response.content.decode('utf-8-sig'))))
+        self.assertEqual(len(rows),145)
+        self.assertEqual(rows[0]['model_name'],'\'=HYPERLINK("unsafe")')
+        self.assertEqual(rows[0]['charged_amount'],'0.00002')
+        self.assertEqual(response.headers['x-export-count'],'145')
+        self.assertNotIn('never-export-content',response.text)
+        self.assertEqual(list((self.store.root/'api_log_exports').glob('*')),[])
+        response=self.client.get('/api/api2api/logs/export?format=jsonl')
+        self.assertEqual(len(response.text.splitlines()),145)
+        self.assertEqual(json.loads(response.text.splitlines()[0])['model_name'],'=HYPERLINK("unsafe")')
+        self.engine.logs[100]['id']=self.engine.logs[99]['id']
+        failed=self.client.get('/api/api2api/logs/export?format=jsonl')
+        self.assertEqual(failed.status_code,409,failed.text)
+        self.assertEqual(list((self.store.root/'api_log_exports').glob('*')),[])
+        self.assertEqual(self.client.get('/api/api2api/logs/export?format=jsonl&username=bob').status_code,400)
+
+    def test_key_limit_edit_preserves_key_state_quota_and_rejects_stale_or_foreign_writes(self):
+        item=self.create()
+        path='/api/api2api/keys/'+item['id']
+        row=self.client.get('/api/api2api/keys').json()['items'][0]
+        self.client.put(path+'/enabled',json={'enabled':False})
+        payload={'models':['gpt-4o-mini'],'expired_at':4102444800,'revision':row['limits_revision']}
+        response=self.client.put(path+'/limits',json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        token=self.engine.tokens[1]
+        self.assertEqual(token['status'],2)
+        self.assertEqual(token['remain_quota'],93)
+        self.assertEqual(token['name'],'mw_'+item['id'])
+        self.assertEqual(token['model_limits'],'gpt-4o-mini')
+        self.assertEqual(self.client.post(path+'/reveal').json()['api_key'],item['api_key'])
+        self.assertEqual(self.client.put(path+'/limits',json=payload).status_code,409)
+        self.assertEqual(self.client.put(path+'/limits',headers={'x-test-user':'bob'},json=payload).status_code,404)
+        self.assertEqual(self.client.put(path+'/limits',json={**payload,'remain_quota':99999}).status_code,400)
+        config=self.store.api2api_config_public()
+        self.store.configure_api2api({**config,'model_allowlist':['gpt-4o-mini']})
+        row=self.client.get('/api/api2api/keys').json()['items'][0]
+        self.assertEqual(self.client.put(path+'/limits',json={'models':[],'expired_at':-1,'revision':row['limits_revision']}).status_code,200)
+        self.assertTrue(self.engine.tokens[1]['model_limits_enabled'])
+        self.assertEqual(self.engine.tokens[1]['model_limits'],'gpt-4o-mini')
 
     def test_audit_tracks_denied_owner_access_and_uncertain_remote_revocation(self):
         item=self.create()

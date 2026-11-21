@@ -29,7 +29,7 @@ test('the overview uses own applications and enabled keys, and links switch the 
     requests.push(url);
     return {ok: true, json: async () => fixtures[url]};
   };
-  w.eval(read('test-finance.js') + '\n' + read('test-api.js') + '\n' + read('test-features.js'));
+  w.eval(read('test-finance.js') + '\n' + read('test-api-records.js') + '\n' + read('test-api.js') + '\n' + read('test-features.js'));
   w.eval(w.document.scripts[w.document.scripts.length - 1].textContent);
   await new Promise(resolve => setImmediate(resolve));
   const el = id => w.document.getElementById(id);

@@ -6,7 +6,9 @@ test keyring. Website passwords, TOTP seeds and sessions never leave MailAPI.
 """
 import asyncio
 import hashlib
+import json
 import logging
+import math
 import secrets
 import time
 from urllib.parse import urlsplit
@@ -21,6 +23,11 @@ class NewAPIError(ValueError):
 
 
 class NewAPIGateway:
+    @staticmethod
+    def limits_revision(token):
+        fields = {name:token.get(name) for name in ('expired_time','model_limits_enabled','model_limits','allow_ips')}
+        return hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
     def __init__(self, store, *, client=None):
         self.store = store
         self.client = client or httpx.AsyncClient(
@@ -160,13 +167,13 @@ class NewAPIGateway:
         if own:
             user = await self.identity(user_id)
             for page in range(1,11):
-                data = await self.request(user,'GET','/api/token/',params={'p':page,'size':100})
+                data = await self.request(user,'GET','/api/token/',params={'p':page,'page_size':100})
                 remote.update({int(row['id']):row for row in data['items']})
                 if len(data['items'])<100:
                     break
         result = []
         for row in rows:
-            current = remote.get(row['remote_id'])
+            current = remote.get(row['remote_id']) if row['provider']=='newapi' and row['engine_origin']==origin else None
             item = {key:value for key,value in row.items() if key not in {'remote_id','engine_origin','user_id'}}
             item['enabled'] = bool(row['enabled'] and not row['revoked'] and current and current.get('status')==1)
             item['available_here'] = row['provider']=='newapi' and row['engine_origin']==origin
@@ -174,10 +181,13 @@ class NewAPIGateway:
             item['revocable'] = bool(not row['revoked'] or item['revoke_pending'])
             item['can_copy'] = bool(item['available_here'] and current and not row['revoked'])
             item['can_toggle'] = bool(item['available_here'] and current and not row['revoked'])
+            item['can_edit'] = item['can_toggle']
             item['pause_pending'] = bool(not row['enabled'] and not row['revoked'] and current and current.get('status')==1)
             if current:
                 item.update(remote_status=current.get('status'),used_quota=current.get('used_quota',0),remaining_quota=current.get('remain_quota',0),
-                            unlimited=bool(current.get('unlimited_quota')),expired_at=current.get('expired_time',-1))
+                            unlimited=bool(current.get('unlimited_quota')),expired_at=current.get('expired_time',-1),
+                            model_limits=current.get('model_limits','') if current.get('model_limits_enabled') else '',
+                            allowed_ips=current.get('allow_ips') or '',limits_revision=self.limits_revision(current))
             result.append(item)
         return result
 
@@ -241,6 +251,29 @@ class NewAPIGateway:
             if enabled and not self.store.set_api_key_enabled(key_id,user_id,True):
                 raise NewAPIError('密钥状态已变化，请刷新',409)
 
+    async def update_key_limits(self, key_id, user_id, payload):
+        async with self.locks.setdefault(('key',key_id),asyncio.Lock()):
+            row = self.own_key(key_id,user_id)
+            user = await self.identity(user_id)
+            current = await self.request(user,'GET',f'/api/token/{row["remote_id"]}')
+            if payload.get('revision')!=self.limits_revision(current):
+                raise NewAPIError('密钥限制已变化，请刷新后重试',409)
+            models, expires = payload.get('models'), payload.get('expired_at')
+            if not isinstance(models,list) or len(models)>100 or any(not isinstance(name,str) or not name or len(name)>120 or ',' in name or '\n' in name for name in models):
+                raise NewAPIError('模型限制须为有效模型名称列表',400)
+            if type(expires) is not int or (expires!=-1 and (expires<0 or expires>253402300799 or (expires<=time.time() and expires!=current.get('expired_time')))):
+                raise NewAPIError('请选择有效的未来到期时间，或设为永不过期',400)
+            available = await self.request(user,'GET','/api/user/models')
+            allowed = self.config()['model_allowlist']
+            if any(name not in available or (allowed and name not in allowed) for name in models):
+                raise NewAPIError('模型不在当前可用范围内',400)
+            models = list(dict.fromkeys(models)) or allowed
+            update = {name:current[name] for name in ('id','name','remain_quota','unlimited_quota','allow_ips','group',
+                                                      'cross_group_retry','auto_groups','allow_user_quota_query') if name in current}
+            update.update(expired_time=expires,model_limits_enabled=bool(models),model_limits=','.join(models))
+            await self.request(user,'PUT','/api/token/',json=update)
+            return {'ok':True}
+
     async def info(self, user_id):
         config = self.config()
         user = self.store.gateway_user(config['base_url'][:-3],user_id,create=False)
@@ -255,6 +288,79 @@ class NewAPIGateway:
                 'series':[{'created_at':row['created_at'],'model':row['model_name'],'requests':row['count'],
                            'tokens':row['token_used'],'quota':row['quota']} for row in (series or [])],
                 'models':[name for name in models if not config['model_allowlist'] or name in config['model_allowlist']]}
+
+    async def models(self, user_id):
+        user = await self.identity(user_id)
+        names, groups = await asyncio.gather(self.request(user,'GET','/api/user/models'),
+                                           self.request(user,'GET','/api/user/self/groups'))
+        allowed = self.config()['model_allowlist']
+        return {'items':[{'id':name} for name in sorted(set(names)) if not allowed or name in allowed],
+                'groups':list(groups) if isinstance(groups,dict) else []}
+
+    async def log_page(self, user_id, filters, page, page_size, *, include_summary=True):
+        config = self.config()
+        user = self.store.gateway_user(config['base_url'][:-3],user_id,create=False)
+        empty = {'items':[],'total':0,'page':page,'page_size':page_size,'groups':[],
+                 'stats':None,'display':{'unit':'points','divisor':1,'symbol':''}}
+        if not user or not user['initialized']:
+            return empty
+        params = {**filters,'p':page,'page_size':page_size,'username':user['username']}
+        keys = self.store.list_api_keys(user_id)
+        owned = {row['remote_id']:row for row in keys if row['provider']=='newapi' and row['engine_origin']==user['origin']}
+        key_id = params.pop('key_id','')
+        if key_id:
+            key = next((row for row in owned.values() if row['id']==key_id),None)
+            if not key:
+                raise NewAPIError('未找到 API Key',404)
+            params['token_name'] = 'mw_'+key_id
+        manager = self.management(config)
+        # Root log queries have no rolling self-service lookback limit. The
+        # website fixes the exact linked username, then verifies every owner.
+        # No caller-supplied username or user id can reach this query.
+        if include_summary:
+            data, status, groups = await asyncio.gather(
+                self.request(manager,'GET','/api/log/',params=params),
+                self.request(manager,'GET','/api/status'),
+                self.request(user,'GET','/api/user/self/groups'))
+        else:
+            data = await self.request(manager,'GET','/api/log/',params=params)
+            status, groups = {}, {}
+        if not isinstance(data,dict) or not isinstance(data.get('items'),list) or type(data.get('total')) is not int or data['total']<0:
+            raise NewAPIError('网关日志响应无效')
+        raw = data.get('items',[])
+        if len(raw)>page_size or any(not isinstance(row,dict) or row.get('user_id')!=user['remote_id'] or row.get('username')!=user['username'] for row in raw):
+            raise NewAPIError('日志归属校验失败，未返回任何记录')
+        items = []
+        for row in raw:
+            try:
+                other = json.loads(row.get('other') or '{}')
+            except (ValueError,TypeError):
+                other = {}
+            if not isinstance(other,dict):
+                other = {}
+            billing = {name:value for name,value in other.items()
+                       if name in {'frt','model_ratio','completion_ratio','group_ratio','user_group_ratio','model_price',
+                                   'cache_tokens','cache_ratio','cache_creation_tokens','cache_creation_ratio'}
+                       and type(value) in {int,float} and math.isfinite(value) and value>=0}
+            key = owned.get(row.get('token_id'))
+            item = {name:row.get(name) for name in ('id','created_at','type','model_name','quota','prompt_tokens',
+                                                   'completion_tokens','use_time','is_stream','group','request_id','upstream_request_id')}
+            item.update(token_name=key['name'] if key else '历史密钥',key_id=key['id'] if key else '',billing=billing)
+            items.append(item)
+        display = empty['display']
+        per_unit = status.get('quota_per_unit')
+        mode = status.get('quota_display_type')
+        if type(per_unit) in {int,float} and math.isfinite(per_unit) and per_unit>0 and mode in {'USD','CNY','CUSTOM'}:
+            rate = 1 if mode=='USD' else status.get('usd_exchange_rate') if mode=='CNY' else status.get('custom_currency_exchange_rate')
+            if type(rate) in {int,float} and math.isfinite(rate) and rate>0:
+                display = {'unit':'currency','divisor':per_unit/rate,
+                           'symbol':'$' if mode=='USD' else '¥' if mode=='CNY' else str(status.get('custom_currency_symbol') or '¤')[:8]}
+        stats = None
+        if include_summary and not filters.get('request_id') and not filters.get('upstream_request_id'):
+            result = await self.request(manager,'GET','/api/log/stat',params=params)
+            stats = {name:result.get(name) for name in ('quota','rpm','tpm')}
+        return {'items':items,'total':data['total'],'page':page,'page_size':page_size,
+                'groups':list(groups) if isinstance(groups,dict) else [],'stats':stats,'display':display}
 
     async def channels(self):
         config = self.config()

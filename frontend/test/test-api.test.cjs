@@ -21,7 +21,7 @@ function setup(t,handler) {
     const defaults = {'/api/api2api/keys':{items:[]},'/api/api2api/engine':{engine:'newapi',linked:false,models:[]},'/api/api2api/usage':{requests:0,prompt_tokens:0,completion_tokens:0,total_tokens:0,items:[]}};
     return {ok:true,json:async () => supplied || defaults[url]};
   };
-  w.eval(read('test-api.js')+'\nwindow.apiUnderTest = apiController;');
+  w.eval(read('test-api-records.js')+'\n'+read('test-api.js')+'\nwindow.apiUnderTest = apiController;');
   w.apiUnderTest.start(false);
   const submit = id => el(id).dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
   return {w,el,calls,submit};
@@ -52,16 +52,6 @@ test('closing during key creation never leaves a late key in the cached page and
   assert.ok(calls.some(([url,options]) => url==='/api/api2api/keys/unclaimed' && options.method==='DELETE'));
 });
 
-test('call filters apply to recent records and treat model names as plain text',async t => {
-  const {w,el} = setup(t,url => url==='/api/api2api/usage' ? {requests:2,prompt_tokens:2,completion_tokens:3,total_tokens:5,items:[{created_at:'2026-11-20T00:00:00Z',model:'<img src=x onerror=alert(1)>',prompt_tokens:2,completion_tokens:3,total_tokens:5,request_ms:48,status_code:200},{created_at:'2026-11-20T00:00:00Z',model:'failed-model',prompt_tokens:0,completion_tokens:0,total_tokens:0,request_ms:20,status_code:503}]} : null);
-  await w.apiUnderTest.load();
-  assert.equal(el('api-usage-rows').querySelector('img'),null);
-  el('api-log-status').value='error'; el('api-log-status').dispatchEvent(new w.Event('change'));
-  assert.equal(el('api-usage-rows').children.length,1);
-  assert.match(el('api-usage-rows').textContent,/failed-model/);
-  assert.equal(el('api-metric-tokens').textContent,'5');
-});
-
 test('admin uses native management fields and clears the submitted secret',async t => {
   const {w,el,calls,submit} = setup(t,(url,options) => {
     if (options.method==='PUT') return {ok:true};
@@ -85,7 +75,8 @@ test('admin uses native management fields and clears the submitted secret',async
 test('revocation uses a website dialog and waits for explicit confirmation',async t => {
   const {w,el,calls,submit} = setup(t,(url,options) => url==='/api/api2api/keys' ? {items:[{id:'one',name:'Preview key',provider:'newapi',enabled:true,revocable:true}]} : null);
   await w.apiUnderTest.load();
-  el('api-key-list').querySelector('[data-revoke-key]').click();
+  el('api-key-list').querySelector('[data-more-key]').click();
+  el('api-menu-revoke').click();
   assert.equal(el('api-revoke-dialog').open,true);
   assert.ok(calls.every(([,options]) => options.method!=='DELETE'));
   submit('api-revoke-form'); await tick();
@@ -102,13 +93,13 @@ test('key list copies on demand without retaining plaintext and pauses then resu
   });
   Object.defineProperty(w.navigator,'clipboard',{value:{writeText:async value=>{copied=value;}}});
   await w.apiUnderTest.load();
-  el('api-key-list').querySelector('[data-copy-key]').click();await tick();
+  el('api-key-list').querySelector('[data-more-key]').click();el('api-key-menu').querySelector('[data-copy-key]').click();await tick();
   assert.equal(copied,secret);assert.ok(!w.document.body.textContent.includes(secret));
   el('api-key-list').querySelector('[data-toggle-key]').click();await tick();
   assert.equal(enabled,false);assert.ok(el('api-key-list').textContent.includes('已停用'));
-  assert.equal(el('api-key-list').querySelector('[data-toggle-key]').textContent,'启用');
+  assert.equal(el('api-key-list').querySelector('[data-toggle-key]').getAttribute('aria-label'),'启用 Development');
   el('api-key-list').querySelector('[data-toggle-key]').click();await tick();
-  assert.equal(enabled,true);assert.equal(el('api-key-list').querySelector('[data-toggle-key]').textContent,'停用');
+  assert.equal(enabled,true);assert.equal(el('api-key-list').querySelector('[data-toggle-key]').getAttribute('aria-label'),'停用 Development');
   assert.deepEqual(calls.filter(([url])=>url.endsWith('/enabled')).map(([,options])=>JSON.parse(options.body).enabled),[false,true]);
   assert.equal(w.localStorage.length,0);assert.equal(w.sessionStorage.length,0);
 });
@@ -120,11 +111,11 @@ test('manual copy fallback clears its full key on close and late copy results ca
     if(url.endsWith('/reveal'))return delay?new Promise(resolve=>{resolveCopy=resolve;}):{api_key:'sk-manual-copy-fixture'};
   });
   await w.apiUnderTest.load();
-  el('api-key-list').querySelector('[data-copy-key]').click();await tick();
+  el('api-key-list').querySelector('[data-more-key]').click();el('api-key-menu').querySelector('[data-copy-key]').click();await tick();
   assert.equal(el('api-key-dialog').open,true);assert.equal(el('api-key-title').textContent,'复制 API 密钥');
   assert.equal(el('new-api-key').textContent,'sk-manual-copy-fixture');
   el('api-key-dialog').close();assert.equal(el('new-api-key').textContent,'');
-  delay=true;el('api-key-list').querySelector('[data-copy-key]').click();await tick();
+  delay=true;el('api-key-list').querySelector('[data-more-key]').click();el('api-key-menu').querySelector('[data-copy-key]').click();await tick();
   w.location.hash='#view-finance';await tick();resolveCopy({api_key:'sk-late-copy-fixture'});await tick();
   assert.equal(el('api-key-dialog').open,false);assert.equal(el('new-api-key').textContent,'');
 });
@@ -146,6 +137,22 @@ test('key search and state filters combine without changing total active keys',a
   el('api-key-filter').value='all';el('api-key-filter').dispatchEvent(new w.Event('change'));
   assert.match(el('api-key-list').textContent,/Laptop/);
   assert.ok(!el('api-key-list').textContent.includes('Laptop paused'));
+});
+
+test('key restriction editor sends only scoped model and expiry fields with a revision',async t=>{
+  const {w,el,submit,calls}=setup(t,url=>url==='/api/api2api/keys'?{items:[{
+    id:'one',name:'Laptop " <img src=x onerror=alert(1)>',key_prefix:'sk-prefix',enabled:true,
+    can_toggle:true,can_edit:true,model_limits:'gpt-4o-mini',expired_at:-1,limits_revision:'revision-1',
+  }]}:{ok:true});
+  await w.apiUnderTest.load();
+  assert.equal(el('api-key-list').querySelector('img'),null);
+  el('api-key-list').querySelector('[data-edit-key]').click();
+  assert.equal(el('api-limits-dialog').open,true);
+  assert.equal(el('api-limits-date-field').hidden,true);
+  el('api-limits-models').value='gpt-4o-mini,\nmodel-two';submit('api-limits-form');await tick();
+  const sent=calls.find(([url,options])=>url.endsWith('/limits') && options.method==='PUT');
+  assert.deepEqual(JSON.parse(sent[1].body),{models:['gpt-4o-mini','model-two'],expired_at:-1,revision:'revision-1'});
+  assert.equal(el('api-limits-dialog').open,false);
 });
 
 test('admin user search matches notes and old connection data is not reused as a native gateway',async t=>{

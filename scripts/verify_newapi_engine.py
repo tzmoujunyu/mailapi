@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -176,6 +177,41 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                         assert b'[DONE]' in b''.join(chunks)
                     assert stream_forwarded==[True,True], 'Website buffered the stream'
                     assert web.get('/api/api2api/usage').json()['total_tokens']==16
+                    catalog = web.post('/api/api2api/models')
+                    assert catalog.status_code==200 and {'id':'gpt-4o-mini'} in catalog.json()['items'], 'Model catalog'
+                    own = store.gateway_user(f'http://127.0.0.1:{port}','alice-test',create=False)
+                    other = store.gateway_user(f'http://127.0.0.1:{port}','bob-test',create=False)
+                    token = store.gateway_key(alice['id'],'alice-test')
+                    # Old disposable records exercise retained-history access beyond
+                    # the native self-service lookback and the first 100 rows.
+                    with sqlite3.connect(work/'newapi.db') as db:
+                        for owner, count in ((own,145),(other,1)):
+                            for index in range(count):
+                                db.execute('''INSERT INTO logs (user_id,username,created_at,type,token_id,token_name,model_name,quota,prompt_tokens,
+                                    completion_tokens,use_time,is_stream,"group",request_id,other,content) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                                    (owner['remote_id'],owner['username'],1600000000+index,2,token['remote_id'],'mw_'+alice['id'],
+                                     'probe-history',10,3,5,2,True,'default',f'probe-{index}',json.dumps({'frt':100,'admin_info':{'key':'secret-diagnostic'}}),'private-upstream-secret'))
+                    history = '/api/api2api/logs?model_name=probe-history'
+                    first,second = web.get(history).json(),web.get(history+'&page=2').json()
+                    assert first.get('total')==145, ('Native retained history',first.get('detail'),first.get('total'))
+                    assert len(first['items'])==100 and len(second['items'])==45
+                    assert not ({row['id'] for row in first['items']} & {row['id'] for row in second['items']})
+                    assert first['display']['unit']=='currency' and first['stats']['quota']==1450
+                    assert 'secret-diagnostic' not in json.dumps(first) and 'private-upstream-secret' not in json.dumps(first)
+                    exported = web.get('/api/api2api/logs/export?model_name=probe-history&format=jsonl')
+                    assert exported.status_code==200, ('Native export',exported.status_code,exported.text[:150])
+                    assert len(exported.text.splitlines())==145 and exported.headers['x-export-count']=='145'
+                    for _ in range(20):
+                        if not list((website_data/'api_log_exports').glob('*')):
+                            break
+                        time.sleep(.05)
+                    assert not list((website_data/'api_log_exports').glob('*')), 'Temporary export was not cleaned'
+                    assert web.get('/api/api2api/logs?username='+other['username']).status_code==400
+                    assert web.get('/api/admin/api2api/audit').status_code==403
+                    editable = web.get('/api/api2api/keys').json()['items'][0]
+                    edited = web.put('/api/api2api/keys/'+alice['id']+'/limits',json={
+                        'models':['gpt-4o-mini'],'expired_at':int(time.time())+86400,'revision':editable['limits_revision']})
+                    assert edited.status_code==200, ('Native key edit',edited.status_code,edited.json().get('detail'))
                     copied = web.post('/api/api2api/keys/'+alice['id']+'/reveal')
                     assert copied.status_code==200 and copied.json()['api_key']==alice['api_key']
                     assert 'no-store' in copied.headers['cache-control']
@@ -193,6 +229,9 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                     assert web.post('/api2api/v1/chat/completions',json=payload,headers=bearer).status_code==401
                     assert client.post('/v1/chat/completions',json=payload,headers=bearer).status_code==401
                     assert web.post('/api2api/v1/chat/completions',json=payload,headers={'Authorization':'Bearer '+bob['api_key']}).status_code==200
+                    events = web.get('/api/admin/api2api/audit',headers={'x-test-user':'admin'}).json()
+                    assert {row['action'] for row in events['items']} >= {'created','updated','revealed','disabled','enabled','revoked'}
+                    assert alice['api_key'] not in json.dumps(events) and password not in json.dumps(events)
                     disk = b''.join(p.read_bytes() for p in website_data.iterdir() if p.is_file())
                     assert alice['api_key'].encode() not in disk
                     assert password.encode() not in disk
@@ -203,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
 
             print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,
                               'streaming_before_completion':True,'website_http_native_keys':True,
-                              'pause_resume_and_copy':True,'separate_engine_identities':True,'revocation_enforced':True,
+                              'pause_resume_and_copy':True,'retained_logs_145_rows':True,'full_export_cleanup':True,'model_catalog':True,'key_limit_edit':True,'admin_only_audit':True,'separate_engine_identities':True,'revocation_enforced':True,
                               'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)
     finally:
         stream_received.set()

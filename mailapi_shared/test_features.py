@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import anyio
+import csv
 from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -22,13 +23,15 @@ import re
 import secrets
 import sqlite3
 import time
+import tempfile
 from typing import Any, Optional
 from urllib.parse import quote, urlsplit
 import zipfile
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from .credential_crypto import CredentialCryptoError, CredentialKeyring
 from .site_accounts import ADMIN_ROLES
@@ -897,7 +900,11 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             dates.append(value)
         if all(dates) and dates[0]>dates[1]:
             raise HTTPException(400,'开始日期不能晚于结束日期')
-        return store.api_audit_page(page=page,page_size=page_size,query=q,action=action,outcome=outcome,start=dates[0],end=dates[1])
+        data = store.api_audit_page(page=page,page_size=page_size,query=q,action=action,outcome=outcome,start=dates[0],end=dates[1])
+        for row in data['items']:
+            owner = request.app.state.site_accounts.get_user(row['owner_id']) if row['owner_id'] else None
+            row['owner_name'] = owner['username'] if owner else row['owner_id']
+        return JSONResponse(data,headers={'Cache-Control':'no-store, private'})
 
     @router.get("/api/api2api/keys")
     async def list_user_keys(request: Request):
@@ -934,6 +941,15 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                                  lambda:gateway.set_key_enabled(key_id,user['id'],payload.get('enabled')))
         return {'ok':True}
 
+    @router.put('/api/api2api/keys/{key_id}/limits')
+    async def update_user_key_limits(key_id: str, request: Request):
+        user = current_user(request)
+        payload = await gateway_payload(request)
+        if set(payload)-{'models','expired_at','revision'}:
+            raise HTTPException(400,'密钥限制字段无效')
+        key = store.gateway_key(key_id,user['id']) or {'id':key_id}
+        return await audited_key_change(user,'updated',key,lambda:gateway.update_key_limits(key_id,user['id'],payload))
+
     @router.delete("/api/api2api/keys/{key_id}")
     async def revoke_user_key(key_id: str, request: Request):
         user = current_user(request)
@@ -945,6 +961,98 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     def user_api_usage(request: Request):
         user = current_user(request)
         return store.usage_summary(user["id"])
+
+    @router.post('/api/api2api/models')
+    async def available_api_models(request: Request):
+        return JSONResponse(await gateway.models(current_user(request)['id']),headers={'Cache-Control':'no-store, private'})
+
+    def api_log_filters(request, page, page_size, start_timestamp, end_timestamp, log_type, *, export=False):
+        allowed = {'page','page_size','start_timestamp','end_timestamp','type','model_name','key_id','group','request_id','upstream_request_id'}
+        if export:
+            allowed.add('format')
+        if set(request.query_params)-allowed or not 1<=page<=1_000_000_000 or page_size not in {20,50,100}:
+            raise HTTPException(400,'日志分页或搜索条件无效')
+        if start_timestamp<0 or end_timestamp<0 or (end_timestamp and start_timestamp>end_timestamp) or log_type not in range(8):
+            raise HTTPException(400,'日志日期或类型无效')
+        filters = {'start_timestamp':start_timestamp,'end_timestamp':end_timestamp,'type':log_type}
+        for name,limit in (('model_name',120),('key_id',64),('group',64),('request_id',64),('upstream_request_id',128)):
+            value = request.query_params.get(name,'').strip()
+            if len(value)>limit:
+                raise HTTPException(400,'日志搜索条件过长')
+            if value:
+                filters[name] = value
+        return filters
+
+    @router.get('/api/api2api/logs')
+    async def user_api_logs(request: Request, page: int=1, page_size: int=100, start_timestamp: int=0,
+                            end_timestamp: int=0, type: int=0):
+        user = current_user(request)
+        filters = api_log_filters(request,page,page_size,start_timestamp,end_timestamp,type)
+        return JSONResponse(await gateway.log_page(user['id'],filters,page,page_size),headers={'Cache-Control':'no-store, private'})
+
+    @router.get('/api/api2api/logs/export')
+    async def export_api_logs(request: Request, start_timestamp: int=0, end_timestamp: int=0, log_type: int=Query(0,alias='type'), format: str='csv'):
+        user = current_user(request)
+        filters = api_log_filters(request,1,100,start_timestamp,end_timestamp,log_type,export=True)
+        if format not in {'csv','jsonl'}:
+            raise HTTPException(400,'导出格式无效')
+        filters['end_timestamp'] = min(end_timestamp or int(time.time())-1,int(time.time())-1)
+        if start_timestamp>filters['end_timestamp']:
+            raise HTTPException(400,'开始日期不能晚于结束日期')
+        lock = gateway.locks.setdefault(('log-export',user['id']),asyncio.Lock())
+        if lock.locked():
+            raise HTTPException(409,'已有日志导出正在进行，请稍后重试')
+        path, handed_off = None, False
+        async with lock:
+            try:
+                directory = store.root/'api_log_exports'
+                directory.mkdir(mode=0o700,exist_ok=True)
+                with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8-sig' if format=='csv' else 'utf-8',
+                        newline='',prefix='usage-',suffix='.'+format,dir=directory,delete=False) as file:
+                    path = Path(file.name)
+                    os.chmod(path,0o600)
+                    columns = ['id','created_at','type','token_name','model_name','is_stream','prompt_tokens',
+                               'completion_tokens','quota','charged_amount','currency','use_time','request_id','upstream_request_id','billing']
+                    writer = csv.writer(file) if format=='csv' else None
+                    if writer:
+                        writer.writerow(columns)
+                    page, count, expected, previous, display = 1, 0, None, None, None
+                    while True:
+                        if await request.is_disconnected():
+                            raise HTTPException(499,'导出已取消')
+                        data = await gateway.log_page(user['id'],filters,page,100,include_summary=page==1)
+                        if expected is None:
+                            expected = data['total']
+                            display = data['display']
+                        if data['total']!=expected or (not data['items'] and count<expected):
+                            raise HTTPException(409,'导出期间日志发生变化，请重试')
+                        for row in data['items']:
+                            if type(row.get('id')) is not int or (previous is not None and row['id']>=previous):
+                                raise HTTPException(409,'日志顺序已变化，请重试导出')
+                            previous = row['id']
+                            amount = Decimal(str(row['quota']))/Decimal(str(display['divisor'])) if type(row.get('quota')) in {int,float} else None
+                            row = {**row,'charged_amount':str(amount) if amount is not None else None,
+                                   'currency':display['symbol'] if display['unit']=='currency' else 'quota'}
+                            if writer:
+                                values = [json.dumps(row[name],ensure_ascii=False) if isinstance(row.get(name),dict) else row.get(name,'') for name in columns]
+                                writer.writerow(["'"+value if isinstance(value,str) and value.startswith(('=','+','-','@','\t','\r')) else value for value in values])
+                            else:
+                                file.write(json.dumps(row,ensure_ascii=False)+'\n')
+                            count += 1
+                        if count>expected:
+                            raise HTTPException(409,'导出期间日志数量发生变化，请重试')
+                        if count>=expected:
+                            break
+                        page += 1
+                response = FileResponse(path,filename='api-usage-logs.'+format,
+                    media_type='text/csv' if format=='csv' else 'application/x-ndjson',
+                    headers={'Cache-Control':'no-store, private','X-Export-Count':str(count)},
+                    background=BackgroundTask(path.unlink,missing_ok=True))
+                handed_off = True
+                return response
+            finally:
+                if path and not handed_off:
+                    path.unlink(missing_ok=True)
 
     @router.get('/api/api2api/engine')
     async def user_engine_info(request: Request):
