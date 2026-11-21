@@ -82,6 +82,32 @@ test('model details escape metadata, show group prices and generate examples wit
   assert.ok(el('api-model-example').textContent.includes("'\"'\"'"));
   click('[data-catalog-code="python"]');assert.match(el('api-model-example').textContent,/urllib.request/);
   el('api-model-dialog-copy').click();await tick();assert.equal(copied,id);
+  assert.ok(el('api-model-dialog-copy').querySelector('use').getAttribute('href').endsWith('#check'));
+  assert.equal(el('api-model-detail-feedback').textContent,'已复制');
+});
+
+test('model details reset scroll between tabs and restore keyboard focus after price controls rebuild cards',async t=>{
+  const {w,el,click}=setup(t,catalog([model('one'),model('two')]));
+  await w.catalog.load();click('[data-catalog-detail="one"]');
+  el('api-model-detail-body').scrollTop=500;
+  click('[data-catalog-detail-tab="api"]');assert.equal(el('api-model-detail-body').scrollTop,0);
+  click('[data-catalog-detail-tab="overview"]');click('#api-model-overview [data-catalog-unit="K"]');
+  el('api-model-dialog-close').click();
+  assert.equal(w.document.activeElement.dataset.catalogDetail,'one');
+  click('[data-catalog-detail="two"]');assert.equal(el('api-model-detail-body').scrollTop,0);
+});
+
+test('copy feedback leaves model cards in place and clipboard failure remains visible',async t=>{
+  const {w,el,click}=setup(t,catalog([model('one')]));let reject=false,copied='';
+  Object.defineProperty(w.navigator,'clipboard',{value:{writeText:async value=>{if(reject)throw new Error('clipboard denied');copied=value;}}});
+  await w.catalog.load();const card=el('api-model-grid').firstElementChild;
+  click('[data-catalog-copy="one"]');await tick();
+  assert.equal(copied,'one');assert.equal(el('api-model-grid').firstElementChild,card);
+  assert.equal(el('api-model-feedback').classList.contains('api-copy-feedback'),true);
+  reject=true;click('[data-catalog-copy="one"]');await tick();
+  assert.equal(el('api-model-feedback').classList.contains('api-copy-feedback'),false);
+  assert.equal(el('api-model-feedback').textContent,'请选中内容手动复制');
+  assert.equal(card.querySelector('[data-catalog-copy]').classList.contains('is-copied'),false);
 });
 
 test('late model performance cannot overwrite a different detail dialog, and missing samples remain blank',async t=>{

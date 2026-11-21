@@ -29,7 +29,10 @@ const apiModelCatalog = (() => {
   };
   const entryAmount = (entry,multiple=1,value=entry.value) => amount(numeric(multiple)?value*multiple:null,entry.unit!=='token');
   const entryLabel = entry => entry.schema?entry.label:t(entry.label);
-  function feedback(value,detail=false){$(detail?'api-model-detail-feedback':'api-model-feedback').textContent=value;}
+  function feedback(value,detail=false){
+    const node=$(detail?'api-model-detail-feedback':'api-model-feedback');
+    node.classList.remove('api-copy-feedback');node.textContent=value;
+  }
   function ratio(row,group=state.filters.group){
     const values=(row.groups || []).filter(value=>!group || value.id===group).map(value=>value.ratio).filter(numeric);
     return values.length?Math.min(...values):null;
@@ -209,6 +212,7 @@ const apiModelCatalog = (() => {
   function selectDetailTab(value){
     if(value!=='performance'){detailAbort?.abort();detailSeq++;feedback('',true);}document.querySelectorAll('[data-catalog-detail-tab]').forEach(node=>node.setAttribute('aria-pressed',String(node.dataset.catalogDetailTab===value)));
     document.querySelectorAll('[data-catalog-detail-panel]').forEach(node=>{node.hidden=node.dataset.catalogDetailPanel!==value;});
+    $('api-model-detail-body').scrollTop=0;
     if(value==='performance' && !detailData)performance();
   }
   function open(id){
@@ -217,15 +221,36 @@ const apiModelCatalog = (() => {
     $('api-model-dialog-brand').innerHTML=brand(selected);$('api-model-dialog-title').textContent=selected.id;$('api-model-dialog-subtitle').textContent=(selected.vendor || t('供应商未提供'))+' · '+t(kindNames[selected.billing] || '定价未提供');
     overview();renderPerformance();renderApi();selectDetailTab('overview');$('api-model-dialog').showModal();
   }
-  async function copy(value,detail=false){try{await navigator.clipboard.writeText(value);feedback(t('已复制'),detail);}catch{feedback(t('请选中内容手动复制'),detail);}}
+  async function copy(value,detail=false,button=null){
+    try{
+      await navigator.clipboard.writeText(value);
+      const message=t('已复制'),notice=$(detail?'api-model-detail-feedback':'api-model-feedback');
+      feedback(message,detail);notice.classList.add('api-copy-feedback');
+      if(button && !button.classList.contains('is-copied')){
+        const use=button.querySelector('use'),original=use?.getAttribute('href');
+        use?.setAttribute('href','/static/test-api-icons.svg#check');button.classList.add('is-copied');
+        setTimeout(()=>{
+          if(button.isConnected){if(original)use?.setAttribute('href',original);button.classList.remove('is-copied');}
+          if(notice.isConnected && notice.classList.contains('api-copy-feedback') && notice.textContent===message)feedback('',detail);
+        },1800);
+      }
+    }catch{
+      if(button){button.querySelector('use')?.setAttribute('href','/static/test-api-icons.svg#copy');button.classList.remove('is-copied');}
+      feedback(t('请选中内容手动复制'),detail);
+    }
+  }
   $('api-model-search').addEventListener('input',()=>{state.page=1;render();});
   $('api-model-sort').addEventListener('change',()=>{state.page=1;render();});
   $('api-model-reset').addEventListener('click',()=>{$('api-model-search').value='';for(const key in state.filters)state.filters[key]='';state.page=1;render();});
   $('api-model-filters-toggle').addEventListener('click',()=>{const opened=$('api-model-filters').classList.toggle('is-open');$('api-model-filters-toggle').setAttribute('aria-expanded',String(opened));});
   $('api-model-dialog-close').addEventListener('click',()=>$('api-model-dialog').close());
-  $('api-model-dialog').addEventListener('close',()=>{detailAbort?.abort();detailSeq++;selected=null;detailData=null;});
-  $('api-model-dialog-copy').addEventListener('click',()=>{if(selected)copy(selected.id,true);});
-  $('api-model-copy-code').addEventListener('click',()=>copy($('api-model-example').textContent,true));
+  $('api-model-dialog').addEventListener('close',()=>{
+    const id=selected?.id;detailAbort?.abort();detailSeq++;selected=null;detailData=null;
+    const source=$(state.view==='cards'?'api-model-grid':'api-model-rows');
+    [...source.querySelectorAll('[data-catalog-detail]')].find(button=>button.dataset.catalogDetail===id)?.focus({preventScroll:true});
+  });
+  $('api-model-dialog-copy').addEventListener('click',event=>{if(selected)copy(selected.id,true,event.currentTarget);});
+  $('api-model-copy-code').addEventListener('click',event=>copy($('api-model-example').textContent,true,event.currentTarget));
   $('api-model-example-endpoint').addEventListener('change',example);
   $('view-api2api').addEventListener('change',event=>{if(event.target.id==='api-model-page-size'){state.size=Number(event.target.value);state.page=1;render();}});
   $('view-api2api').addEventListener('click',event=>{
@@ -241,7 +266,7 @@ const apiModelCatalog = (() => {
     if(d.catalogUnit){state.unit=d.catalogUnit;render();if(selected)overview();}
     if(d.catalogView){state.view=d.catalogView;render();}
     if(d.catalogDetail)open(d.catalogDetail);
-    if(d.catalogCopy)copy(d.catalogCopy);
+    if(d.catalogCopy)copy(d.catalogCopy,false,button);
     if(d.catalogDetailTab)selectDetailTab(d.catalogDetailTab);
     if(d.catalogCode){codeLanguage=d.catalogCode;document.querySelectorAll('[data-catalog-code]').forEach(node=>node.setAttribute('aria-pressed',String(node===button)));example();}
   });

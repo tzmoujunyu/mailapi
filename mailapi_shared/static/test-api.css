@@ -304,8 +304,9 @@ body:has(#view-api2api dialog[open]) { overflow:hidden; }
 #view-api2api .api-model-table .api-model-table-name { display:flex; gap:9px; align-items:center; text-align:left; max-width:280px; white-space:normal; overflow-wrap:anywhere; }
 #view-api2api .api-catalog-badge { display:inline-block; max-width:100%; margin:2px; padding:3px 6px; border:1px solid var(--api-line); border-radius:6px; background:var(--api-soft); font-size:11px; overflow-wrap:anywhere; }
 #view-api2api .api-model-dialog { width:min(960px,calc(100vw - 28px)); }
+#view-api2api .api-model-dialog[open] { display:flex; flex-direction:column; overflow:hidden; }
 #view-api2api .api-model-dialog .api-dialog-heading > div:first-child { min-width:0; }
-#view-api2api .api-model-dialog .api-dialog-heading { position:sticky; top:-20px; z-index:3; padding:12px 0; background:var(--api-panel); }
+#view-api2api .api-model-dialog .api-dialog-heading { flex:none; padding:12px 0; background:var(--api-panel); }
 #view-api2api .api-model-dialog .api-dialog-heading > .api-actions { flex:none; flex-wrap:nowrap; gap:6px; }
 #view-api2api .api-model-dialog h3 { overflow-wrap:anywhere; }
 #view-api2api .api-model-detail-title { display:flex; align-items:center; gap:12px; }
@@ -314,7 +315,10 @@ body:has(#view-api2api dialog[open]) { overflow:hidden; }
 #view-api2api .api-model-detail-title h3 { font-size:18px; line-height:1.35; }
 #view-api2api .api-model-detail-title .api-hint { margin-top:5px; }
 #view-api2api #api-model-dialog-close { width:30px; height:30px; flex-basis:30px; }
-#view-api2api .api-model-detail-tabs { display:flex; gap:4px; padding:4px; margin-bottom:20px; border-radius:12px; background:var(--api-soft); }
+#view-api2api .api-model-detail-tabs { display:flex; flex:none; gap:4px; padding:4px; margin-bottom:18px; border-radius:12px; background:var(--api-soft); }
+#view-api2api .api-model-detail-body { min-height:0; overflow:auto; overscroll-behavior:contain; padding:2px 4px 4px; scrollbar-width:thin; scrollbar-gutter:stable; }
+#view-api2api .api-icon-button.is-copied, #view-api2api #api-model-copy-code.is-copied { color:var(--api-accent); background:var(--api-tint); border-color:transparent; }
+#view-api2api .api-feedback.api-copy-feedback { position:absolute; width:1px; height:1px; padding:0; margin:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 #view-api2api .api-model-detail-tabs button { flex:1 1 0; min-width:0; min-height:34px; padding:5px 14px; border:0; font-size:13px; color:var(--api-muted); background:transparent; }
 #view-api2api .api-model-detail-tabs button[aria-pressed="true"] { background:var(--api-panel); color:var(--api-text); box-shadow:0 1px 4px #00000012; }
 #view-api2api .api-model-dialog h4 { margin:22px 0 12px; font-size:14px; }
