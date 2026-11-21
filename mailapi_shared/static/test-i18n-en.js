@@ -1248,4 +1248,6 @@ window.MILVLG_EN = {
   "/ 秒": "/ second",
   "/ 积分": "/ credit",
   "/ 单位": "/ unit",
+  "移除筛选": "Remove filter",
+  "已选筛选条件": "Active filters",
 };

@@ -35,6 +35,14 @@ test('model filters combine with search and group, token units and recharge chan
   click('[data-catalog-price="recharge"]');assert.match(el('api-model-grid').textContent,/\$0\.0008/);
   el('api-model-search').value='image';el('api-model-search').dispatchEvent(new w.Event('input'));
   assert.match(el('api-model-grid').textContent,/暂无符合条件/);
+  assert.equal(el('api-model-active-filters').querySelectorAll('button').length,2);
+  click('[data-catalog-clear="group"]');
+  assert.equal(el('api-model-search').value,'image');
+  assert.equal(el('api-model-grid').children.length,1);
+  assert.match(el('api-model-grid').textContent,/image-b/);
+  click('[data-catalog-clear="search"]');
+  assert.equal(el('api-model-active-filters').hidden,true);
+  assert.equal(w.document.activeElement,el('api-model-search'));
   el('api-model-reset').click();assert.equal(el('api-model-grid').children.length,2);
   assert.equal(el('api-model-search').value,'');
 });
