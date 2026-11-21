@@ -59,6 +59,20 @@ class TestFeatureStoreTests(unittest.TestCase):
         self.assertTrue(reopened.set_api_key_enabled(current['id'],'a',True))
         self.assertIsNotNone(reopened.authenticate_api_key(current['api_key']))
 
+    def test_api_audit_persists_and_can_page_beyond_one_hundred_events(self):
+        actor={'id':'alice','username':'Alice'}
+        for index in range(125):
+            event=self.store.begin_api_audit(actor,'created',{'name':'Development'})
+            self.store.finish_api_audit(event,'succeeded',{'id':str(index),'key_prefix':'sk-short'})
+        reopened=TestFeatureStore(self.data,self.keyring)
+        first=reopened.api_audit_page(page_size=100)
+        second=reopened.api_audit_page(page=2,page_size=100)
+        self.assertEqual(first['total'],125)
+        self.assertEqual(len(first['items']),100)
+        self.assertEqual(len(second['items']),25)
+        self.assertFalse({row['id'] for row in first['items']} & {row['id'] for row in second['items']})
+        self.assertEqual(reopened.api_audit_page(query='%')['total'],0)
+
     def test_finance_metadata_and_announcements_persist(self):
         stored = self.data / "finance_files" / "invoice.pdf"
         stored.write_bytes(b"invoice")

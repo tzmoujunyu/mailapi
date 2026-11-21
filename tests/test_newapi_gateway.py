@@ -236,6 +236,39 @@ class GatewayHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code,201,response.text)
         return response.json()['item']
 
+    def test_key_audit_is_admin_only_and_contains_no_credentials(self):
+        item=self.create()
+        path='/api/api2api/keys/'+item['id']
+        self.assertEqual(self.client.post(path+'/reveal').status_code,200)
+        self.assertEqual(self.client.put(path+'/enabled',json={'enabled':False}).status_code,200)
+        self.assertEqual(self.client.delete(path).status_code,200)
+        self.assertEqual(self.client.get('/api/admin/api2api/audit').status_code,403)
+        response=self.client.get('/api/admin/api2api/audit',headers={'x-test-user':'admin'})
+        self.assertEqual(response.status_code,200,response.text)
+        rows=response.json()['items']
+        self.assertEqual([row['action'] for row in rows],['revoked','disabled','revealed','created'])
+        self.assertTrue(all(row['actor_id']=='alice' and row['outcome']=='succeeded' and row['owner_id']=='alice' for row in rows))
+        self.assertNotIn(item['api_key'],response.text)
+        self.assertNotIn('management-secret',response.text)
+        self.assertNotIn('key_hash',response.text)
+        self.assertEqual(rows[-1]['key_id'],item['id'])
+
+    def test_audit_tracks_denied_owner_access_and_uncertain_remote_revocation(self):
+        item=self.create()
+        path='/api/api2api/keys/'+item['id']
+        self.assertEqual(self.client.post(path+'/reveal',headers={'x-test-user':'bob'}).status_code,404)
+        self.engine.fail_delete=True
+        self.assertEqual(self.client.delete(path).status_code,502)
+        admin={'x-test-user':'admin'}
+        data=self.client.get('/api/admin/api2api/audit',headers=admin).json()
+        self.assertEqual(data['items'][0]['outcome'],'uncertain')
+        self.assertEqual(data['items'][1]['actor_id'],'bob')
+        self.assertEqual(data['items'][1]['outcome'],'failed')
+        self.assertEqual(data['items'][1]['owner_id'],'')
+        self.assertEqual(self.client.get('/api/admin/api2api/audit?q=Development&action=created',headers=admin).json()['total'],1)
+        self.assertEqual(self.client.get('/api/admin/api2api/audit?page_size=1',headers=admin).status_code,400)
+        self.assertEqual(self.client.get('/api/admin/api2api/audit?start=2026-11-01',headers=admin).status_code,400)
+
     def test_http_configuration_is_native_only_and_omitted_engine_keeps_native_keys(self):
         item=self.create()
         response=self.client.put('/api/admin/api2api/config',headers={'x-test-user':'admin'},

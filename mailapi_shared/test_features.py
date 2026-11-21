@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS api2api_usage (
     error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_api2api_usage_user_time ON api2api_usage(user_id, created_at);
+CREATE TABLE IF NOT EXISTS api2api_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, completed_at TEXT,
+    actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, action TEXT NOT NULL,
+    owner_id TEXT NOT NULL DEFAULT '', key_id TEXT NOT NULL DEFAULT '',
+    key_name TEXT NOT NULL DEFAULT '', key_prefix TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE INDEX IF NOT EXISTS idx_api2api_audit_time ON api2api_audit(created_at,id);
 CREATE TABLE IF NOT EXISTS newapi_users (
     origin TEXT NOT NULL, user_id TEXT NOT NULL, username TEXT NOT NULL,
     credential TEXT NOT NULL, remote_id INTEGER, initialized INTEGER NOT NULL DEFAULT 0,
@@ -425,6 +433,43 @@ class TestFeatureStore:
                  max(0, total_tokens), status_code, max(0, request_ms), error[:200], _now()),
             )
             db.execute('UPDATE api2api_keys SET last_used_at=? WHERE id=?', (_now(),key_id))
+
+    def begin_api_audit(self, actor, action, key=None):
+        key = key or {}
+        name = re.sub(r'(?:sk-|mk_)[A-Za-z0-9_-]{24,}', '[已隐藏]', str(key.get('name','')))[:80]
+        with self._lock, closing(self._connect()) as db, db:
+            return db.execute('''INSERT INTO api2api_audit(created_at,actor_id,actor_name,action,owner_id,key_id,key_name,key_prefix)
+                                 VALUES(?,?,?,?,?,?,?,?)''',
+                              (_now(),actor['id'],actor.get('username',actor['id']),action,
+                               key.get('user_id',actor['id'] if not key.get('id') else ''),key.get('id','')[:64],name,key.get('key_prefix','')[:12])).lastrowid
+
+    def finish_api_audit(self, event_id, outcome, key=None):
+        with self._lock, closing(self._connect()) as db, db:
+            if key:
+                db.execute('UPDATE api2api_audit SET key_id=?,key_prefix=? WHERE id=?',
+                           (key['id'],key.get('key_prefix','')[:12],event_id))
+            db.execute('UPDATE api2api_audit SET outcome=?,completed_at=? WHERE id=?', (outcome,_now(),event_id))
+
+    def api_audit_page(self, *, page=1, page_size=20, query='', action='', outcome='', start='', end=''):
+        filters, args = [], []
+        if query:
+            filters.append('(actor_name LIKE ? OR key_name LIKE ? OR key_id LIKE ?)')
+            escaped = query.replace('!','!!').replace('%','!%').replace('_','!_')
+            filters[-1] = filters[-1].replace('LIKE ?', "LIKE ? ESCAPE '!'")
+            args.extend(['%'+escaped+'%']*3)
+        for name,value in (('action',action),('outcome',outcome)):
+            if value:
+                filters.append(name+'=?'); args.append(value)
+        if start:
+            filters.append('created_at>=?'); args.append(start)
+        if end:
+            filters.append('created_at<=?'); args.append(end)
+        where = ' WHERE '+' AND '.join(filters) if filters else ''
+        with closing(self._connect()) as db:
+            total = db.execute('SELECT COUNT(*) FROM api2api_audit'+where,args).fetchone()[0]
+            rows = db.execute('SELECT * FROM api2api_audit'+where+' ORDER BY id DESC LIMIT ? OFFSET ?',
+                              [*args,page_size,(page-1)*page_size]).fetchall()
+        return {'items':[dict(row) for row in rows],'total':total,'page':page,'page_size':page_size}
 
     def usage_summary(self, user_id: Optional[str] = None) -> dict[str, Any]:
         with closing(self._connect()) as db:
@@ -822,6 +867,38 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         payload = await read_payload(request, set(INTERFACE_OPTIONS))
         return request.app.state.site_accounts.set_interface_preferences(current_user(request)["id"], payload)
 
+    async def audited_key_change(user, action, key, operation):
+        event_id = store.begin_api_audit(user,action,key)
+        try:
+            result = await operation()
+        except Exception as error:
+            outcome = 'failed' if getattr(error,'status_code',500)<500 else 'uncertain'
+            store.finish_api_audit(event_id,outcome)
+            raise
+        store.finish_api_audit(event_id,'succeeded',result if action=='created' else None)
+        return result
+
+    @router.get('/api/admin/api2api/audit')
+    def api_audit(request: Request, page: int=1, page_size: int=20, q: str='', action: str='', outcome: str='', start: str='', end: str=''):
+        require_admin(request)
+        if not 1<=page<=1_000_000_000 or page_size not in {20,50,100} or len(q)>120:
+            raise HTTPException(400,'日志分页或搜索条件无效')
+        if action not in {'','created','revealed','enabled','disabled','updated','revoked'} or outcome not in {'','pending','succeeded','failed','uncertain'}:
+            raise HTTPException(400,'日志筛选条件无效')
+        dates = []
+        for value in (start,end):
+            if value:
+                try:
+                    if datetime.fromisoformat(value.replace('Z','+00:00')).tzinfo is None:
+                        raise ValueError()
+                except ValueError:
+                    raise HTTPException(400,'日志日期须包含时区') from None
+                value = datetime.fromisoformat(value.replace('Z','+00:00')).astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
+            dates.append(value)
+        if all(dates) and dates[0]>dates[1]:
+            raise HTTPException(400,'开始日期不能晚于结束日期')
+        return store.api_audit_page(page=page,page_size=page_size,query=q,action=action,outcome=outcome,start=dates[0],end=dates[1])
+
     @router.get("/api/api2api/keys")
     async def list_user_keys(request: Request):
         user = current_user(request)
@@ -836,12 +913,15 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def create_user_key(request: Request):
         user = current_user(request)
         payload = await gateway_payload(request)
-        return {'item':await gateway.create_key(user['id'],payload.get('name'))}
+        name = store._text(payload.get('name'),'API Key 名称',80,required=True)
+        item = await audited_key_change(user,'created',{'name':name},lambda:gateway.create_key(user['id'],name))
+        return {'item':item}
 
     @router.post('/api/api2api/keys/{key_id}/reveal')
     async def reveal_user_key(key_id: str, request: Request):
         user = current_user(request)
-        raw = await gateway.reveal_key(key_id,user['id'])
+        key = store.gateway_key(key_id,user['id']) or {'id':key_id}
+        raw = await audited_key_change(user,'revealed',key,lambda:gateway.reveal_key(key_id,user['id']))
         return JSONResponse({'api_key':raw},headers={'Cache-Control':'no-store, private','Pragma':'no-cache'})
 
     @router.put('/api/api2api/keys/{key_id}/enabled')
@@ -849,18 +929,16 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         user = current_user(request)
         payload = await gateway_payload(request)
         gateway.config()
-        await gateway.set_key_enabled(key_id,user['id'],payload.get('enabled'))
+        key = store.gateway_key(key_id,user['id']) or {'id':key_id}
+        await audited_key_change(user,'enabled' if payload.get('enabled') is True else 'disabled',key,
+                                 lambda:gateway.set_key_enabled(key_id,user['id'],payload.get('enabled')))
         return {'ok':True}
 
     @router.delete("/api/api2api/keys/{key_id}")
     async def revoke_user_key(key_id: str, request: Request):
         user = current_user(request)
-        row = store.gateway_key(key_id,user['id'])
-        if row and row['provider']=='newapi':
-            await gateway.revoke_key(key_id,user['id'])
-            return {'ok':True}
-        if not store.revoke_api_key(key_id, user["id"]):
-            raise HTTPException(404, "未找到 API Key")
+        key = store.gateway_key(key_id,user['id']) or {'id':key_id}
+        await audited_key_change(user,'revoked',key,lambda:gateway.revoke_key(key_id,user['id']))
         return {"ok": True}
 
     @router.get("/api/api2api/usage")
@@ -931,13 +1009,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
 
     @router.delete("/api/admin/api2api/keys/{key_id}")
     async def admin_revoke_api_key(key_id: str, request: Request):
-        require_admin(request)
-        row = store.gateway_key(key_id)
-        if row and row['provider']=='newapi':
-            await gateway.revoke_key(key_id)
-            return {'ok':True}
-        if not store.revoke_api_key(key_id):
-            raise HTTPException(404, "未找到 API Key")
+        user = require_admin(request)
+        key = store.gateway_key(key_id) or {'id':key_id}
+        await audited_key_change(user,'revoked',key,lambda:gateway.revoke_key(key_id))
         return {"ok": True}
 
     @router.get("/api/admin/api2api/usage")
