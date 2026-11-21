@@ -11,7 +11,7 @@ function setup(t,handler){
   const w=dom.window,calls=[],el=id=>w.document.getElementById(id);
   w.fetch=async(url,options={})=>{calls.push([url,options]);const data=await handler(url,options);return data?.ok===false?data:{ok:true,json:async()=>data};};
   for(const dialog of w.document.querySelectorAll('dialog'))dialog.showModal=()=>dialog.setAttribute('open','');
-  w.eval(fs.readFileSync(path.join(assets,'test-api-records.js'),'utf8')+'\nwindow.records=apiRecordsController;');
+  w.eval(fs.readFileSync(path.join(assets,'test-api-models.js'),'utf8')+'\n'+fs.readFileSync(path.join(assets,'test-api-records.js'),'utf8')+'\nwindow.records=apiRecordsController;');
   const submit=id=>el(id).dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
   return {w,el,calls,submit};
 }
@@ -54,7 +54,7 @@ test('catalog copies only actual model IDs and admin audit is cleared on role do
   w.records.start(false);await w.records.activate('models');
   assert.equal(calls[0][1].method,'POST');assert.equal(el('api-model-grid').children.length,2);
   el('api-model-search').value='gpt';el('api-model-search').dispatchEvent(new w.Event('input'));
-  el('api-model-grid').querySelector('button').click();await tick();assert.equal(copied,'gpt-4o-mini');
+  el('api-model-grid').querySelector('[data-catalog-copy]').click();await tick();assert.equal(copied,'gpt-4o-mini');
   w.records.start(true);await w.records.activate('audit');assert.match(el('api-audit-rows').textContent,/alice/);
   w.records.start(false);assert.equal(el('api-audit-rows').textContent,'');assert.equal(el('api-audit-tab').hidden,true);
 });

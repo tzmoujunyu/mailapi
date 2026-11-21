@@ -21,7 +21,7 @@ function setup(t,handler) {
     const defaults = {'/api/api2api/keys':{items:[]},'/api/api2api/engine':{engine:'newapi',linked:false,models:[]},'/api/api2api/usage':{requests:0,prompt_tokens:0,completion_tokens:0,total_tokens:0,items:[]}};
     return {ok:true,json:async () => supplied || defaults[url]};
   };
-  w.eval(read('test-api-records.js')+'\n'+read('test-api.js')+'\nwindow.apiUnderTest = apiController;');
+  w.eval(read('test-api-models.js')+'\n'+read('test-api-records.js')+'\n'+read('test-api.js')+'\nwindow.apiUnderTest = apiController;');
   w.apiUnderTest.start(false);
   const submit = id => el(id).dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
   return {w,el,calls,submit};

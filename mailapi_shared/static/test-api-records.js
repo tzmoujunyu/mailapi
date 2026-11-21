@@ -3,7 +3,6 @@ const apiRecordsController = (() => {
   const t = value => window.SiteLanguage?.t(value) || value;
   const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const num = value => typeof value==='number' && Number.isFinite(value)?value.toLocaleString(document.documentElement.lang==='en'?'en-US':'zh-CN'):'—';
-  const icon = name => `<svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-api-icons.svg#${name}"></use></svg>`;
   const time = value => value?new Date(value*1000).toLocaleString(document.documentElement.lang==='en'?'en-US':'zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
   const localInput = date => new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);
   const types={0:'未知',1:'充值',2:'消耗',3:'管理（历史）',4:'系统',5:'错误',6:'退款',7:'登录（历史）'};
@@ -11,7 +10,7 @@ const apiRecordsController = (() => {
   const outcomes={pending:'处理中',succeeded:'成功',failed:'失败',uncertain:'待核实'};
   const columns={time:'时间',key:'令牌',model:'模型',stream:'流',tokens:'Token',cost:'费用',timing:'耗时',details:'详情'};
   const visibleColumns=new Set(Object.keys(columns));
-  const logs={page:1,size:100,data:null,params:null,seq:0},audit={page:1,size:20,data:null,params:{},seq:0},models={page:1,size:24,data:null,seq:0};
+  const logs={page:1,size:100,data:null,params:null,seq:0},audit={page:1,size:20,data:null,params:{},seq:0};
   let admin=false,active='overview',ownKeys=[],exportAbort=null;
   function message(id,value,success=false){$(id).textContent=value;$(id).classList.toggle('success',success);}
   async function request(url,options={}){
@@ -52,11 +51,11 @@ const apiRecordsController = (() => {
   }
   function pager(kind,state,host){
     if(!state.data){$(host).innerHTML='';return;}
-    const total=kind==='models'?filteredModels().length:state.data.total,pages=Math.max(1,Math.ceil(total/state.size));
+    const total=state.data.total,pages=Math.max(1,Math.ceil(total/state.size));
     const button=(page,label,text,disabled)=>`<button type="button" data-record-kind="${kind}" data-record-page="${page}" aria-label="${esc(t(label))}" ${disabled?'disabled':''}>${text}</button>`;
     const from=Math.max(1,state.page-1),to=Math.min(pages,state.page+1),numbers=[];
     for(let page=from;page<=to;page++)numbers.push(`<button type="button" data-record-kind="${kind}" data-record-page="${page}" aria-label="${esc(t('前往页面')+' '+page)}" ${page===state.page?'aria-current="page"':''}>${page}</button>`);
-    $(host).innerHTML=`<span>${esc(t('总计'))}: ${num(total)}</span><div class="api-pager-controls">${kind==='models'?'':`<label>${esc(t('每页行数'))}<select data-record-size="${kind}" aria-label="${esc(t('每页行数'))}">${[20,50,100].map(size=>`<option value="${size}" ${size===state.size?'selected':''}>${size}</option>`).join('')}</select></label>`}${button(1,'首页','«',state.page===1)}${button(state.page-1,'上一页','‹',state.page===1)}${numbers.join('')}${button(state.page+1,'下一页','›',state.page>=pages)}${button(pages,'末页','»',state.page>=pages)}</div>`;
+    $(host).innerHTML=`<span>${esc(t('总计'))}: ${num(total)}</span><div class="api-pager-controls"><label>${esc(t('每页行数'))}<select data-record-size="${kind}" aria-label="${esc(t('每页行数'))}">${[20,50,100].map(size=>`<option value="${size}" ${size===state.size?'selected':''}>${size}</option>`).join('')}</select></label>${button(1,'首页','«',state.page===1)}${button(state.page-1,'上一页','‹',state.page===1)}${numbers.join('')}${button(state.page+1,'下一页','›',state.page>=pages)}${button(pages,'末页','»',state.page>=pages)}</div>`;
   }
   function renderLogs(){
     if(!logs.data)return;
@@ -77,30 +76,24 @@ const apiRecordsController = (() => {
     $('api-audit-rows').innerHTML=audit.data.items.map(row=>`<tr><td><time data-i18n-skip>${esc(new Date(row.created_at).toLocaleString(document.documentElement.lang==='en'?'en-US':'zh-CN'))}</time></td><td data-i18n-skip>${esc(row.actor_name)}</td><td>${esc(t(actions[row.action] || row.action))}</td><td><span data-i18n-skip>${esc(row.key_name || '—')}</span><small data-i18n-skip>${esc(row.key_prefix?row.key_prefix+'…':row.key_id || '—')}</small></td><td data-i18n-skip>${esc(row.owner_name || row.owner_id || '—')}</td><td><span class="${row.outcome==='succeeded'?'api-good':row.outcome==='failed'?'api-bad':'api-dim'}">${esc(t(outcomes[row.outcome] || row.outcome))}</span></td></tr>`).join('') || `<tr><td colspan="6" class="api-empty">${esc(t('没有符合条件的审计事件。'))}</td></tr>`;
     pager('audit',audit,'api-audit-pager');
   }
-  function filteredModels(){const search=$('api-model-search').value.trim().toLowerCase();return (models.data?.items || []).filter(row=>row.id.toLowerCase().includes(search));}
-  function renderModels(){
-    if(!models.data)return;
-    const rows=filteredModels(),last=Math.max(1,Math.ceil(rows.length/models.size));models.page=Math.min(models.page,last);
-    $('api-model-grid').innerHTML=rows.slice((models.page-1)*models.size,models.page*models.size).map(row=>`<article class="api-model-tile"><div class="api-model-tile-heading">${icon('model')}<button type="button" class="api-icon-button" data-model-copy="${esc(row.id)}" title="${esc(t('复制模型 ID'))}" aria-label="${esc(t('复制模型 ID')+' '+row.id)}">${icon('copy')}</button></div><h3 data-i18n-skip>${esc(row.id)}</h3><span class="api-tag api-good">${esc(t('可用'))}</span></article>`).join('') || `<p class="api-empty">${esc(t('暂无符合条件的可用模型。'))}</p>`;
-    pager('models',models,'api-model-pager');
-  }
   async function load(kind){
+    if(kind==='models')return apiModelCatalog.load();
     if(kind==='audit' && !admin)return;
-    const state={logs,audit,models}[kind];if(!state)return;
+    const state={logs,audit}[kind];if(!state)return;
     state.abort?.abort();state.abort=new AbortController();const seq=++state.seq;state.loading=true;
-    const feedback=kind==='logs'?'api-log-feedback':kind==='audit'?'api-audit-feedback':'api-model-feedback';
+    const feedback=kind==='logs'?'api-log-feedback':'api-audit-feedback';
     message(feedback,t('加载中…'));
-    const submit=$(kind==='logs'?'api-log-submit':kind==='audit'?'api-audit-submit':'api-refresh');
-    if(kind!=='models')submit.disabled=true;
+    const submit=$(kind==='logs'?'api-log-submit':'api-audit-submit');
+    submit.disabled=true;
     try{
-      const data=await request(kind==='models'?'/api/api2api/models':kind==='audit'?`/api/admin/api2api/audit?${query(audit)}`:`/api/api2api/logs?${query(logs)}`,{method:kind==='models'?'POST':'GET',signal:state.abort.signal});
+      const data=await request(kind==='audit'?`/api/admin/api2api/audit?${query(audit)}`:`/api/api2api/logs?${query(logs)}`,{method:'GET',signal:state.abort.signal});
       if(seq!==state.seq || !$('view-api2api').isConnected)return;
       state.data=data;message(feedback,'');
-      if(kind==='logs')renderLogs();else if(kind==='audit')renderAudit();else renderModels();
-    }catch(error){if(seq===state.seq && error.name!=='AbortError'){state.data=null;message(feedback,t(error.message));if(kind==='logs'){$('api-usage-rows').innerHTML=`<tr><td colspan="8" class="api-empty">${esc(t('日志加载失败，请重试。'))}</td></tr>`;$('api-log-pager').innerHTML='';for(const id of ['api-log-quota','api-log-rpm','api-log-tpm'])$(id).textContent='—';$('api-log-stats-note').textContent='';}else if(kind==='audit'){$('api-audit-rows').innerHTML='';$('api-audit-pager').innerHTML='';}else{$('api-model-grid').innerHTML='';$('api-model-pager').innerHTML='';}}}
-    finally{if(seq===state.seq){state.loading=false;if(kind!=='models')submit.disabled=false;}}
+      if(kind==='logs')renderLogs();else if(kind==='audit')renderAudit();
+    }catch(error){if(seq===state.seq && error.name!=='AbortError'){state.data=null;message(feedback,t(error.message));if(kind==='logs'){$('api-usage-rows').innerHTML=`<tr><td colspan="8" class="api-empty">${esc(t('日志加载失败，请重试。'))}</td></tr>`;$('api-log-pager').innerHTML='';for(const id of ['api-log-quota','api-log-rpm','api-log-tpm'])$(id).textContent='—';$('api-log-stats-note').textContent='';}else if(kind==='audit'){$('api-audit-rows').innerHTML='';$('api-audit-pager').innerHTML='';}}}
+    finally{if(seq===state.seq){state.loading=false;submit.disabled=false;}}
   }
-  function activate(kind){active=kind;if(kind==='logs' && !logs.params){dates('today');logs.params=logParams();}const state={logs,audit,models}[kind];if(state && !state.loading)return load(kind);}
+  function activate(kind){active=kind;if(kind==='logs' && !logs.params){dates('today');logs.params=logParams();}const state={logs,audit}[kind];if(kind==='models' || (state && !state.loading))return load(kind);}
   $('api-log-form').addEventListener('submit',event=>{event.preventDefault();logs.params=logParams();logs.page=1;load('logs');});
   $('api-log-more').addEventListener('click',()=>{const open=$('api-log-extra').hidden;$('api-log-extra').hidden=!open;$('api-log-more').setAttribute('aria-expanded',String(open));$('api-log-more').textContent=t(open?'收起':'展开');});
   document.querySelectorAll('[data-log-range]').forEach(button=>button.addEventListener('click',()=>{dates(button.dataset.logRange);$('api-log-dates').open=false;}));
@@ -108,15 +101,14 @@ const apiRecordsController = (() => {
   $('api-log-reset').addEventListener('click',()=>{$('api-log-form').reset();$('api-log-dates').open=false;dates('today');logs.page=1;logs.params=logParams();load('logs');});
   $('api-audit-form').addEventListener('submit',event=>{event.preventDefault();audit.page=1;audit.params={q:$('api-audit-search').value.trim(),action:$('api-audit-action').value,outcome:$('api-audit-outcome').value,start:$('api-audit-start').value?new Date($('api-audit-start').value).toISOString():'',end:$('api-audit-end').value?new Date($('api-audit-end').value).toISOString():''};load('audit');});
   $('api-audit-reset').addEventListener('click',()=>{$('api-audit-form').reset();audit.params={};audit.page=1;load('audit');});
-  $('api-model-search').addEventListener('input',()=>{models.page=1;renderModels();});
   $('api-log-column-options').innerHTML=Object.entries(columns).map(([key,label])=>`<label><input type="checkbox" data-log-column="${key}" checked ${key==='time'?'disabled':''} /><span ${key==='tokens'?'data-i18n-skip':''}>${esc(key==='tokens'?label:t(label))}</span></label>`).join('');
   $('api-log-column-options').addEventListener('change',event=>{const key=event.target.dataset.logColumn;if(!key)return;if(event.target.checked)visibleColumns.add(key);else visibleColumns.delete(key);renderLogs();});
   $('view-api2api').addEventListener('change',event=>{const kind=event.target.dataset.recordSize,state={logs,audit}[kind];if(state){state.size=Number(event.target.value);state.page=1;load(kind);}});
   $('view-api2api').addEventListener('click',async event=>{
     const button=event.target.closest('button');if(!button || button.disabled)return;
-    const kind=button.dataset.recordKind,state={logs,audit,models}[kind];
-    if(state){state.page=Number(button.dataset.recordPage);if(kind==='models')renderModels();else load(kind);return;}
-    if(button.dataset.modelCopy){try{await navigator.clipboard.writeText(button.dataset.modelCopy);message(active==='models'?'api-model-feedback':'api-log-feedback',t('模型 ID 已复制'),true);}catch{message(active==='models'?'api-model-feedback':'api-log-feedback',t('请选中模型 ID 手动复制'));}}
+    const kind=button.dataset.recordKind,state={logs,audit}[kind];
+    if(state){state.page=Number(button.dataset.recordPage);load(kind);return;}
+    if(button.dataset.modelCopy){try{await navigator.clipboard.writeText(button.dataset.modelCopy);message('api-log-feedback',t('模型 ID 已复制'),true);}catch{message('api-log-feedback',t('请选中模型 ID 手动复制'));}}
     if(button.dataset.logDetail){
       const row=logs.data?.items.find(row=>String(row.id)===button.dataset.logDetail);if(!row)return;
       const fields=[['请求 ID',row.request_id],['上游请求 ID',row.upstream_request_id],['令牌',row.token_name],['模型',row.model_name],['分组',row.group],['时间',time(row.created_at)],['类型',t(types[row.type] || '未知')],['流',t(row.is_stream?'流式':'非流')],['输入 Token',num(row.prompt_tokens)],['输出 Token',num(row.completion_tokens)],['总费用',money(row.quota,logs.data.display)],['耗时',num(row.use_time)+'s']];
@@ -134,8 +126,8 @@ const apiRecordsController = (() => {
   });
   document.addEventListener('click',event=>{document.querySelectorAll('.api-inline-menu[open],.api-date-picker[open]').forEach(node=>{if(!node.contains(event.target))node.open=false;});});
   document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.api-inline-menu[open],.api-date-picker[open]').forEach(node=>{node.open=false;});});
-  function cancel(){for(const state of [logs,audit,models])state.abort?.abort();exportAbort?.abort();}
+  function cancel(){for(const state of [logs,audit])state.abort?.abort();exportAbort?.abort();apiModelCatalog.cancel();}
   window.addEventListener('pagehide',cancel);window.addEventListener('hashchange',()=>{if(window.location.hash!=='#view-api2api')cancel();});
-  document.addEventListener('site:language',()=>{dateLabel();renderLogs();renderAudit();renderModels();});
-  return {start(value){admin=value;$('api-audit-tab').hidden=!value;if(!value){audit.abort?.abort();audit.seq++;audit.data=null;audit.loading=false;$('api-audit-rows').innerHTML='';$('api-audit-pager').innerHTML='';}},activate,refresh(){if(active==='logs' && !logs.params){dates('today');logs.params=logParams();}if({logs,audit,models}[active]?.loading)return;return load(active);},setKeys(rows){ownKeys=rows;selectOptions('api-log-key',ownKeys.filter(row=>row.provider==='newapi' && row.available_here!==false).map(row=>[row.id,`${row.name} · ${row.key_prefix}…`]),'全部令牌');}};
+  document.addEventListener('site:language',()=>{dateLabel();renderLogs();renderAudit();});
+  return {start(value){admin=value;$('api-audit-tab').hidden=!value;if(!value){audit.abort?.abort();audit.seq++;audit.data=null;audit.loading=false;$('api-audit-rows').innerHTML='';$('api-audit-pager').innerHTML='';}},activate,refresh(){if(active==='logs' && !logs.params){dates('today');logs.params=logParams();}if({logs,audit}[active]?.loading)return;return load(active);},setKeys(rows){ownKeys=rows;selectOptions('api-log-key',ownKeys.filter(row=>row.provider==='newapi' && row.available_here!==false).map(row=>[row.id,`${row.name} · ${row.key_prefix}…`]),'全部令牌');}};
 })();
