@@ -48,12 +48,87 @@ class InvoiceFieldTests(unittest.TestCase):
 class FinanceInvoiceHttpTests(unittest.TestCase):
     def setUp(self):
         http_tests.FinanceFeatureHttpTests.setUp(self)
-        self.enterContext(patch('mailapi_shared.finance_invoices.recognize_file',return_value={'fields':FIELDS,'method':'ocr','confidence':0.99,'multiple':False,'message':'请核对识别信息'}))
+        self.recognizer=self.enterContext(patch('mailapi_shared.finance_invoices.recognize_file',return_value={'fields':FIELDS,'method':'ocr','confidence':0.99,'multiple':False,'message':'请核对识别信息'}))
 
     def create(self, *, number=FIELDS['number'], content=b'invoice-one', user='alice-id'):
         return self.client.post('/api/finance/applications',headers={'x-test-user':user},
             data={'project':'测试报销','amount':'12.50','invoice_fields':json.dumps({**FIELDS,'number':number})},
             files={'invoice':('测试发票.pdf',io.BytesIO(content),'application/pdf')})
+
+    def analyze(self, content=b'invoice-one', user='alice-id', content_type='application/pdf'):
+        return self.client.post('/api/finance/invoices/analyze',headers={'x-test-user':user},
+            files={'invoice':('测试发票.pdf',io.BytesIO(content),content_type)})
+
+    def test_submission_reuses_the_uploaded_file_recognition_but_keeps_manual_corrections(self):
+        response=self.analyze()
+        self.assertEqual(response.status_code,200,response.text)
+        response=self.create(number='20261122000000000002')
+        self.assertEqual(response.status_code,201,response.text)
+        self.assertEqual(self.recognizer.call_count,1)
+        self.assertEqual(response.json()['item']['invoice']['fields']['number'],'20261122000000000002')
+        self.assertEqual(response.json()['item']['invoice']['recognition']['fields'],FIELDS)
+
+    def test_cached_recognition_does_not_cache_the_duplicate_reimbursement_decision(self):
+        self.assertFalse(self.analyze().json()['duplicate'])
+        self.assertEqual(self.create(user='admin-id',content=b'another encoding').status_code,201)
+        before=list(self.store.files.iterdir())
+        response=self.create()
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertNotIn('admin',response.text)
+        self.assertEqual(self.recognizer.call_count,2)
+        self.assertEqual(list(self.store.files.iterdir()),before)
+
+    def test_replacing_an_invoice_also_reuses_its_upload_recognition(self):
+        item=self.create().json()['item']
+        self.analyze(b'replacement')
+        response=self.client.put(f"/api/finance/applications/{item['id']}",headers={'x-test-user':'alice-id'},
+            data={'project':'更换发票','amount':'12.50','version':'1','invoice_fields':json.dumps({**FIELDS,'number':'20261122000000000002'})},
+            files={'invoice':('新发票.pdf',io.BytesIO(b'replacement'),'application/pdf')})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.recognizer.call_count,2)
+        self.assertEqual(response.json()['item']['invoice']['fields']['number'],'20261122000000000002')
+
+    def test_simultaneous_uploads_of_the_same_invoice_share_completed_recognition(self):
+        import time
+        output=self.recognizer.return_value
+        def recognize(path):
+            time.sleep(.05)
+            return output
+        self.recognizer.side_effect=recognize
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses=list(pool.map(lambda _:self.analyze(),range(2)))
+        self.assertEqual([response.status_code for response in responses],[200,200])
+        self.assertEqual(self.recognizer.call_count,1)
+
+    def test_recognition_cache_is_bound_to_account_file_bytes_and_parser_type(self):
+        for user,content,content_type in [('alice-id',b'invoice-one','application/pdf'),
+                ('admin-id',b'invoice-one','application/pdf'),('alice-id',b'changed','application/pdf'),
+                ('alice-id',b'invoice-one','image/png')]:
+            response=self.analyze(content,user,content_type)
+            self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.recognizer.call_count,4)
+        self.assertEqual(self.create().status_code,201)
+        self.assertEqual(self.recognizer.call_count,4)
+
+    def test_recognition_cache_expires_and_has_a_bounded_number_of_results(self):
+        with patch('mailapi_shared.test_features.time.monotonic',return_value=100):
+            self.analyze()
+        with patch('mailapi_shared.test_features.time.monotonic',return_value=1901):
+            self.assertEqual(self.create().status_code,201)
+        self.assertEqual(self.recognizer.call_count,2)
+        for index in range(65):
+            self.analyze(f'cache-{index}'.encode())
+        before=self.recognizer.call_count
+        self.analyze(b'cache-0')
+        self.assertEqual(self.recognizer.call_count,before+1)
+
+    def test_failed_recognition_can_be_retried_instead_of_caching_a_timeout(self):
+        self.recognizer.return_value={'fields':{},'method':'manual','multiple':False,'message':'识别未完成'}
+        self.analyze()
+        self.recognizer.return_value={'fields':FIELDS,'method':'ocr','multiple':False,'message':'请核对识别信息'}
+        self.analyze()
+        self.assertEqual(self.create().status_code,201)
+        self.assertEqual(self.recognizer.call_count,2)
 
     def test_duplicate_numbers_and_files_are_blocked_across_users_without_leaking_identity(self):
         first = self.create().json()['item']

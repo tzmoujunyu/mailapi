@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import anyio
 import csv
+from collections import OrderedDict
 from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -916,6 +917,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     router = APIRouter()
     client_holder: dict[str, Optional[httpx.AsyncClient]] = {"client": None}
     invoice_limiter = anyio.CapacityLimiter(1)
+    invoice_recognitions = OrderedDict()
 
     def current_user(request: Request):
         user = getattr(request.state, "site_user", None)
@@ -1016,18 +1018,43 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             raise
         return saved
 
-    async def recognize_invoice(file):
-        from .finance_invoices import recognize_file
-        return await anyio.to_thread.run_sync(lambda: recognize_file(store.files / file['stored_name']), limiter=invoice_limiter)
+    def cached_invoice(key):
+        now = time.monotonic()
+        for previous, (expires, _) in list(invoice_recognitions.items()):
+            if expires <= now:
+                del invoice_recognitions[previous]
+        cached = invoice_recognitions.get(key)
+        if cached is not None:
+            invoice_recognitions.move_to_end(key)
+            return json.loads(cached[1])
 
-    async def prepare_invoice(saved, raw_fields, existing=None):
+    async def recognize_invoice(user_id, file):
+        from .finance_invoices import recognize_file
+        # Hash and parser type come from the server's saved upload, never client fields.
+        key = (user_id, file['sha256'], file['content_type'])
+        cached = cached_invoice(key)
+        if cached is not None:
+            return cached
+        async with invoice_limiter:
+            # A matching upload may have finished while this request was waiting.
+            cached = cached_invoice(key)
+            if cached is not None:
+                return cached
+            result = await anyio.to_thread.run_sync(lambda: recognize_file(store.files / file['stored_name']))
+            if result.get('method') in {'ocr','pdf_text'}:
+                invoice_recognitions[key] = (time.monotonic()+30*60, json.dumps(result,ensure_ascii=False))
+                while len(invoice_recognitions) > 64:
+                    invoice_recognitions.popitem(last=False)
+            return result
+
+    async def prepare_invoice(saved, raw_fields, user_id, existing=None):
         from .finance_invoices import confirmed_fields
         replacement = next((file for file in saved if file['kind'] == 'invoice'),None)
         file = replacement or next((file for file in (existing or {}).get('files',[]) if file['kind'] == 'invoice'),None)
         if not file:
             raise TestFeatureError('未找到发票附件',404)
         old = (existing or {}).get('invoice')
-        recognition = await recognize_invoice(file) if replacement or not old else old['recognition']
+        recognition = await recognize_invoice(user_id,file) if replacement or not old else old['recognition']
         if recognition.get('multiple'):
             raise TestFeatureError('一笔申请仅支持一张发票，请拆分文件后提交')
         try:
@@ -1472,7 +1499,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     @router.post('/api/finance/invoices/analyze')
     async def analyze_finance_invoice(request: Request, invoice: Optional[UploadFile] = File(None), app_id: Optional[str] = Form(None)):
         from .finance_invoices import confirmed_fields
-        current_user(request)
+        user = current_user(request)
         existing = store.finance_application(app_id) if app_id else None
         if app_id:
             if not existing:
@@ -1487,7 +1514,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 file = next((file for file in (existing or {}).get('files',[]) if file['kind'] == 'invoice'),None)
                 if not file:
                     raise HTTPException(400,'请选择发票文件')
-            recognition = await recognize_invoice(file)
+            recognition = await recognize_invoice(user['id'],file)
             try:
                 fields = confirmed_fields(recognition['fields'])
             except ValueError:
@@ -1552,7 +1579,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         try:
-            fields, recognition = await prepare_invoice(saved,invoice_fields)
+            fields, recognition = await prepare_invoice(saved,invoice_fields,account['id'])
             item = store.create_finance_application(user_id=account["id"], username=account["username"],
                                                     user_note=account.get("note", ""), groups=groups,
                                                     project=project, amount_cents=amount_cents, files=saved,
@@ -1587,7 +1614,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         try:
-            fields, recognition = await prepare_invoice(saved,invoice_fields,existing)
+            fields, recognition = await prepare_invoice(saved,invoice_fields,user['id'],existing)
             updated = store.update_finance_application(app_id, user["id"], project, amount_cents, {item["kind"]: item for item in saved},
                                                        expense_group=group, expected_version=version if version is not None else existing["version"],invoice_fields=fields,recognition=recognition)
         except Exception:
