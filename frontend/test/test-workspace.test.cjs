@@ -257,3 +257,18 @@ test('account page layout styles do not match the shared header or its brand at 
     visit(style.sheet.cssRules);
   }
 });
+
+test('expanding the sidebar keeps the header avatar alignment and padding unchanged', t => {
+  const dom = new JSDOM('<body class="test-ui-page"><header class="test-ui-header"><div class="test-ui-account"><button class="test-ui-avatar-button"><span class="test-ui-avatar">AD</span></button></div></header></body>');
+  t.after(() => dom.window.close());
+  const {document} = dom.window;
+  for (const name of ['test-ui.css', 'test-header.css']) {
+    const style = document.createElement('style');style.textContent = read(name);document.head.append(style);
+  }
+  const layout = () => {
+    const style = dom.window.getComputedStyle(document.querySelector('.test-ui-avatar-button'));
+    return ['display','justify-content','justify-items','padding-left','width'].map(key => style.getPropertyValue(key));
+  };
+  const compact = layout();document.body.classList.add('dock-expanded');
+  assert.deepEqual(layout(), compact);
+});

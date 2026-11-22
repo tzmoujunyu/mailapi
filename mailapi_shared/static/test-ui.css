@@ -597,7 +597,7 @@ body.test-ui-home .resource-table td, body.test-ui-home .resource-table tr:hover
   background: linear-gradient(135deg, #10b981, #059669); color: white;
   box-shadow: 0 2px 6px #10b98138; font-size: 13px; font-weight: 700; line-height: 1;
 }
-.dock-expanded .test-ui-avatar-button { justify-content: flex-start; padding-left: 8px; }
+.dock-expanded .test-ui-sidebar .test-ui-avatar-button { justify-content: flex-start; padding-left: 8px; }
 .test-ui-avatar-button .test-ui-nav-label { min-width: 0; overflow-wrap: anywhere; text-align: left; }
 .test-ui-account-panel {
   position: absolute; z-index: 90; left: calc(100% + 12px); bottom: 0; width: min(260px, calc(100vw - 80px));
