@@ -618,6 +618,7 @@ class TestFeatureStore:
 
     def list_finance_applications(self, user_id: Optional[str] = None) -> list[dict[str, Any]]:
         with closing(self._connect()) as db:
+            db.execute('BEGIN')
             rows = db.execute("SELECT id FROM finance_applications" + (" WHERE user_id=?" if user_id else "") + " ORDER BY created_at DESC, rowid DESC", (user_id,) if user_id else ()).fetchall()
             return [self._finance_row(db, row["id"]) for row in rows]
 
@@ -1318,6 +1319,41 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     @router.get("/api/finance/groups")
     def finance_groups(request: Request):
         return {"items": request.app.state.site_accounts.user_groups(current_user(request)["id"])}
+
+    @router.post('/api/finance/reports/export')
+    async def export_finance_report(request: Request):
+        from .finance_reports import filter_rows, report_rows, write_report
+        user = current_user(request)
+        payload = await gateway_payload(request)
+        report, format, scope = payload.get('report'), payload.get('format'), payload.get('scope', 'mine')
+        if (set(payload) - {'report','format','scope','filters'} or report not in {'applications','history','groups'}
+                or format not in {'csv','xlsx'} or scope not in {'mine','all'}):
+            raise HTTPException(400, '报表请求无效')
+        if scope == 'all' or report != 'applications':
+            require_admin(request)
+        if report == 'history':
+            rows = [public_event(request, event) for event in store.finance_history() if event['action'] in {'approved','rejected'}]
+        else:
+            rows = [hydrate_application(request, item) for item in store.list_finance_applications(user['id'] if scope == 'mine' else None)]
+        try:
+            selected = filter_rows(rows, payload.get('filters', {}), history=report == 'history')
+            title, headers, rows = report_rows(selected, report)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+        directory = store.root / 'finance_exports'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        descriptor, filename = tempfile.mkstemp(prefix='report-', suffix='.'+format, dir=directory)
+        os.close(descriptor)
+        path = Path(filename)
+        try:
+            await anyio.to_thread.run_sync(lambda: write_report(path, format, title, headers, rows))
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        media_type = 'text/csv' if format == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        return FileResponse(path, media_type=media_type, filename=title+'.'+format,
+                            headers={'Cache-Control':'no-store, private','X-Export-Count':str(len(rows))},
+                            background=BackgroundTask(path.unlink, missing_ok=True))
 
     @router.post("/api/finance/applications", status_code=201)
     async def create_finance(request: Request, project: str = Form(...), amount: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None)):

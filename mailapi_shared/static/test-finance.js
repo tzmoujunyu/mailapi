@@ -16,6 +16,7 @@ const financeController = (() => {
   const groupKey = item => item.expense_group_id || `legacy:${item.expense_group_name || '未分组'}`;
   let admin = false, tab = 'mine', mine = [], all = [], history = [], announcements = [], groups = [], review = null, page = 1;
   let selected = new Set(), loading = null;
+  let reportAbort = null;
   const request = async (url, options={}) => {
     const response = await fetch(url, {cache:'no-store', ...options});
     const data = await response.json().catch(() => ({}));
@@ -155,6 +156,8 @@ const financeController = (() => {
   }
   function selectTab(value, reset=true) {
     tab=value;page=1;selected.clear();
+    $('fin-export-menu').hidden=tab==='notices';$('fin-export-menu').open=false;
+    $('fin-export-description').textContent=t(tab==='stats'?'导出当前筛选的分组统计':tab==='history'?'导出当前筛选的全部审批记录':'导出当前筛选的全部申请');
     for (const name of ['mine','review','stats','history','notices']) $('fin-panel-'+name).hidden = tab!==name;
     for (const button of $('finance-tabs').querySelectorAll('button')) button.setAttribute('aria-pressed',String(button.dataset.finTab===tab));
     $('finance-filter-card').hidden=tab==='notices';
@@ -262,6 +265,7 @@ const financeController = (() => {
     if(chart){$('fin-'+chart.dataset.finChart+'-details').open=true;return;}
     const button=event.target.closest('button');if(!button)return;
     try {
+      if(button.dataset.finExport){await exportReport(button.dataset.finExport);return;}
       if(button.dataset.finPeriod){$('fin-period').value=button.dataset.finPeriod;period();page=1;render();}
       if(button.dataset.closeDialog)hide(button.dataset.closeDialog);
       if(button.dataset.finPage){page+=Number(button.dataset.finPage);render();}
@@ -285,6 +289,27 @@ const financeController = (() => {
     const button=$(buttonId);if(button.disabled)return;button.disabled=true;error(statusId);
     try {await action();}catch(e){error(statusId,e.message);}finally{button.disabled=false;}
   }
+  async function exportReport(format) {
+    if(reportAbort)return;
+    const abort=new AbortController();reportAbort=abort;
+    document.querySelectorAll('[data-fin-export]').forEach(button=>{button.disabled=true;});$('fin-export-menu').open=false;error('finance-status','正在导出全部匹配记录…');
+    const filters={q:$('fin-search').value.trim(),status:$('fin-status').value,from:$('fin-from').value,to:$('fin-to').value,
+      min:$('fin-min').value,max:$('fin-max').value,group:tab==='mine'?'':$('fin-group').value,user:tab==='mine'?'':$('fin-user').value,
+      reviewer:tab==='history'?$('fin-reviewer').value:'',timezone:Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'};
+    try {
+      const payload={report:tab==='stats'?'groups':tab==='history'?'history':'applications',format,scope:tab==='mine'?'mine':'all',filters};
+      const response=await fetch('/api/finance/reports/export',{...json('POST',payload),signal:abort.signal});
+      if(!response.ok){const data=await response.json();throw new Error(data.detail || t('报表导出失败'));}
+      const blob=await response.blob();
+      if(abort.signal.aborted || location.hash!=='#view-finance' || !$('view-finance').isConnected)return;
+      const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='finance-'+payload.report+'.'+format;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      error('finance-status','报表已导出');
+    }catch(e){if(!abort.signal.aborted)error('finance-status',e.message);}
+    finally{if(reportAbort===abort){reportAbort=null;document.querySelectorAll('[data-fin-export]').forEach(button=>{button.disabled=false;});}}
+  }
+  function cancelReport(){reportAbort?.abort();reportAbort=null;document.querySelectorAll('[data-fin-export]').forEach(button=>{button.disabled=false;});$('fin-export-menu').open=false;}
+  window.addEventListener('pagehide',cancelReport);window.addEventListener('hashchange',()=>{if(location.hash!=='#view-finance')cancelReport();});
+  document.addEventListener('click',event=>{if(!$('fin-export-menu').contains(event.target))$('fin-export-menu').open=false;});
   $('finance-form').addEventListener('submit',event=>{event.preventDefault();submit('finance-submit','fin-form-status',async()=>{
     if([...$('finance-project').value.trim()].length>20)throw new Error(t('报销项目最多 20 个字符。'));
     const form=new FormData(),id=$('finance-edit-id').value;

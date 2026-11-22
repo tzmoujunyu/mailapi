@@ -265,7 +265,7 @@
           <section id="view-finance" class="workspace-view finance-layout" data-view="finance" aria-labelledby="finance-title">
             <div class="fin-heading workspace-page-heading">
               <div><h2 id="finance-title">财务中心</h2></div>
-              <div class="fin-heading-actions"><label class="fin-search"><svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-navigation.svg#search"></use></svg><input id="fin-search" type="search" placeholder="搜索项目、账户、分组、申请编号…" aria-label="搜索报销申请" /></label><button id="fin-new-notice" type="button" class="hidden">发布公告</button><button id="finance-open-form" class="primary" type="button">＋ 申请报销</button></div>
+              <div class="fin-heading-actions"><label class="fin-search"><svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-navigation.svg#search"></use></svg><input id="fin-search" type="search" placeholder="搜索项目、账户、分组、申请编号…" aria-label="搜索报销申请" /></label><details id="fin-export-menu" class="fin-export-menu"><summary>导出报表</summary><div><p id="fin-export-description" class="fin-secondary"></p><button type="button" data-fin-export="xlsx">Excel (.xlsx)</button><button type="button" data-fin-export="csv">CSV (.csv)</button></div></details><button id="fin-new-notice" type="button" class="hidden">发布公告</button><button id="finance-open-form" class="primary" type="button">＋ 申请报销</button></div>
             </div>
             <div id="announcements" class="fin-notice-bar"></div>
             <nav id="finance-tabs" class="fin-tabs hidden" aria-label="财务功能">

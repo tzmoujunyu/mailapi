@@ -1,4 +1,12 @@
 window.MILVLG_EN = {
+  "导出报表": "Export report",
+  "导出当前筛选的分组统计": "Export group totals for the current filters",
+  "导出当前筛选的全部审批记录": "Export all review records matching the current filters",
+  "导出当前筛选的全部申请": "Export all applications matching the current filters",
+  "正在导出全部匹配记录…": "Exporting all matching records…",
+  "报表导出失败": "Report export failed",
+  "报表已导出": "Report exported",
+  "最低金额不能高于最高金额": "The minimum amount cannot exceed the maximum",
   "筛选已更改，点击搜索后应用。": "Filters changed. Select Search to apply them.",
   "开始时间不能晚于结束时间": "Start time cannot be later than end time",
   "可重新搜索或刷新日志。": "Search again or refresh the logs.",

@@ -85,6 +85,20 @@ test('announcements open in dialogs and user-provided titles and filenames rende
   el('fin-notice-history').click();assert.ok(el('fin-detail-content').querySelector('[data-read-notice]'));
 });
 
+test('report export uses all current filters, own scope and the active report type',async t=>{
+  const {w,el,requests}=await setup(t,{admin:true,mine:Array.from({length:30},(_,i)=>application({id:'app-'+i}))});
+  w.URL.createObjectURL=()=> 'blob:finance-report';w.URL.revokeObjectURL=()=>{};let filename='';w.HTMLAnchorElement.prototype.click=function(){filename=this.download;};
+  const original=w.fetch;w.fetch=async(url,options)=>url==='/api/finance/reports/export'?(requests.push([url,options]),{ok:true,blob:async()=>new w.Blob(['report'])}):original(url,options);
+  w.document.querySelector('[data-fin-tab="mine"]').click();el('fin-search').value='订阅';
+  w.document.querySelector('[data-fin-export="xlsx"]').click();await tick();
+  let payload=JSON.parse(requests.at(-1)[1].body);assert.equal(payload.scope,'mine');assert.equal(payload.filters.q,'订阅');assert.equal(payload.report,'applications');assert.equal(filename,'finance-applications.xlsx');
+  w.document.querySelector('[data-fin-tab="history"]').click();w.document.querySelector('[data-fin-export="csv"]').click();await tick();
+  payload=JSON.parse(requests.at(-1)[1].body);assert.equal(payload.scope,'all');assert.equal(payload.report,'history');assert.equal(payload.format,'csv');
+  w.document.querySelector('[data-fin-tab="stats"]').click();w.document.querySelector('[data-fin-export="xlsx"]').click();await tick();
+  assert.equal(JSON.parse(requests.at(-1)[1].body).report,'groups');
+  w.document.querySelector('[data-fin-tab="notices"]').click();assert.equal(el('fin-export-menu').hidden,true);
+});
+
 test('finance dialogs dismiss on a backdrop click but keep edits open for interior clicks or drags',async t=>{
   const {w,el}=await setup(t);
   el('finance-open-form').click();
