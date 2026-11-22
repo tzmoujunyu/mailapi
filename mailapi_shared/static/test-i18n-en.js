@@ -1,4 +1,5 @@
 window.MILVLG_EN = {
+  "申请审核操作": "Application review actions",
   "未上传支付记录": "No payment evidence uploaded",
   "申请编号": "Application ID",
   "操作历史": "Activity history",

@@ -17,7 +17,7 @@ const financeController = (() => {
   let admin = false, tab = 'mine', mine = [], all = [], history = [], announcements = [], groups = [], review = null, page = 1;
   let selected = new Set(), loading = null;
   let reportAbort = null;
-  let detailAbort = null, detailSequence = 0;
+  let detailAbort = null, detailSequence = 0, detailItem = null, detailEvent = null;
   const request = async (url, options={}) => {
     const response = await fetch(url, {cache:'no-store', ...options});
     const data = await response.json().catch(() => ({}));
@@ -227,7 +227,7 @@ const financeController = (() => {
     $('announcement-id').value=item?.id || '';$('announcement-title').value=item?.title || '';$('announcement-body').value=item?.body || '';$('announcement-pinned').checked=item?.pinned || false;
     $('announcement-form-title').textContent=t(item?'编辑公告':'新增公告');show('fin-announcement-dialog');
   }
-  function cancelDetail(){detailAbort?.abort();detailAbort=null;detailSequence++;window.FinancePreviews?.reset();}
+  function cancelDetail(){detailAbort?.abort();detailAbort=null;detailSequence++;detailItem=detailEvent=null;$('fin-detail-actions').replaceChildren();$('fin-detail-actions').hidden=true;window.FinancePreviews?.reset();}
   $('fin-detail-dialog').addEventListener('close',()=>{cancelDetail();$('fin-detail-content').replaceChildren();});
   async function detail(appId) {
     cancelDetail();const abort=new AbortController(),seq=detailSequence;detailAbort=abort;
@@ -239,6 +239,11 @@ const financeController = (() => {
       const currentEvent=data.items.find(event=>event.version===item?.version);
       const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${html(value)}</dd></div>`).join('')}</dl><div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section><section id="fin-detail-previews"></section>`:'';
       $('fin-detail-content').innerHTML=summary+`<h4>${t('操作历史')}</h4>`+data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');
+      detailItem=item;detailEvent=data.items.find(event=>event.is_current_review&&event.version===item?.version&&event.action===item?.status);
+      const actions=$('fin-detail-actions');
+      if(admin&&item?.status==='pending')actions.innerHTML=`<button type="button" class="fin-reject" data-detail-review="rejected">${t('驳回')}</button><button type="button" class="primary" data-detail-review="approved">${t('通过')}</button>`;
+      else if(admin&&detailEvent)actions.innerHTML=`<button type="button" class="primary" data-detail-re-review="${html(detailEvent.id)}">${t('再审核')}</button>`;
+      actions.hidden=!actions.children.length;
       window.FinancePreviews?.render(item,currentEvent);
     }catch(error){if(!abort.signal.aborted&&seq===detailSequence)$('fin-detail-content').textContent=t(error.message);}
   }
@@ -288,6 +293,8 @@ const financeController = (() => {
       if(button.dataset.editFinance)openApplication(mine.find(item=>item.id===button.dataset.editFinance));
       if(button.dataset.cancelFinance){const item=mine.find(item=>item.id===button.dataset.cancelFinance);if(confirm(t('撤销这条待审核申请？'))){await request(`/api/finance/applications/${encodeURIComponent(item.id)}/cancel?version=${item.version}`,{method:'POST'});await load();}}
       if(button.dataset.review)openReview(all.find(item=>item.id===button.dataset.review),button.dataset.result);
+      if(button.dataset.detailReview&&admin&&detailItem?.status==='pending')openReview(detailItem,button.dataset.detailReview);
+      if(button.dataset.detailReReview&&admin&&detailEvent?.id===button.dataset.detailReReview)openReview(detailItem,'',detailEvent.id);
       if(button.dataset.reReview){const event=history.find(item=>item.id===button.dataset.reReview);const item=all.find(item=>item.id===event?.application_id);if(!event?.is_current_review || !item || item.version!==event.version || item.status!==event.action)throw new Error(t('申请或审批记录已变化，请刷新后再审核'));openReview(item,'',event.id);}
       if(button.dataset.readNotice)noticeDetail(button.dataset.readNotice);
       if(button.id==='fin-notice-history'){cancelDetail();$('fin-detail-title').textContent=t('历史公告');$('fin-detail-content').innerHTML=announcements.map(item=>`<article class="fin-event"><button type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button><small class="muted"> ${html(date(item.updated_at))}</small></article>`).join('') || t('暂无公告。');show('fin-detail-dialog');}
@@ -336,13 +343,15 @@ const financeController = (() => {
     await request('/api/finance/applications'+(id?`/${encodeURIComponent(id)}`:''),{method:id?'PUT':'POST',body:form});hide('finance-dialog');await load();error('finance-status',id?'申请已更新。':'申请已提交。');
   });});
   $('fin-review-form').addEventListener('submit',event=>{event.preventDefault();submit('fin-review-submit','fin-review-error',async()=>{
-    const status=review.eventId ? $('fin-re-review-result').value : review.status;
-    if(review.eventId && !status)throw new Error(t('请选择新的审核结果'));
-    if((review.eventId || status==='rejected') && !$('fin-review-note').value.trim())throw new Error(t(review.eventId?'请填写改审原因':'请填写驳回原因'));
-    const payload={status,note:$('fin-review-note').value,version:review.item.version};
-    if(review.eventId)payload.event_id=review.eventId;
-    await request(`/api/admin/finance/applications/${encodeURIComponent(review.item.id)}/${review.eventId?'re-review':'review'}`,json('POST',payload));hide('fin-review-dialog');await load();
-    if(review.eventId)error('finance-status','再审核已保存，原审批记录已保留。');
+    const reviewing=review,status=reviewing.eventId ? $('fin-re-review-result').value : reviewing.status;
+    if(reviewing.eventId && !status)throw new Error(t('请选择新的审核结果'));
+    if((reviewing.eventId || status==='rejected') && !$('fin-review-note').value.trim())throw new Error(t(reviewing.eventId?'请填写改审原因':'请填写驳回原因'));
+    const payload={status,note:$('fin-review-note').value,version:reviewing.item.version};
+    if(reviewing.eventId)payload.event_id=reviewing.eventId;
+    await request(`/api/admin/finance/applications/${encodeURIComponent(reviewing.item.id)}/${reviewing.eventId?'re-review':'review'}`,json('POST',payload));
+    if(review===reviewing)hide('fin-review-dialog');await load();
+    if($('fin-detail-dialog').open&&detailItem?.id===reviewing.item.id)await detail(reviewing.item.id);
+    if(reviewing.eventId)error('finance-status','再审核已保存，原审批记录已保留。');
   });});
   $('announcement-form').addEventListener('submit',event=>{event.preventDefault();submit('announcement-submit','announcement-status',async()=>{
     const id=$('announcement-id').value;await request('/api/admin/finance/announcements'+(id?`/${id}`:''),json(id?'PUT':'POST',{title:$('announcement-title').value,body:$('announcement-body').value,pinned:$('announcement-pinned').checked}));hide('fin-announcement-dialog');await load();

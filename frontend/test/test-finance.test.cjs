@@ -85,6 +85,48 @@ test('late application details cannot replace a newer application or reopen a cl
   pending.get('/api/finance/applications/app-1/history')({ok:true,json:async()=>({item:application(),items:[]})});await tick();
   assert.equal(el('fin-detail-dialog').open,false);assert.equal(el('fin-detail-content').textContent,'');
 });
+test('detail footer reviews use the displayed version and refresh to re-review with the latest decision',async t=>{
+  const {w,el,requests}=await setup(t,{admin:true,all:[application()]});
+  let current=application({version:2}),events=[{id:'submitted-2',version:2,action:'submitted',created_at:new Date().toISOString(),actor_name:'alice',snapshot:application({version:2})}],reviews=0;
+  const original=w.fetch;
+  w.fetch=async(url,options={})=>{
+    if(url==='/api/finance/applications/app-1/history'){
+      requests.push([url,options]);return {ok:true,json:async()=>({item:current,items:events})};
+    }
+    if(url==='/api/admin/finance/applications/app-1/review'||url==='/api/admin/finance/applications/app-1/re-review'){
+      requests.push([url,options]);const payload=JSON.parse(options.body);reviews++;current={...current,status:payload.status};
+      events=events.map(event=>({...event,is_current_review:false}));
+      events.unshift({id:'review-'+reviews,version:2,action:payload.status,is_current_review:true,created_at:new Date().toISOString(),actor_name:'admin',snapshot:current});
+      return {ok:true,json:async()=>({item:current})};
+    }
+    if(url==='/api/admin/finance/applications')return {ok:true,json:async()=>({items:[current]})};
+    return original(url,options);
+  };
+  el('admin-finance-rows').querySelector('.fin-project').click();await tick();
+  assert.equal(el('fin-detail-actions').hidden,false);
+  el('fin-detail-actions').querySelector('[data-detail-review="rejected"]').click();assert.equal(el('fin-review-note').required,true);el('fin-review-dialog').close();
+  el('fin-detail-actions').querySelector('[data-detail-review="approved"]').click();
+  el('fin-review-form').dispatchEvent(new w.Event('submit',{cancelable:true}));for(let i=0;i<4;i++)await tick();
+  let payload=JSON.parse(requests.find(([url])=>url.endsWith('/review'))[1].body);assert.equal(payload.version,2);assert.equal(payload.status,'approved');
+  assert.equal(el('fin-detail-actions').querySelector('[data-detail-review]'),null);
+  assert.equal(el('fin-detail-actions').querySelector('[data-detail-re-review]').dataset.detailReReview,'review-1');
+  el('fin-detail-actions').querySelector('button').click();el('fin-re-review-result').value='rejected';
+  el('fin-review-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();assert.equal(reviews,1);assert.match(el('fin-review-error').textContent,/改审原因/);
+  el('fin-review-note').value='修正误操作';el('fin-review-form').dispatchEvent(new w.Event('submit',{cancelable:true}));for(let i=0;i<4;i++)await tick();
+  payload=JSON.parse(requests.find(([url])=>url.endsWith('/re-review'))[1].body);assert.deepEqual(payload,{status:'rejected',note:'修正误操作',version:2,event_id:'review-1'});
+  assert.equal(el('fin-detail-actions').querySelector('[data-detail-re-review]').dataset.detailReReview,'review-2');
+  assert.match(el('fin-detail-content').textContent,/已驳回/);
+});
+test('review footer stays hidden for ordinary users, cancelled applications and announcement details',async t=>{
+  const user=await setup(t,{mine:[application()]});user.el('finance-rows').querySelector('[data-history]').click();await tick();
+  assert.equal(user.el('fin-detail-actions').hidden,true);assert.equal(user.el('fin-detail-actions').children.length,0);
+  assert.ok(!user.requests.some(([url])=>url.includes('/admin/')));
+  const admin=await setup(t,{admin:true,all:[application({status:'cancelled'})]});
+  admin.el('fin-status').value='all';admin.el('fin-status').dispatchEvent(new admin.w.Event('change'));admin.el('admin-finance-rows').querySelector('.fin-project').click();await tick();
+  assert.equal(admin.el('fin-detail-actions').hidden,true);
+  admin.el('fin-detail-dialog').close();admin.w.document.querySelector('[data-read-notice]').click();
+  assert.equal(admin.el('fin-detail-actions').hidden,true);
+});
 test('history selects only approved records and review requires a reason with the displayed version',async t=>{
   const item=application(), snapshot=application({status:'pending'});
   const history=[{id:'good',is_current_review:true,action:'approved',actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'',snapshot},{id:'bad',action:'rejected',actor_id:'admin',actor_name:'admin',version:1,created_at:new Date().toISOString(),note:'原因',snapshot}];

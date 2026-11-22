@@ -1,8 +1,11 @@
-/* Invoice thumbnails reuse the project's PhotoSwipe viewer inside the detail dialog. */
+/* Invoice thumbnails open PhotoSwipe in an independent full-screen modal layer. */
 window.FinancePreviews = (() => {
   const dialog=document.getElementById('fin-detail-dialog'),t=value=>window.SiteLanguage?.t(value)||value;
+  const layer=document.createElement('dialog');layer.id='fin-invoice-viewer';layer.setAttribute('aria-label',t('发票大图'));document.body.append(layer);
   let abort=null,sequence=0,gallery=null,library=null;
-  function reset(){sequence++;abort?.abort();abort=null;gallery?.destroy();gallery=null;}
+  function closeViewer(){const shown=gallery;gallery=null;shown?.destroy();if(layer.open)layer.close();}
+  function reset(){sequence++;abort?.abort();abort=null;closeViewer();}
+  function tapImage(point,event){if(event.target.classList.contains('pswp__img'))this.currSlide?.toggleZoom(point);else this.close();}
   function loadViewer(){
     return library ||= window.PagePerformance.loadScript('/static/vendor/photoswipe/photoswipe.js')
       .then(()=>window.PhotoSwipe).catch(error=>{library=null;throw error;});
@@ -28,20 +31,25 @@ window.FinancePreviews = (() => {
         button.append(image,caption);grid.append(button);
         button.addEventListener('click',async()=>{
           try{
-            const Viewer=await loadViewer();if(seq!==sequence||!dialog.open)return;
+            const Viewer=await loadViewer();if(seq!==sequence||!dialog.open||gallery)return;
             const reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            const shown=new Viewer({dataSource:data.pages.map(page=>({...page,alt:t('发票大图')})),index,appendToEl:dialog,bgOpacity:.95,
+            const shown=new Viewer({dataSource:data.pages.map(page=>({...page,alt:t('发票大图')})),index,appendToEl:layer,bgOpacity:.8,
+              initialZoomLevel:'fit',secondaryZoomLevel:zoom=>Math.max(1,zoom.fit*2),
+              getViewportSizeFn:()=>({x:layer.clientWidth,y:layer.clientHeight}),padding:{top:56,bottom:24,left:16,right:16},
+              imageClickAction:'zoom',bgClickAction:'close',tapAction:tapImage,doubleTapAction:tapImage,clickToCloseNonZoomable:false,
               returnFocus:true,showAnimationDuration:reduced?0:160,hideAnimationDuration:reduced?0:160,
               closeTitle:t('关闭大图'),zoomTitle:t('放大或缩小'),arrowPrevTitle:t('上一页'),arrowNextTitle:t('下一页'),
               errorMsg:t('发票预览加载失败，请下载原文件查看')});
-            gallery=shown;shown.on('destroy',()=>{if(gallery===shown)gallery=null;if(button.isConnected&&dialog.open)button.focus();});shown.init();
-          }catch{if(seq===sequence)status.textContent=t('大图加载失败，请下载原文件查看');}
+            gallery=shown;shown.on('destroy',()=>{if(gallery===shown){gallery=null;if(layer.open)layer.close();}if(button.isConnected&&dialog.open)button.focus();});
+            layer.setAttribute('aria-label',t('发票大图'));layer.showModal();shown.init();
+          }catch{if(seq===sequence){closeViewer();status.textContent=t('大图加载失败，请下载原文件查看');}}
         });
       });
       status.textContent=t(data.pages.length>1?'点击缩略图查看大图，可放大和翻页':'点击缩略图查看大图，可放大查看');
     }catch(error){if(!request.signal.aborted&&seq===sequence)status.textContent=error.message;}
   }
-  dialog.addEventListener('cancel',event=>{if(gallery){event.preventDefault();gallery.close();}});
+  layer.addEventListener('cancel',event=>{if(gallery){event.preventDefault();gallery.close();}});
+  layer.addEventListener('close',()=>{if(!layer.open)closeViewer();});
   dialog.addEventListener('close',reset);
   return {render,reset};
 })();
