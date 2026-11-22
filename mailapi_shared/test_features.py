@@ -434,6 +434,12 @@ class TestFeatureStore:
                 WHERE id=? AND user_id=? AND revoked=0 AND caller_ip_allowlist=?''',
                 (value,key_id,user_id,expected)).rowcount==1
 
+    def update_api_key_settings(self, key_id, user_id, name, caller_ips, *, expected):
+        with self._lock, closing(self._connect()) as db, db:
+            return db.execute('''UPDATE api2api_keys SET name=?,caller_ip_allowlist=?
+                WHERE id=? AND user_id=? AND revoked=0 AND name=? AND caller_ip_allowlist=?''',
+                (name,caller_ips,key_id,user_id,expected['name'],expected['caller_ip_allowlist'])).rowcount==1
+
     @staticmethod
     def api_key_ip_allowed(key, host):
         policy = key.get('caller_ip_allowlist','')
@@ -997,7 +1003,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def update_user_key_limits(key_id: str, request: Request):
         user = current_user(request)
         payload = await gateway_payload(request)
-        if set(payload)-{'models','expired_at','revision','allowed_ips'}:
+        if set(payload)-{'models','expired_at','revision','allowed_ips','name','unlimited_quota',
+                         'remaining_quota','expected_remaining_quota','allow_user_quota_query'}:
             raise HTTPException(400,'密钥限制字段无效')
         key = store.gateway_key(key_id,user['id']) or {'id':key_id}
         return await audited_key_change(user,'updated',key,lambda:gateway.update_key_limits(key_id,user['id'],payload))
@@ -1228,6 +1235,17 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
                 timeout=httpx.Timeout(connect=5,read=None,write=30,pool=5), follow_redirects=False, trust_env=False,
             )
+        if proxy_path.strip('/')=='usage/token':
+            if request.method!='GET':
+                return Response(status_code=405,headers={'Allow':'GET'})
+            try:
+                upstream = await client_holder['client'].get(config['base_url'][:-3]+'/api/usage/token/',
+                    headers={'Authorization':f'Bearer {raw_key}'},timeout=15)
+                return Response(upstream.content,status_code=upstream.status_code,
+                    media_type=upstream.headers.get('content-type','application/json'),
+                    headers={'Cache-Control':'no-store, private'})
+            except httpx.HTTPError:
+                return JSONResponse({'error':{'message':'Upstream API unavailable','type':'upstream_error'}},status_code=502)
         target = config["base_url"].rstrip("/") + "/" + proxy_path.lstrip("/")
         headers = {"Authorization": f"Bearer {raw_key}", "Accept": request.headers.get("accept", "*/*"), "Accept-Encoding": "identity"}
         if request.headers.get("content-type"):

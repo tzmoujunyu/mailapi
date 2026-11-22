@@ -144,7 +144,7 @@
   if (!document.body.classList.contains('test-ui-page')) return;
   document.body.classList.add('test-has-tooltips');
   const selector = 'button,a[href],summary,[role="button"],input[type="button"],input[type="submit"]';
-  const excluded = '.help-hint-trigger,.site-theme-button,[data-fin-chart]';
+  const excluded = '.help-hint-trigger,.site-theme-button,[data-fin-chart],[aria-haspopup="menu"][aria-expanded="true"]';
   const tip = document.createElement('div');
   tip.id = 'test-control-tooltip';
   tip.className = 'test-control-tooltip';
@@ -234,8 +234,8 @@
   document.addEventListener('site:language', hide);
   for (const name of ['resize', 'hashchange', 'test:navigation', 'blur']) window.addEventListener(name, hide);
   new MutationObserver(() => {
-    if (anchor && (!anchor.isConnected || anchor.closest('[hidden],[inert],[aria-hidden="true"]') ||
+    if (anchor && (!anchor.isConnected || anchor.matches(excluded) || anchor.closest('[hidden],[inert],[aria-hidden="true"]') ||
         anchor.getAttribute('aria-label') !== savedLabel || (anchor.hasAttribute('title') && anchor.getAttribute('title') !== savedTitle) ||
         (anchor.closest('dialog') && !anchor.closest('dialog').open))) hide();
-  }).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['title', 'aria-label', 'hidden', 'inert', 'aria-hidden', 'open']});
+  }).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['title', 'aria-label', 'hidden', 'inert', 'aria-hidden', 'open', 'aria-expanded']});
 })();

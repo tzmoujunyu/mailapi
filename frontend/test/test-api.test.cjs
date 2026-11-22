@@ -12,6 +12,7 @@ function setup(t,handler) {
   const w = dom.window, calls = [], el = id => w.document.getElementById(id);
   for (const dialog of w.document.querySelectorAll('dialog')) {
     dialog.showModal = () => dialog.setAttribute('open','');
+    dialog.show = () => dialog.setAttribute('open','');
     dialog.close = () => { dialog.removeAttribute('open'); dialog.dispatchEvent(new w.Event('close')); };
   }
   w.confirm = () => true;
@@ -148,13 +149,14 @@ test('key restriction editor sends personal IP rules with model, expiry and revi
   assert.equal(el('api-key-list').querySelector('img'),null);
   el('api-key-list').querySelector('[data-edit-key]').click();
   assert.equal(el('api-limits-dialog').open,true);
-  assert.equal(el('api-limits-date-field').hidden,true);
+  assert.equal(el('api-limits-never').checked,true);
+  assert.equal(el('api-limits-time').disabled,true);
   assert.equal(el('api-limits-ips').value,'192.0.2.5');
   assert.equal(el('api-limits-gateway-ips').hidden,false);
   el('api-limits-ips').value='192.0.2.5\n2001:db8::/32';
   el('api-limits-models').value='gpt-4o-mini,\nmodel-two';submit('api-limits-form');await tick();
   const sent=calls.find(([url,options])=>url.endsWith('/limits') && options.method==='PUT');
-  assert.deepEqual(JSON.parse(sent[1].body),{models:['gpt-4o-mini','model-two'],expired_at:-1,allowed_ips:'192.0.2.5\n2001:db8::/32',revision:'revision-1'});
+  assert.deepEqual(JSON.parse(sent[1].body),{name:'Laptop " <img src=x onerror=alert(1)>',models:['gpt-4o-mini','model-two'],expired_at:-1,allowed_ips:'192.0.2.5\n2001:db8::/32',unlimited_quota:true,allow_user_quota_query:true,revision:'revision-1'});
   assert.equal(el('api-limits-dialog').open,false);
 });
 
@@ -170,6 +172,85 @@ test('invalid IP rules keep the editor open without silently clearing the saved 
   assert.equal(el('api-limits-status').textContent,'Invalid IP whitelist');
   el('api-limits-dialog').close();
   assert.equal(el('api-limits-ips').value,'');
+});
+
+test('inline copy and connection copy resolve the same owned key without retaining credentials',async t=>{
+  let copied='';const secret='sk-connection-copy-fixture';
+  const {w,el,calls}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',key_prefix:'sk-fixture',can_copy:true,revocable:true}]}:url.endsWith('/reveal')?{api_key:secret}:null);
+  Object.defineProperty(w.navigator,'clipboard',{value:{writeText:async value=>{copied=value;}}});
+  await w.apiUnderTest.load();
+  const inline=el('api-key-list').querySelector('.api-key-secret-line [data-copy-key]');
+  assert.equal(inline.title,'复制密钥');inline.click();await tick();
+  assert.equal(copied,secret);
+  assert.ok(inline.classList.contains('is-copied'));
+  el('api-key-list').querySelector('[data-more-key]').click();el('api-menu-connection').click();await tick();
+  assert.deepEqual(JSON.parse(copied),{_type:'newapi_channel_conn',key:secret,url:'http://localhost/api2api'});
+  assert.equal(el('api-key-menu').open,false);
+  assert.equal(el('api-key-status').textContent,'连接信息已复制');
+  assert.equal(calls.filter(([url])=>url.endsWith('/reveal')).length,2);
+  assert.ok(!w.document.body.textContent.includes(secret));assert.equal(w.localStorage.length,0);assert.equal(w.sessionStorage.length,0);
+});
+
+test('connection copy fallback names the copied content correctly and clears it on close',async t=>{
+  const {el}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',can_copy:true}]}:url.endsWith('/reveal')?{api_key:'sk-connection-fallback-fixture'}:null);
+  await tick();el('api-refresh').click();await tick();
+  el('api-key-list').querySelector('[data-more-key]').click();el('api-menu-connection').click();await tick();
+  assert.equal(el('api-key-title').textContent,'复制连接信息');assert.equal(el('api-copy-key').textContent,'复制连接信息');
+  assert.equal(JSON.parse(el('new-api-key').textContent)._type,'newapi_channel_conn');
+  el('api-key-dialog').close();assert.equal(el('new-api-key').textContent,'');assert.equal(el('api-copy-key').textContent,'复制密钥');
+});
+
+test('more menu supports arrows, Escape and outside dismissal without blocking navigation',async t=>{
+  const {w,el}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',can_copy:true,revocable:true}]}:null);
+  await w.apiUnderTest.load();const trigger=el('api-key-list').querySelector('[data-more-key]');
+  trigger.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
+  assert.equal(trigger.getAttribute('aria-expanded'),'true');assert.equal(w.document.activeElement,el('api-menu-copy'));
+  el('api-key-menu').dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));assert.equal(w.document.activeElement,el('api-menu-connection'));
+  el('api-key-menu').dispatchEvent(new w.KeyboardEvent('keydown',{key:'End',bubbles:true}));assert.equal(w.document.activeElement,el('api-menu-revoke'));
+  el('api-key-menu').dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));assert.equal(el('api-key-menu').open,false);assert.equal(w.document.activeElement,trigger);
+  trigger.click();el('api-refresh').dispatchEvent(new w.MouseEvent('pointerdown',{bubbles:true}));assert.equal(el('api-key-menu').open,false);assert.equal(trigger.getAttribute('aria-expanded'),'false');
+});
+
+test('full editor tracks changes and saves name, quota, query permission, presets and model choices',async t=>{
+  const {w,el,calls,submit}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',can_edit:true,expired_at:-1,unlimited:true,remaining_quota:90,allow_user_quota_query:true,limits_revision:'first'}]}:url==='/api/api2api/engine'?{models:['gpt-4o-mini','model-two']}:{ok:true});
+  await w.apiUnderTest.load();el('api-key-list').querySelector('[data-edit-key]').click();
+  assert.equal(el('api-limits-save').disabled,true);assert.equal(el('api-limits-quota-field').hidden,true);
+  el('api-limits-name').value='Laptop renamed';el('api-limits-name').dispatchEvent(new w.Event('input',{bubbles:true}));assert.equal(el('api-limits-save').disabled,false);
+  el('api-limits-unlimited').click();assert.equal(el('api-limits-quota-field').hidden,false);el('api-limits-quota').value='55';
+  el('api-limits-query-quota').click();
+  el('api-limits-form').querySelector('[data-key-expiry="hour"]').click();assert.equal(el('api-limits-time').disabled,false);
+  el('api-limits-model-options').querySelector('input').click();
+  assert.equal(el('api-limits-models').value,'gpt-4o-mini');assert.equal(w.document.activeElement.dataset.editModel,'gpt-4o-mini');
+  submit('api-limits-form');await tick();
+  const sent=JSON.parse(calls.find(([url,options])=>url.endsWith('/limits') && options.method==='PUT')[1].body);
+  assert.equal(sent.name,'Laptop renamed');assert.equal(sent.remaining_quota,55);assert.equal(sent.expected_remaining_quota,90);
+  assert.equal(sent.unlimited_quota,false);assert.equal(sent.allow_user_quota_query,false);assert.deepEqual(sent.models,['gpt-4o-mini']);
+  assert.ok(Math.abs(sent.expired_at-Date.now()/1000-3600)<3);assert.equal(sent.group,undefined);
+});
+
+test('a late save from a closed editor cannot unlock or close a newer pending edit',async t=>{
+  const pending=[];
+  const {w,el,submit}=setup(t,(url,options)=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',can_edit:true,expired_at:-1,limits_revision:'first'}]}:url.endsWith('/limits')&&options.method==='PUT'?new Promise(resolve=>pending.push(resolve)):{ok:true});
+  await w.apiUnderTest.load();el('api-key-list').querySelector('[data-edit-key]').click();
+  el('api-limits-name').value='First edit';submit('api-limits-form');el('api-limits-dialog').close();
+  el('api-key-list').querySelector('[data-edit-key]').click();el('api-limits-name').value='Second edit';submit('api-limits-form');
+  pending[0]({ok:true});await tick();
+  assert.equal(el('api-limits-dialog').open,true);assert.equal(el('api-limits-name').value,'Second edit');assert.equal(el('api-limits-save').disabled,true);
+  pending[1]({ok:true});await tick();assert.equal(el('api-limits-dialog').open,false);
+});
+
+test('the expiration calendar supports keyboard dates and closes without losing the separate time field',async t=>{
+  const {w,el}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',can_edit:true,expired_at:-1}]}:{ok:true});
+  await w.apiUnderTest.load();el('api-key-list').querySelector('[data-edit-key]').click();
+  el('api-limits-calendar').open=true;
+  const today=el('api-key-calendar-days').querySelector('button[tabindex="0"]');today.focus();
+  today.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));
+  const selected=w.document.activeElement.dataset.keyDate;assert.ok(selected>today.dataset.keyDate);
+  w.document.activeElement.click();
+  assert.equal(el('api-limits-calendar').open,false);assert.equal(el('api-limits-never').checked,false);
+  assert.match(el('api-limits-expires').value,new RegExp('^'+selected+'T'));
+  el('api-limits-time').value='18:30:00';el('api-limits-time').dispatchEvent(new w.Event('input',{bubbles:true}));
+  assert.equal(el('api-limits-expires').value,selected+'T18:30:00');assert.equal(el('api-limits-save').disabled,false);
 });
 
 test('admin user search matches notes and old connection data is not reused as a native gateway',async t=>{

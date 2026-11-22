@@ -24,9 +24,11 @@ class NewAPIError(ValueError):
 
 class NewAPIGateway:
     @staticmethod
-    def limits_revision(token, caller_ips=''):
-        fields = {name:token.get(name) for name in ('expired_time','model_limits_enabled','model_limits','allow_ips')}
+    def limits_revision(token, caller_ips='', key_name=''):
+        fields = {name:token.get(name) for name in ('expired_time','model_limits_enabled','model_limits','allow_ips',
+                                                   'unlimited_quota','allow_user_quota_query')}
         fields['caller_ip_allowlist'] = caller_ips
+        fields['key_name'] = key_name
         return hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
     def __init__(self, store, *, client=None):
@@ -188,7 +190,8 @@ class NewAPIGateway:
                 item.update(remote_status=current.get('status'),used_quota=current.get('used_quota',0),remaining_quota=current.get('remain_quota',0),
                             unlimited=bool(current.get('unlimited_quota')),expired_at=current.get('expired_time',-1),
                             model_limits=current.get('model_limits','') if current.get('model_limits_enabled') else '',
-                            gateway_allowed_ips=current.get('allow_ips') or '',limits_revision=self.limits_revision(current,row['allowed_ips']))
+                            allow_user_quota_query=bool(current.get('allow_user_quota_query',True)),
+                            gateway_allowed_ips=current.get('allow_ips') or '',limits_revision=self.limits_revision(current,row['allowed_ips'],row['name']))
             result.append(item)
         return result
 
@@ -257,8 +260,18 @@ class NewAPIGateway:
             row = self.own_key(key_id,user_id)
             user = await self.identity(user_id)
             current = await self.request(user,'GET',f'/api/token/{row["remote_id"]}')
-            if payload.get('revision')!=self.limits_revision(current,row['caller_ip_allowlist']):
-                raise NewAPIError('密钥限制已变化，请刷新后重试',409)
+            if payload.get('revision')!=self.limits_revision(current,row['caller_ip_allowlist'],row['name']):
+                raise NewAPIError('密钥设置已变化，请刷新后重试',409)
+            name = self.store._text(payload.get('name',row['name']),'API Key 名称',80,required=True)
+            for field in ('unlimited_quota','allow_user_quota_query'):
+                if field in payload and type(payload[field]) is not bool:
+                    raise NewAPIError('密钥开关须为布尔值',400)
+            if 'remaining_quota' in payload:
+                quota, expected = payload['remaining_quota'], payload.get('expected_remaining_quota')
+                if type(quota) is not int or not 0<=quota<=9007199254740991 or type(expected) is not int:
+                    raise NewAPIError('剩余额度须为有效的非负整数',400)
+                if current.get('remain_quota',0)!=expected:
+                    raise NewAPIError('密钥余额已变化，请刷新后重新设置额度',409)
             caller_ips = self.store.normalize_api_key_ips(payload.get('allowed_ips',row['caller_ip_allowlist']))
             models, expires = payload.get('models'), payload.get('expired_at')
             if not isinstance(models,list) or len(models)>100 or any(not isinstance(name,str) or not name or len(name)>120 or ',' in name or '\n' in name for name in models):
@@ -273,9 +286,14 @@ class NewAPIGateway:
             update = {name:current[name] for name in ('id','name','remain_quota','unlimited_quota','allow_ips','group',
                                                       'cross_group_retry','auto_groups','allow_user_quota_query') if name in current}
             update.update(expired_time=expires,model_limits_enabled=bool(models),model_limits=','.join(models))
+            for field in ('unlimited_quota','allow_user_quota_query'):
+                if field in payload:
+                    update[field] = payload[field]
+            if 'remaining_quota' in payload:
+                update['remain_quota'] = payload['remaining_quota']
             await self.request(user,'PUT','/api/token/',json=update)
-            if not self.store.set_api_key_ips(key_id,user_id,caller_ips,expected=row['caller_ip_allowlist']):
-                raise NewAPIError('密钥限制已变化，请刷新后重试',409)
+            if not self.store.update_api_key_settings(key_id,user_id,name,caller_ips,expected=row):
+                raise NewAPIError('密钥设置已变化，请刷新后重试',409)
             return {'ok':True}
 
     async def info(self, user_id):

@@ -218,6 +218,23 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                     edited = web.put('/api/api2api/keys/'+alice['id']+'/limits',json={
                         'models':['gpt-4o-mini'],'expired_at':int(time.time())+86400,'revision':editable['limits_revision']})
                     assert edited.status_code==200, ('Native key edit',edited.status_code,edited.json().get('detail'))
+                    editable=web.get('/api/api2api/keys').json()['items'][0]
+                    updated=web.put('/api/api2api/keys/'+alice['id']+'/limits',json={
+                        'name':'Alice renamed','models':['gpt-4o-mini'],'expired_at':editable['expired_at'],
+                        'unlimited_quota':False,'remaining_quota':50000,'expected_remaining_quota':editable['remaining_quota'],
+                        'allow_user_quota_query':False,'revision':editable['limits_revision']})
+                    assert updated.status_code==200, ('Native full editor',updated.status_code,updated.json().get('detail'))
+                    editable=web.get('/api/api2api/keys').json()['items'][0]
+                    assert editable['name']=='Alice renamed' and editable['remaining_quota']==50000 and not editable['unlimited']
+                    before_query=web.get('/api/api2api/usage').json()['requests']
+                    quota=web.get('/api2api/v1/usage/token',headers=bearer)
+                    assert quota.status_code==200 and 'user_quota' not in quota.json()['data'], ('Quota permission disabled',quota.status_code)
+                    assert web.get('/api/api2api/usage').json()['requests']==before_query, 'Quota queries must not inflate model usage'
+                    updated=web.put('/api/api2api/keys/'+alice['id']+'/limits',json={
+                        'models':['gpt-4o-mini'],'expired_at':editable['expired_at'],'allow_user_quota_query':True,'revision':editable['limits_revision']})
+                    assert updated.status_code==200
+                    quota=web.get('/api2api/v1/usage/token',headers=bearer)
+                    assert quota.status_code==200 and 'user_quota' in quota.json()['data'], ('Quota permission enabled',quota.status_code)
                     for allowed, expected in (('192.0.2.42',403),('127.0.0.1',200),('',200)):
                         editable=web.get('/api/api2api/keys').json()['items'][0]
                         result=web.put('/api/api2api/keys/'+alice['id']+'/limits',json={
@@ -286,7 +303,7 @@ result:b.evaluate(input.expression,input.context)}));'''
             probe_usage=None
             print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,'tiered_pricing_native_parity':True,
                               'streaming_before_completion':True,'website_http_native_keys':True,
-                              'pause_resume_and_copy':True,'retained_logs_145_rows':True,'full_export_cleanup':True,'model_catalog':True,'key_limit_edit':True,'caller_ip_enforced':True,'spoofed_ip_headers_rejected':True,'admin_only_audit':True,'separate_engine_identities':True,'revocation_enforced':True,
+                              'pause_resume_and_copy':True,'retained_logs_145_rows':True,'full_export_cleanup':True,'model_catalog':True,'key_limit_edit':True,'key_name_quota_and_query_permission':True,'caller_ip_enforced':True,'spoofed_ip_headers_rejected':True,'admin_only_audit':True,'separate_engine_identities':True,'revocation_enforced':True,
                               'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)
     finally:
         stream_received.set()

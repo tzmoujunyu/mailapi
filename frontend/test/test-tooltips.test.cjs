@@ -110,6 +110,13 @@ test('collapsed navigation labels get hints and expanded labels do not duplicate
   assert.equal(tip().hidden, true);
 });
 
+test('opening a menu dismisses the trigger hint instead of covering its menu items', async t => {
+  const {d,tip} = setup(t, '<button title="更多操作" aria-haspopup="menu" aria-expanded="false"><svg></svg></button>');
+  const button=d.querySelector('button');button.focus();assert.equal(tip().hidden,false);
+  button.setAttribute('aria-expanded','true');await tick();assert.equal(tip().hidden,true);
+  button.blur();button.focus();assert.equal(tip().hidden,true);
+});
+
 test('dynamic group action names follow English and Chinese without translating user group names', async t => {
   const {w,d,tip} = setup(t, '<button title="删除 研究组" aria-label="删除分组 · 研究组"><svg></svg></button>');
   w.eval(read('test-i18n-en.js')); w.eval(read('test-i18n.js'));

@@ -446,6 +446,47 @@ class GatewayHttpTests(unittest.TestCase):
         self.assertEqual(self.client.put(path+'/limits',json={**payload,'revision':row['limits_revision'],'allowed_ips':''}).status_code,502)
         self.assertEqual(self.store.gateway_key(item['id'])['caller_ip_allowlist'],row['allowed_ips'])
 
+    def test_key_editor_updates_own_name_quota_and_query_permission_without_changing_state_or_group(self):
+        item=self.create();path='/api/api2api/keys/'+item['id']
+        self.client.put(path+'/enabled',json={'enabled':False})
+        row=self.client.get('/api/api2api/keys').json()['items'][0]
+        payload={'name':'Laptop renamed','models':[],'expired_at':-1,'revision':row['limits_revision'],
+                 'remaining_quota':55,'expected_remaining_quota':93,'unlimited_quota':False,'allow_user_quota_query':False}
+        response=self.client.put(path+'/limits',json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        token=self.engine.tokens[1]
+        self.assertEqual(token['name'],'mw_'+item['id'])
+        self.assertEqual(token['status'],2)
+        self.assertEqual(token['group'],'default')
+        self.assertEqual(token['remain_quota'],55)
+        self.assertFalse(token['unlimited_quota'])
+        self.assertFalse(token['allow_user_quota_query'])
+        updated=self.client.get('/api/api2api/keys').json()['items'][0]
+        self.assertEqual(updated['name'],'Laptop renamed')
+        self.assertEqual(updated['remaining_quota'],55)
+        self.assertFalse(updated['allow_user_quota_query'])
+        self.assertNotEqual(updated['limits_revision'],row['limits_revision'])
+        self.assertEqual(self.client.put(path+'/limits',json=payload).status_code,409)
+        self.assertEqual(self.client.put(path+'/limits',headers={'x-test-user':'bob'},json={**payload,'revision':updated['limits_revision']}).status_code,404)
+
+    def test_key_editor_preserves_live_balance_unless_explicitly_changed_and_rejects_invalid_settings(self):
+        item=self.create();path='/api/api2api/keys/'+item['id']
+        row=self.client.get('/api/api2api/keys').json()['items'][0]
+        payload={'name':'Renamed','models':[],'expired_at':-1,'revision':row['limits_revision']}
+        self.engine.tokens[1]['remain_quota']=81
+        response=self.client.put(path+'/limits',json=payload)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.engine.tokens[1]['remain_quota'],81)
+        row=self.client.get('/api/api2api/keys').json()['items'][0]
+        payload['revision']=row['limits_revision']
+        self.assertEqual(self.client.put(path+'/limits',json={**payload,'remaining_quota':100,'expected_remaining_quota':93}).status_code,409)
+        for invalid in ({'name':' '},{'name':'x'*81},{'remaining_quota':-1,'expected_remaining_quota':81},
+                        {'remaining_quota':True,'expected_remaining_quota':81},{'unlimited_quota':'false'},
+                        {'allow_user_quota_query':1},{'group':'other'}):
+            self.assertEqual(self.client.put(path+'/limits',json={**payload,**invalid}).status_code,400,invalid)
+        self.assertEqual(self.engine.tokens[1]['remain_quota'],81)
+        self.assertEqual(self.store.gateway_key(item['id'])['name'],'Renamed')
+
     def test_relay_uses_verified_client_ip_not_spoofed_headers_and_skips_blocked_upstream_calls(self):
         item=self.create()
         self.store.set_api_key_ips(item['id'],'alice','192.0.2.42',expected='')

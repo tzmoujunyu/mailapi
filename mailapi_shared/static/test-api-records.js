@@ -6,7 +6,7 @@ const apiRecordsController = (() => {
   const time = value => value?new Date(value*1000).toLocaleString(document.documentElement.lang==='en'?'en-US':'zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
   const localInput = date => new Date(date.getTime()-date.getTimezoneOffset()*60000).toISOString().slice(0,16);
   const types={0:'未知',1:'充值',2:'消耗',3:'管理（历史）',4:'系统',5:'错误',6:'退款',7:'登录（历史）'};
-  const actions={created:'创建密钥',revealed:'读取密钥',enabled:'启用密钥',disabled:'停用密钥',updated:'编辑限制',revoked:'撤销密钥'};
+  const actions={created:'创建密钥',revealed:'读取密钥',enabled:'启用密钥',disabled:'停用密钥',updated:'编辑密钥',revoked:'撤销密钥'};
   const outcomes={pending:'处理中',succeeded:'成功',failed:'失败',uncertain:'待核实'};
   const columns={time:'时间',key:'令牌',model:'模型',stream:'流',tokens:'Token',cost:'费用',timing:'耗时',details:'详情'};
   const visibleColumns=new Set(Object.keys(columns));
