@@ -25,6 +25,7 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
   status.hidden = true;
   document.body.append(status);
   const translate = text => window.SiteLanguage?.t(text) || text;
+  const financeEvents = new Set(['finance:changed', 'finance:notifications-changed', 'finance:open-application']);
 
   function createView(root, page, styles) {
     const view = {root, page, styles, search: null, active: false, mounted: false, scroll: 0};
@@ -48,12 +49,12 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
       if (key === 'body') return root;
       if (key === 'hidden') return !view.active || document.hidden;
       if (key === 'addEventListener') return (type, listener, options) => {
-        if (['visibilitychange', 'scroll', 'site:language'].includes(type)) {
+        if (['visibilitychange', 'scroll', 'site:language'].includes(type) || financeEvents.has(type)) {
           documentEvents.push([type, listener]);
           target.addEventListener(type, event => { if (view.active) listener(event); }, {...(typeof options === 'boolean' ? {capture: options} : options), signal: subscriptions.signal});
         } else root.addEventListener(type, listener, options);
       };
-      if (key === 'dispatchEvent') return event => root.dispatchEvent(event);
+      if (key === 'dispatchEvent') return event => (financeEvents.has(event.type) ? target : root).dispatchEvent(event);
       const value = Reflect.get(target, key, target);
       return typeof value === 'function' ? value.bind(target) : value;
     }});

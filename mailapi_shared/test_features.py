@@ -136,6 +136,30 @@ CREATE TABLE IF NOT EXISTS finance_events (
 );
 CREATE INDEX IF NOT EXISTS idx_finance_events_time ON finance_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_finance_events_application ON finance_events(application_id);
+CREATE TABLE IF NOT EXISTS finance_invoice_details (
+    application_id TEXT PRIMARY KEY REFERENCES finance_applications(id), file_id TEXT NOT NULL,
+    invoice_key TEXT NOT NULL, fields_json TEXT NOT NULL, recognition_json TEXT NOT NULL,
+    verification_status TEXT NOT NULL DEFAULT 'unverified', verification_note TEXT NOT NULL DEFAULT '',
+    verified_by TEXT NOT NULL DEFAULT '', verified_by_name TEXT NOT NULL DEFAULT '', verified_at TEXT,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_finance_invoice_key ON finance_invoice_details(invoice_key);
+CREATE INDEX IF NOT EXISTS idx_finance_invoice_hash ON finance_files(kind,sha256);
+CREATE TABLE IF NOT EXISTS finance_invoice_verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, application_id TEXT NOT NULL REFERENCES finance_applications(id),
+    version INTEGER NOT NULL, file_id TEXT NOT NULL, fields_json TEXT NOT NULL,
+    status TEXT NOT NULL, note TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS finance_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, application_id TEXT NOT NULL REFERENCES finance_applications(id),
+    event_id TEXT REFERENCES finance_events(id), kind TEXT NOT NULL, audience TEXT NOT NULL, user_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL, version INTEGER NOT NULL, created_at TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_finance_notifications_application ON finance_notifications(application_id,kind,id);
+CREATE TABLE IF NOT EXISTS finance_notification_reads (
+    user_id TEXT NOT NULL, notification_id INTEGER NOT NULL REFERENCES finance_notifications(id),
+    PRIMARY KEY(user_id,notification_id)
+);
 """
 
 
@@ -219,9 +243,9 @@ class TestFeatureStore:
                 groups = json.loads(row["groups_json"])
                 name = groups[0] if len(groups) == 1 else ("待确认" if groups else "未分组")
                 db.execute("UPDATE finance_applications SET expense_group_name=? WHERE id=?", (name, row["id"]))
-                self._finance_event(db, row["id"], "legacy", row["user_id"], row["username"], "旧申请导入", row["created_at"])
+                self._finance_event(db, row["id"], "legacy", row["user_id"], row["username"], "旧申请导入", row["created_at"],notify=False)
                 if row["status"] in {"approved", "rejected"}:
-                    self._finance_event(db, row["id"], row["status"], row["reviewer_id"] or "", row["reviewer_name"] or "", row["review_note"], row["reviewed_at"] or row["updated_at"])
+                    self._finance_event(db, row["id"], row["status"], row["reviewer_id"] or "", row["reviewer_name"] or "", row["review_note"], row["reviewed_at"] or row["updated_at"],notify=False)
 
     @staticmethod
     def _text(value: Any, label: str, maximum: int, *, required: bool = False) -> str:
@@ -568,21 +592,105 @@ class TestFeatureStore:
         result["groups"] = json.loads(result.pop("groups_json"))
         result["amount"] = f"{result['amount_cents'] / 100:.2f}"
         result["files"] = [dict(item) for item in db.execute("SELECT * FROM finance_files WHERE application_id=? ORDER BY kind", (app_id,))]
+        invoice = db.execute('SELECT * FROM finance_invoice_details WHERE application_id=?',(app_id,)).fetchone()
+        result['invoice'] = ({'file_id':invoice['file_id'],'fields':json.loads(invoice['fields_json']),
+            'recognition':json.loads(invoice['recognition_json']),
+            'verification':{'status':invoice['verification_status'],'note':invoice['verification_note'],
+                'actor_name':invoice['verified_by_name'],'created_at':invoice['verified_at'],'revision':invoice['revision']}} if invoice else None)
         return result
 
-    def _finance_event(self, db, app_id, action, actor_id, actor_name, note="", when=None, *, supersedes_event_id=None):
+    @staticmethod
+    def _assert_invoice_available(db, app_id, fields, digest):
+        from .finance_invoices import invoice_key
+        key = invoice_key(fields) if fields else ''
+        duplicate = db.execute('''SELECT a.id FROM finance_applications a
+            LEFT JOIN finance_invoice_details d ON d.application_id=a.id
+            LEFT JOIN finance_files f ON f.application_id=a.id AND f.kind='invoice'
+            WHERE a.id<>? AND a.status IN ('pending','approved')
+            AND ((?<>'' AND d.invoice_key=?) OR (?<>'' AND f.sha256=?)) LIMIT 1''',
+            (app_id,key,key,digest,digest)).fetchone()
+        if duplicate:
+            raise TestFeatureError('该发票已被待审核或已通过的申请占用，不能重复报销',409)
+
+    def invoice_is_duplicate(self, fields, digest, *, exclude=''):
+        with closing(self._connect()) as db:
+            try:
+                self._assert_invoice_available(db,exclude,fields,digest)
+            except TestFeatureError:
+                return True
+        return False
+
+    @staticmethod
+    def _save_finance_invoice(db, app_id, file, fields, recognition):
+        from .finance_invoices import invoice_key
+        old = db.execute('SELECT file_id,fields_json FROM finance_invoice_details WHERE application_id=?',(app_id,)).fetchone()
+        encoded = json.dumps(fields,ensure_ascii=False,sort_keys=True)
+        if old and old['file_id'] == file['id'] and json.loads(old['fields_json']) == fields:
+            return
+        db.execute('''INSERT INTO finance_invoice_details(application_id,file_id,invoice_key,fields_json,recognition_json)
+            VALUES(?,?,?,?,?) ON CONFLICT(application_id) DO UPDATE SET file_id=excluded.file_id,
+            invoice_key=excluded.invoice_key,fields_json=excluded.fields_json,recognition_json=excluded.recognition_json,
+            verification_status='unverified',verification_note='',verified_by='',verified_by_name='',verified_at=NULL,
+            revision=finance_invoice_details.revision+1''',
+            (app_id,file['id'],invoice_key(fields),encoded,json.dumps(recognition,ensure_ascii=False)))
+
+    def invoice_verifications(self, app_id):
+        with closing(self._connect()) as db:
+            rows = db.execute('SELECT * FROM finance_invoice_verifications WHERE application_id=? ORDER BY id DESC',(app_id,)).fetchall()
+        return [{key:row[key] for key in row.keys() if key not in {'fields_json','actor_id'}} | {'fields':json.loads(row['fields_json'])} for row in rows]
+
+    def verify_finance_invoice(self, app_id, actor, status, note, *, version, revision, fields=None):
+        if status not in {'verified','inconsistent','not_found','voided','unavailable'}:
+            raise TestFeatureError('发票查验结果无效')
+        note = self._text(note,'查验说明',MAX_FINANCE_NOTE,required=True)
+        if type(version) is not int or type(revision) is not int:
+            raise TestFeatureError('请提供当前申请和查验版本')
+        with self._lock, closing(self._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            item = self._finance_row(db,app_id)
+            if not item or item['version'] != version:
+                return None
+            if not item['invoice']:
+                if revision != 0 or not fields:
+                    raise TestFeatureError('历史申请须先补录发票信息')
+                file = next((file for file in item['files'] if file['kind'] == 'invoice'),None)
+                if not file:
+                    raise TestFeatureError('未找到发票附件',404)
+                if item['status'] in {'pending','approved'}:
+                    self._assert_invoice_available(db,app_id,fields,file['sha256'])
+                self._save_finance_invoice(db,app_id,file,fields,{'method':'legacy_manual','fields':{}})
+                item = self._finance_row(db,app_id)
+            elif fields is not None and fields != item['invoice']['fields']:
+                raise TestFeatureError('发票信息已变化，请刷新后重试',409)
+            if item['invoice']['verification']['revision'] != revision:
+                return None
+            invoice = item['invoice'];now = _now()
+            db.execute('''INSERT INTO finance_invoice_verifications(application_id,version,file_id,fields_json,status,note,actor_id,actor_name,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)''',(app_id,version,invoice['file_id'],json.dumps(invoice['fields'],ensure_ascii=False),status,note,actor['id'],actor['username'],now))
+            db.execute('''UPDATE finance_invoice_details SET verification_status=?,verification_note=?,verified_by=?,verified_by_name=?,verified_at=?,revision=revision+1
+                WHERE application_id=?''',(status,note,actor['id'],actor['username'],now,app_id))
+        return self.finance_application(app_id)
+
+    def _finance_event(self, db, app_id, action, actor_id, actor_name, note="", when=None, *, supersedes_event_id=None, notify=True):
         item = self._finance_row(db, app_id)
+        event_id, when = secrets.token_hex(12), when or _now()
         db.execute("INSERT OR IGNORE INTO finance_versions VALUES (?, ?, ?)",
                    (app_id, item["version"], json.dumps(item, ensure_ascii=False)))
         db.execute("INSERT INTO finance_events(id,application_id,version,action,actor_id,actor_name,note,created_at,supersedes_event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   (secrets.token_hex(12), app_id, item["version"], action, actor_id, actor_name, note, when or _now(), supersedes_event_id))
+                   (event_id, app_id, item["version"], action, actor_id, actor_name, note, when, supersedes_event_id))
+        if notify:
+            from .finance_notifications import record_event
+            record_event(db,item,event_id,action,actor_name,note,when,re_review=bool(supersedes_event_id))
 
     def create_finance_application(self, *, user_id: str, username: str, user_note: str,
                                    groups: list[str], project: str, amount_cents: int,
                                    files: list[dict[str, Any]], expense_group_id: str = "",
-                                   expense_group_name: str = "未分组") -> dict[str, Any]:
+                                   expense_group_name: str = "未分组", invoice_fields=None, recognition=None) -> dict[str, Any]:
         app_id, now = secrets.token_hex(12), _now()
         with self._lock, closing(self._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            invoice = next((file for file in files if file['kind'] == 'invoice'),None)
+            self._assert_invoice_available(db,app_id,invoice_fields,invoice['sha256'] if invoice else '')
             db.execute(
                 """INSERT INTO finance_applications(id,user_id,username,user_note,groups_json,project,amount_cents,status,created_at,updated_at,review_note,expense_group_id,expense_group_name)
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '', ?, ?)""",
@@ -590,6 +698,8 @@ class TestFeatureStore:
             )
             for item in files:
                 self._insert_finance_file(db, app_id, item["kind"], item)
+            if invoice_fields and invoice:
+                self._save_finance_invoice(db,app_id,invoice,invoice_fields,recognition or {})
             self._finance_event(db, app_id, "submitted", user_id, username)
         return self.finance_application(app_id)
 
@@ -632,6 +742,9 @@ class TestFeatureStore:
             row = self._finance_row(db, app_id)
             if not row or row["status"] != "pending" or (expected_version is not None and row["version"] != expected_version):
                 return None
+            if status == 'approved':
+                invoice = next((file for file in row['files'] if file['kind'] == 'invoice'),None)
+                self._assert_invoice_available(db,app_id,row['invoice']['fields'] if row['invoice'] else None,invoice['sha256'] if invoice else '')
             db.execute("UPDATE finance_applications SET status=?,updated_at=?,reviewed_at=?,reviewer_id=?,reviewer_name=?,review_note=? WHERE id=?",
                        (status, _now(), _now(), reviewer_id, reviewer_name, note, app_id))
             self._finance_event(db, app_id, status, reviewer_id, reviewer_name, note)
@@ -652,6 +765,9 @@ class TestFeatureStore:
                 return None
             if item['status'] == status:
                 raise TestFeatureError('请选择不同的审核结果')
+            if status == 'approved':
+                invoice = next((file for file in item['files'] if file['kind'] == 'invoice'),None)
+                self._assert_invoice_available(db,app_id,item['invoice']['fields'] if item['invoice'] else None,invoice['sha256'] if invoice else '')
             now = _now()
             db.execute('UPDATE finance_applications SET status=?,updated_at=?,reviewed_at=?,reviewer_id=?,reviewer_name=?,review_note=? WHERE id=?',
                        (status,now,now,reviewer_id,reviewer_name,note,app_id))
@@ -661,13 +777,16 @@ class TestFeatureStore:
     def update_finance_application(self, app_id: str, user_id: str, project: str,
                                    amount_cents: int, replacements: dict[str, dict[str, Any]], *,
                                    expense_group: Optional[tuple[str, str]] = None,
-                                   expected_version: Optional[int] = None) -> Optional[dict[str, Any]]:
+                                   expected_version: Optional[int] = None, invoice_fields=None, recognition=None) -> Optional[dict[str, Any]]:
         with self._lock, closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             row = self._finance_row(db, app_id)
             if (not row or row["user_id"] != user_id or row["status"] not in {"pending", "rejected"}
                     or (expected_version is not None and row["version"] != expected_version)):
                 return None
+            invoice = replacements.get('invoice') or next((file for file in row['files'] if file['kind'] == 'invoice'),None)
+            fields = invoice_fields or (row['invoice']['fields'] if row['invoice'] else None)
+            self._assert_invoice_available(db,app_id,fields,invoice['sha256'] if invoice else '')
             group_id, group_name = expense_group or (row["expense_group_id"], row["expense_group_name"])
             db.execute("""UPDATE finance_applications SET project=?,amount_cents=?,updated_at=?,version=version+1,
                           status='pending',reviewed_at=NULL,reviewer_id=NULL,reviewer_name=NULL,review_note='',
@@ -676,6 +795,8 @@ class TestFeatureStore:
             for kind, item in replacements.items():
                 db.execute("DELETE FROM finance_files WHERE application_id=? AND kind=?", (app_id, kind))
                 self._insert_finance_file(db, app_id, kind, item)
+            if fields and invoice:
+                self._save_finance_invoice(db,app_id,invoice,fields,recognition if recognition is not None else (row['invoice']['recognition'] if row['invoice'] else {}))
             # Physical files referenced by older versions remain available for audit/download.
             self._finance_event(db, app_id, "resubmitted" if row["status"] == "rejected" else "edited", user_id, row["username"])
         return self.finance_application(app_id)
@@ -790,8 +911,11 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return JSONResponse({'detail':str(error)},status_code=error.status_code)
     from .site_announcements import install_site_announcements
     install_site_announcements(app, store)
+    from .finance_notifications import install_finance_notifications
+    install_finance_notifications(app, store)
     router = APIRouter()
     client_holder: dict[str, Optional[httpx.AsyncClient]] = {"client": None}
+    invoice_limiter = anyio.CapacityLimiter(1)
 
     def current_user(request: Request):
         user = getattr(request.state, "site_user", None)
@@ -891,6 +1015,31 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 (store.files / item["stored_name"]).unlink(missing_ok=True)
             raise
         return saved
+
+    async def recognize_invoice(file):
+        from .finance_invoices import recognize_file
+        return await anyio.to_thread.run_sync(lambda: recognize_file(store.files / file['stored_name']), limiter=invoice_limiter)
+
+    async def prepare_invoice(saved, raw_fields, existing=None):
+        from .finance_invoices import confirmed_fields
+        replacement = next((file for file in saved if file['kind'] == 'invoice'),None)
+        file = replacement or next((file for file in (existing or {}).get('files',[]) if file['kind'] == 'invoice'),None)
+        if not file:
+            raise TestFeatureError('未找到发票附件',404)
+        old = (existing or {}).get('invoice')
+        recognition = await recognize_invoice(file) if replacement or not old else old['recognition']
+        if recognition.get('multiple'):
+            raise TestFeatureError('一笔申请仅支持一张发票，请拆分文件后提交')
+        try:
+            if raw_fields is not None:
+                if len(raw_fields) > 4096:
+                    raise ValueError('发票信息过长')
+                fields = json.loads(raw_fields)
+            else:
+                fields = old['fields'] if old and not replacement else recognition['fields']
+            return confirmed_fields(fields), recognition
+        except (ValueError,TypeError) as error:
+            raise TestFeatureError(str(error) if not isinstance(error,json.JSONDecodeError) else '发票信息格式无效') from None
 
     @router.get("/test-features")
     def test_features_page(request: Request):
@@ -1320,6 +1469,34 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     def finance_groups(request: Request):
         return {"items": request.app.state.site_accounts.user_groups(current_user(request)["id"])}
 
+    @router.post('/api/finance/invoices/analyze')
+    async def analyze_finance_invoice(request: Request, invoice: Optional[UploadFile] = File(None), app_id: Optional[str] = Form(None)):
+        from .finance_invoices import confirmed_fields
+        current_user(request)
+        existing = store.finance_application(app_id) if app_id else None
+        if app_id:
+            if not existing:
+                raise HTTPException(404,'未找到报销申请')
+            public_application(request,existing)
+        saved = []
+        try:
+            if invoice:
+                saved = await save_finance_uploads([('invoice',invoice)])
+                file = saved[0]
+            else:
+                file = next((file for file in (existing or {}).get('files',[]) if file['kind'] == 'invoice'),None)
+                if not file:
+                    raise HTTPException(400,'请选择发票文件')
+            recognition = await recognize_invoice(file)
+            try:
+                fields = confirmed_fields(recognition['fields'])
+            except ValueError:
+                fields = None
+            return {'recognition':recognition,'duplicate':store.invoice_is_duplicate(fields,file['sha256'],exclude=app_id or '')}
+        finally:
+            for file in saved:
+                (store.files / file['stored_name']).unlink(missing_ok=True)
+
     @router.post('/api/finance/reports/export')
     async def export_finance_report(request: Request):
         from .finance_reports import filter_rows, report_rows, write_report
@@ -1351,12 +1528,20 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             path.unlink(missing_ok=True)
             raise
         media_type = 'text/csv' if format == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        return FileResponse(path, media_type=media_type, filename=title+'.'+format,
-                            headers={'Cache-Control':'no-store, private','X-Export-Count':str(len(rows))},
-                            background=BackgroundTask(path.unlink, missing_ok=True))
+        async def report_body():
+            try:
+                async with await anyio.open_file(path,'rb') as output:
+                    while chunk := await output.read(65536):
+                        yield chunk
+            finally:
+                path.unlink(missing_ok=True)
+        return StreamingResponse(report_body(),media_type=media_type,
+            headers={'Cache-Control':'no-store, private','X-Export-Count':str(len(rows)),
+                     'Content-Disposition':_content_disposition(title+'.'+format),'Content-Length':str(path.stat().st_size)},
+            background=BackgroundTask(path.unlink, missing_ok=True))
 
     @router.post("/api/finance/applications", status_code=201)
-    async def create_finance(request: Request, project: str = Form(...), amount: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None)):
+    async def create_finance(request: Request, project: str = Form(...), amount: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None)):
         account, groups = user_snapshot(request)
         group_id, group_name = expense_group(request, expense_group_id)
         try:
@@ -1367,10 +1552,11 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         try:
+            fields, recognition = await prepare_invoice(saved,invoice_fields)
             item = store.create_finance_application(user_id=account["id"], username=account["username"],
                                                     user_note=account.get("note", ""), groups=groups,
                                                     project=project, amount_cents=amount_cents, files=saved,
-                                                    expense_group_id=group_id, expense_group_name=group_name)
+                                                    expense_group_id=group_id, expense_group_name=group_name, invoice_fields=fields, recognition=recognition)
         except Exception:
             for entry in saved:
                 (store.files / entry["stored_name"]).unlink(missing_ok=True)
@@ -1378,7 +1564,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return {"item": public_application(request, item)}
 
     @router.put("/api/finance/applications/{app_id}")
-    async def update_finance(app_id: str, request: Request, project: str = Form(...), amount: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None)):
+    async def update_finance(app_id: str, request: Request, project: str = Form(...), amount: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None), invoice_fields: Optional[str] = Form(None)):
         user = current_user(request)
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
@@ -1401,8 +1587,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         try:
+            fields, recognition = await prepare_invoice(saved,invoice_fields,existing)
             updated = store.update_finance_application(app_id, user["id"], project, amount_cents, {item["kind"]: item for item in saved},
-                                                       expense_group=group, expected_version=version if version is not None else existing["version"])
+                                                       expense_group=group, expected_version=version if version is not None else existing["version"],invoice_fields=fields,recognition=recognition)
         except Exception:
             for item in saved:
                 (store.files / item["stored_name"]).unlink(missing_ok=True)
@@ -1433,6 +1620,29 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     def application_history(app_id: str, request: Request):
         get_allowed_application(request, app_id)
         return {"items": [public_event(request, event) for event in store.finance_history(app_id)]}
+
+    @router.get('/api/finance/applications/{app_id}/invoice')
+    def finance_invoice_detail(app_id: str, request: Request):
+        item = store.finance_application(app_id)
+        if not item:
+            raise HTTPException(404,'未找到报销申请')
+        public = public_application(request,item)
+        return {'item':public,'checks':store.invoice_verifications(app_id)}
+
+    @router.post('/api/admin/finance/applications/{app_id}/invoice/verify')
+    async def verify_finance_invoice(app_id: str, request: Request):
+        from .finance_invoices import confirmed_fields
+        actor = require_admin(request)
+        payload = await gateway_payload(request)
+        try:
+            fields = confirmed_fields(payload['fields']) if 'fields' in payload else None
+        except ValueError as error:
+            raise HTTPException(400,str(error)) from None
+        item = store.verify_finance_invoice(app_id,actor,payload.get('status'),payload.get('note'),
+            version=payload.get('version'),revision=payload.get('revision'),fields=fields)
+        if not item:
+            raise HTTPException(409,'申请或查验记录已变化，请刷新后重试')
+        return {'item':public_application(request,item)}
 
     @router.get("/api/admin/finance/history")
     def approval_history(request: Request):

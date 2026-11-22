@@ -21,6 +21,7 @@ const financeController = (() => {
     const response = await fetch(url, {cache:'no-store', ...options});
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(t(data.detail || '请求失败'));
+    if(options.method&&options.method!=='GET')document.dispatchEvent(new CustomEvent('finance:notifications-changed'));
     return data;
   };
   const json = (method, body) => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -82,7 +83,7 @@ const financeController = (() => {
       <td><span class="fin-tag" data-i18n-skip title="${html(t('当前分组'))}: ${html((item.groups || []).join('、') || t('未分组'))}">${html(item.expense_group_name || t('未分组'))}</span></td>
       ${!own ? `<td data-i18n-skip>${html(identity(item))}</td>` : ''}
       <td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date" title="${html(item.id)}">${html(item.id.slice(0,8))} · ${localDay(item.created_at).slice(5)} · v${item.version || 1}</span></td><td class="fin-money">${html(currency(cents(item)))}</td>
-      <td>${fileLink(item,'payment')}</td><td>${fileLink(item,'invoice')}</td><td>${pill(item.status)}${item.review_note ? `<small data-i18n-skip>${html(item.review_note)}</small>` : ''}</td>
+      <td>${fileLink(item,'payment')}</td><td>${fileLink(item,'invoice')}${window.FinanceInvoices?.summary(item)||''}</td><td>${pill(item.status)}${item.review_note ? `<small data-i18n-skip>${html(item.review_note)}</small>` : ''}</td>
       <td><div class="actions">
       ${own && ['pending','rejected'].includes(item.status) ? `<button type="button" data-edit-finance="${html(item.id)}">${t(item.status === 'rejected' ? '修改并重提' : '编辑')}</button>` : ''}
       ${own && item.status === 'pending' ? `<button type="button" data-cancel-finance="${html(item.id)}">${t('撤销')}</button>` : ''}
@@ -218,6 +219,7 @@ const financeController = (() => {
     $('fin-expense-group').value=item?.expense_group_id || (groups.length===1?groups[0].id:'');
     $('fin-expense-hint').textContent=groups.length>1?t('多分组账户需选择一个费用归属，金额只计入该分组。'):`${t('费用归属')}：${item?.expense_group_name || groups[0]?.name || t('未分组')}`;
     show('finance-dialog');
+    window.FinanceInvoices?.fill(item);
   }
   function openNoticeForm(item=null) {
     $('announcement-form').reset();error('announcement-status');
@@ -315,6 +317,7 @@ const financeController = (() => {
     const form=new FormData(),id=$('finance-edit-id').value;
     for(const [key,field] of [['project','finance-project'],['amount','finance-amount'],['expense_group_id','fin-expense-group']])form.set(key,$(field).value);
     if(id)form.set('version',$('finance-version').value);
+    if(window.FinanceInvoices)form.set('invoice_fields',JSON.stringify(window.FinanceInvoices.getFields()));
     for(const [key,field] of [['invoice','finance-invoice'],['payment_record','finance-payment']]){const file=$(field).files[0];if(file){if(file.size>10*1024*1024)throw new Error(t('单个报销文件不能超过 10 MB'));form.set(key,file);}}
     await request('/api/finance/applications'+(id?`/${encodeURIComponent(id)}`:''),{method:id?'PUT':'POST',body:form});hide('finance-dialog');await load();error('finance-status',id?'申请已更新。':'申请已提交。');
   });});
@@ -339,5 +342,7 @@ const financeController = (() => {
     const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download='approved-finance.zip';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }));
   document.addEventListener('site:language',()=>{renderNotices();render();});
-  return {load,start(value){admin=value;$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');}};
+  document.addEventListener('finance:changed',()=>load().catch(e=>error('finance-status',e.message)));
+  document.addEventListener('finance:open-application',event=>{if(location.hash==='#view-finance'&&typeof event.detail?.id==='string')load().then(()=>detail(event.detail.id)).catch(e=>error('finance-status',e.message));});
+  return {load,start(value){admin=value;window.FinanceInvoices?.start(value);$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');}};
 })();

@@ -144,6 +144,8 @@ class TestFeatureStoreTests(unittest.TestCase):
         item = self.store.create_finance_application(user_id="a", username="alice", user_note="", groups=["A", "B"], project="订阅", amount_cents=100, files=[])
         self.store.review_finance_application(item["id"], "approved", "admin", "admin", "通过")
         with self.store._connect() as db:
+            db.execute('DELETE FROM finance_notification_reads')
+            db.execute('DELETE FROM finance_notifications')
             db.execute("DELETE FROM finance_events")
             db.execute("DELETE FROM finance_versions")
         self.store = TestFeatureStore(self.data, self.keyring)
@@ -151,6 +153,8 @@ class TestFeatureStoreTests(unittest.TestCase):
         self.assertEqual([row["action"] for row in self.store.finance_history(item["id"])], ["approved", "legacy"])
         self.store = TestFeatureStore(self.data, self.keyring)
         self.assertEqual(len(self.store.finance_history(item["id"])), 2)
+        with self.store._connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM finance_notifications').fetchone()[0],0)
 
     def test_re_review_schema_migrates_existing_events_without_rewriting_snapshots(self):
         item = self.store.create_finance_application(user_id='alice',username='alice',user_note='',groups=[],project='订阅',amount_cents=100,files=[])

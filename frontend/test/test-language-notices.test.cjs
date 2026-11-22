@@ -63,3 +63,20 @@ test('notification content is rendered as text and read receipts use the display
   assert.equal(w.document.querySelector('[data-body]').textContent, item.body);
   assert.deepEqual(JSON.parse(calls.find(([url]) => url.endsWith('/read'))[1].body), {items: [{id: 'notice', revision: 3}]});
 });
+
+test('finance notices show safe historical results and open the authorized application after navigation',async t=>{
+  const dom=new JSDOM('<html lang="zh-CN"><body><div class="test-ui-header-actions"></div></body></html>',{url:'http://localhost/',runScripts:'outside-only'});
+  t.after(()=>dom.window.close());const w=dom.window,calls=[];let hasRead=false,navigated='',opened='';
+  const item={id:12,application_id:'app-1',kind:'reviewed',version:1,current_version:2,current_status:'pending',created_at:'2026-11-22T00:00:00Z',unread:true,payload:{project:'<img src=x>',amount:'12.50',result:'rejected',note:'<script>bad()</script>'}};
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+  w.TestNavigation={navigate:async url=>{navigated=url;}};w.document.addEventListener('finance:open-application',event=>{opened=event.detail.id;});
+  w.fetch=async(url,options={})=>{calls.push([url,options]);if(url==='/api/finance/notifications/read')hasRead=true;return {ok:true,json:async()=>url.startsWith('/api/finance/notifications?')?{items:[{...item,unread:!hasRead}],total:1,unread_count:hasRead?0:1,max_id:12}:{items:[],can_manage:false}};};
+  w.eval(read('test-notifications.js'));
+  await new Promise(resolve=>setImmediate(resolve));
+  w.document.querySelector('[data-notice-tab="finance"]').click();await new Promise(resolve=>setImmediate(resolve));
+  assert.match(w.document.querySelector('.finance-notice-items').textContent,/申请当前状态: 待审核/);
+  assert.equal(w.document.querySelector('img'),null);assert.equal(w.document.querySelector('script'),null);
+  w.document.querySelector('.finance-notice-items button').click();await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(navigated,'/test-features#view-finance');assert.equal(opened,'app-1');
+  assert.deepEqual(JSON.parse(calls.find(([url])=>url==='/api/finance/notifications/read')[1].body),{ids:[12]});
+});

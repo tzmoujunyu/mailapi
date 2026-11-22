@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 STATUS = {'pending': '待审核', 'approved': '已通过', 'rejected': '已驳回', 'cancelled': '已撤销'}
+INVOICE_STATUS = {'unverified':'待税务查验','verified':'人工登记：查验通过','inconsistent':'人工登记：票面信息不一致',
+                  'not_found':'人工登记：查无此票','voided':'人工登记：发票已作废','unavailable':'人工登记：暂无法查验'}
 
 
 def filter_rows(rows, filters, *, history=False):
@@ -62,6 +64,13 @@ def report_rows(items, report):
                  '、'.join(item.get('groups',[])),item.get('expense_group_name','未分组'),item['project'],
                  Decimal(item['amount_cents']) / 100,STATUS[item['status']],item.get('version',1),
                  item.get('reviewer_name') or '',item.get('reviewed_at') or '',item.get('review_note','')] for item in items]
+        headers += ['发票代码','发票号码','开票日期','价税合计（元）','税务查验登记','查验说明']
+        for row,item in zip(rows,items):
+            invoice = item.get('invoice') or {}
+            fields, check = invoice.get('fields',{}), invoice.get('verification',{})
+            row.extend([fields.get('code',''),fields.get('number',''),fields.get('date',''),
+                        Decimal(fields['total']) if fields.get('total') else '',
+                        INVOICE_STATUS.get(check.get('status'),'待税务查验'),check.get('note','')])
         return '报销明细', headers, rows
     if report == 'history':
         headers = ['审批编号','申请编号','资料版本','审批时间','审核人','结果','审核意见','当前有效审批','被替代审批编号','账户','账户备注','费用归属','报销项目','报销金额（元）']

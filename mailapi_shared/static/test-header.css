@@ -1,5 +1,11 @@
 /* The header and rail share one surface and one icon alignment grid. */
 :root:has(body.test-ui-page:not(.test-ui-login)) { scrollbar-gutter: stable; }
+.notice-panel-tabs { display:flex; gap:6px; margin-bottom:12px; }
+.notice-panel-tabs button { flex:1; padding:8px; border:0; border-radius:8px; background:transparent; color:var(--test-muted); cursor:pointer; font:inherit; }
+.notice-panel-tabs button[aria-pressed="true"] { background:var(--test-purple-soft); color:var(--test-purple); }
+.finance-notice-summary { display:block; margin-top:6px; overflow-wrap:anywhere; font-size:12px; font-weight:400; }
+.finance-notice-note { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; font-weight:400; margin:6px 0; }
+.notice-panel-pagination { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; font-size:12px; }
 .test-page-view { display: contents; }
 .test-navigation-status { position: fixed; bottom: 18px; left: 50%; z-index: 90; margin: 0; padding: 9px 16px; border: 1px solid var(--test-line); border-radius: 12px; background: var(--test-card); color: var(--test-ink); box-shadow: var(--test-shadow); font-size: 13px; }
 body.test-ui-page:not(.test-ui-login) { --test-header-height: 56px; padding-top: var(--test-header-height); }
@@ -125,7 +131,8 @@ body.test-ui-page.home-page section[id] { scroll-margin-top: calc(var(--test-hea
 .header-notice-panel { position: fixed; top: calc(var(--test-header-height) - 2px); right: 16px; box-sizing: border-box; width: min(380px, calc(100vw - 24px)); max-height: min(570px, calc(100dvh - 72px)); overflow: auto; padding: 16px; border: 1px solid var(--test-line); border-radius: 16px; background: var(--test-card); color: var(--test-ink); box-shadow: 0 12px 40px #00000022; z-index: 95; }
 .notice-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .notice-panel-heading h2 { font-size: 17px; margin: 0; }
-.notice-panel-heading button, .notice-panel-actions button, .site-notice-controls button { padding: 5px 9px; border: 1px solid var(--test-line); border-radius: 8px; color: var(--test-purple); background: var(--test-card); cursor: pointer; font-size: 12px; }
+.notice-panel-heading button, .notice-panel-actions button, .site-notice-controls button, .notice-panel-pagination button { padding: 5px 9px; border: 1px solid var(--test-line); border-radius: 8px; color: var(--test-purple); background: var(--test-card); cursor: pointer; font-size: 12px; }
+.notice-panel-pagination button:disabled { opacity: .45; cursor: default; }
 .notice-panel-actions { display: flex; gap: 8px; margin-top: 12px; }
 .notice-items { margin-top: 12px; color: var(--test-muted); font-size: 13px; }
 .site-notice-row { padding: 12px 0; border-top: 1px solid var(--test-line); }

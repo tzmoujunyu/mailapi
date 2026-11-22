@@ -64,7 +64,7 @@ class FinanceReportTests(unittest.TestCase):
         self.assertEqual(sheet['H2'].data_type, 's')
         self.assertEqual(sheet['I2'].value, 12.5)
         self.assertEqual(sheet.freeze_panes, 'A2')
-        self.assertEqual(sheet.auto_filter.ref, 'A1:N2')
+        self.assertEqual(sheet.auto_filter.ref, 'A1:T2')
         rows = list(csv.reader(io.StringIO(self.export().content.decode('utf-8-sig'))))
         self.assertEqual(rows[1][7], "'=1+1")
         self.assertEqual(list((Path(self.directory)/'finance_exports').iterdir()), [])

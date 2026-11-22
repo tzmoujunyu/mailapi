@@ -33,6 +33,7 @@ class FinanceFeatureHttpTests(unittest.TestCase):
     def setUp(self):
         self.directory = self.enterContext(tempfile.TemporaryDirectory())
         self.site = FakeSiteAccounts()
+        self.invoice_counter = 0
         self.app = FastAPI()
         self.app.state.site_accounts = self.site
 
@@ -50,11 +51,16 @@ class FinanceFeatureHttpTests(unittest.TestCase):
     def upload(filename="invoice.pdf", content=b"invoice", content_type="application/pdf"):
         return {"invoice": (filename, io.BytesIO(content), content_type)}
 
+    @staticmethod
+    def invoice_fields(number='20261122000000000001'):
+        return json.dumps({'number':number,'code':'','date':'2026-11-22','total':'12.50','check_code':''})
+
     def create_application(self, user_id="alice-id", project="模型订阅"):
+        self.invoice_counter += 1
         return self.client.post(
             "/api/finance/applications",
             headers={"x-test-user": user_id},
-            data={"project": project, "amount": "12.50"},
+            data={"project": project, "amount": "12.50", "invoice_fields":self.invoice_fields(f'20261122{self.invoice_counter:012d}')},
             files=self.upload(),
         )
 
@@ -63,7 +69,7 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         response = self.client.post(
             "/api/finance/applications",
             headers={"x-test-user": "alice-id"},
-            data={"project": "模型订阅", "amount": "12.50"},
+            data={"project": "模型订阅", "amount": "12.50", "invoice_fields":self.invoice_fields()},
             files=self.upload(long_filename, b"x" * (1024 * 1024 + 20)),
         )
         self.assertEqual(response.status_code, 201, response.text)
@@ -116,7 +122,7 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         self.assertEqual(self.create_application().status_code, 400)
         for selected in ("second", "not-a-member"):
             response = self.client.post("/api/finance/applications", headers={"x-test-user": "alice-id"},
-                                        data={"project": "第二次申请", "amount": "20.00", "expense_group_id": selected}, files=self.upload())
+                                        data={"project": "第二次申请", "amount": "20.00", "expense_group_id": selected,"invoice_fields":self.invoice_fields('20261122000000000002')}, files=self.upload(content=b'different invoice'))
             self.assertEqual(response.status_code, 201 if selected == "second" else 400)
         self.site.groups["group-id"]["member_ids"] = []
         self.site.users["alice-id"]["note"] = "新备注"
@@ -135,13 +141,13 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         rejected = self.client.post(review_url, json={"status": "rejected", "note": "补充发票", "version": 1})
         self.assertEqual(rejected.status_code, 200, rejected.text)
         resubmitted = self.client.put(f"/api/finance/applications/{app_id}", headers={"x-test-user": "alice-id"},
-                                    data={"project": "订阅重提", "amount": "18.00", "version": "1"}, files=self.upload("new.pdf", b"new invoice"))
+                                    data={"project": "订阅重提", "amount": "18.00", "version": "1","invoice_fields":self.invoice_fields()}, files=self.upload("new.pdf", b"new invoice"))
         self.assertEqual(resubmitted.status_code, 200, resubmitted.text)
         self.assertEqual(resubmitted.json()["item"]["status"], "pending")
         self.assertEqual(resubmitted.json()["item"]["version"], 2)
         self.assertEqual(self.client.post(review_url, json={"status": "approved", "version": 1}).status_code, 409)
         stale = self.client.put(f"/api/finance/applications/{app_id}", headers={"x-test-user": "alice-id"},
-                               data={"project": "过期修改", "amount": "1.00", "version": "1"}, files=self.upload("stale.pdf", b"stale"))
+                               data={"project": "过期修改", "amount": "1.00", "version": "1","invoice_fields":self.invoice_fields()}, files=self.upload("stale.pdf", b"stale"))
         self.assertEqual(stale.status_code, 409)
         self.assertEqual(len(list((Path(self.directory)/"finance_files").iterdir())), 2)
         self.assertEqual(self.client.post(review_url, json={"status": "approved", "version": 2}).status_code, 200)

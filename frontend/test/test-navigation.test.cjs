@@ -184,6 +184,25 @@ test('actual resources, accounts, console, API and finance controllers work toge
   assert.ok(!w.document.getElementById('api-key-status').textContent);
 });
 
+test('shared reimbursement notifications reach the mounted finance view and page changes refresh the header', async t => {
+  const {w,router,calls,contexts}=fixture(t,{real:true});
+  await router.ready;
+  await router.navigate('/test-features#view-finance');await settle();
+  w.document.dispatchEvent(new w.CustomEvent('finance:open-application',{detail:{id:'notice-app'}}));
+  await settle();await settle();
+  assert.ok(calls.includes('/api/finance/applications/notice-app/history'));
+  assert.equal(w.document.getElementById('fin-detail-dialog').open,true);
+  w.document.getElementById('fin-detail-dialog').close();
+  let refreshed=0;
+  w.document.addEventListener('finance:notifications-changed',()=>refreshed++);
+  contexts.get('features').document.dispatchEvent(new w.CustomEvent('finance:notifications-changed'));
+  assert.equal(refreshed,1);
+  await router.navigate('/');
+  const before=calls.filter(url=>url.endsWith('/notice-app/history')).length;
+  w.document.dispatchEvent(new w.CustomEvent('finance:open-application',{detail:{id:'notice-app'}}));await settle();
+  assert.equal(calls.filter(url=>url.endsWith('/notice-app/history')).length,before);
+});
+
 test('the lazy real editor keeps its console scope and is reused after leaving and returning', async t => {
   const {w, router, mounts} = fixture(t, {real: true});
   await router.ready;
