@@ -10,7 +10,7 @@ const application = (extra={}) => ({id:'app-1', username:'alice', user_note:'Age
 async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[]}={}) {
   const dom=new JSDOM(read('test-features.html'),{url:'http://localhost/test-features#view-finance',runScripts:'outside-only'});
   t.after(()=>dom.window.close());const w=dom.window;
-  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
   w.confirm=()=>true;
   const requests=[];
   const fixtures={'/api/finance/applications':{items:mine},'/api/finance/announcements':{items:[{id:'notice',title:'公告<1>',body:'请补齐材料',pinned:true}]},'/api/finance/groups':{items:groups},'/api/admin/finance/applications':{items:all},'/api/admin/finance/history':{items:history}};
@@ -50,6 +50,40 @@ test('admin review defaults to all-time pending; own applications stay private a
   el('fin-breakdown').value='group';el('fin-breakdown').dispatchEvent(new w.Event('change'));
   assert.equal(el('fin-donut').querySelectorAll('circle').length,1);
   assert.ok(el('fin-donut').textContent.includes('32.50'));
+});
+test('review rows open details from text or the keyboard while action buttons and download links keep their behavior',async t=>{
+  const {w,el,requests}=await setup(t,{admin:true,all:[application()]});
+  const original=w.fetch;
+  w.fetch=async(url,options)=>url==='/api/finance/applications/app-1/history'
+    ?(requests.push([url,options]),{ok:true,json:async()=>({item:application(),items:[{id:'event-1',version:1,action:'submitted',created_at:new Date().toISOString(),actor_name:'alice',snapshot:application()}]})})
+    :original(url,options);
+  const row=el('admin-finance-rows').querySelector('tr');
+  row.querySelector('.fin-project').click();await tick();
+  assert.equal(el('fin-detail-dialog').open,true);
+  assert.match(el('fin-detail-content').textContent,/模型订阅/);
+  assert.match(el('fin-detail-content').querySelector('.fin-detail-summary a').href,/event_id=event-1/);
+  el('fin-detail-dialog').close();
+  const count=()=>requests.filter(([url])=>url.endsWith('/history')&&!url.includes('/admin/')).length;
+  const before=count();row.querySelector('[data-review]').click();await tick();
+  assert.equal(count(),before);assert.equal(el('fin-review-dialog').open,true);el('fin-review-dialog').close();
+  row.querySelector('a').addEventListener('click',event=>event.preventDefault());row.querySelector('a').click();await tick();
+  assert.equal(count(),before);
+  row.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));await tick();
+  assert.equal(count(),before+1);assert.equal(el('fin-detail-dialog').open,true);
+});
+test('late application details cannot replace a newer application or reopen a closed detail dialog',async t=>{
+  const {w,el}=await setup(t,{admin:true,all:[application(),application({id:'app-2',project:'新申请'})]});
+  const pending=new Map(),original=w.fetch;
+  w.fetch=(url,options)=>url.includes('/applications/')&&url.endsWith('/history')?new Promise(resolve=>pending.set(url,resolve)):original(url,options);
+  el('admin-finance-rows').querySelector('[data-open-finance="app-1"]').click();await tick();
+  el('admin-finance-rows').querySelector('[data-open-finance="app-2"]').click();await tick();
+  pending.get('/api/finance/applications/app-2/history')({ok:true,json:async()=>({item:application({id:'app-2',project:'新申请'}),items:[]})});await tick();
+  pending.get('/api/finance/applications/app-1/history')({ok:true,json:async()=>({item:application(),items:[]})});await tick();
+  assert.match(el('fin-detail-content').textContent,/新申请/);
+  assert.doesNotMatch(el('fin-detail-content').textContent,/模型订阅/);
+  el('admin-finance-rows').querySelector('[data-open-finance="app-1"]').click();await tick();el('fin-detail-dialog').close();
+  pending.get('/api/finance/applications/app-1/history')({ok:true,json:async()=>({item:application(),items:[]})});await tick();
+  assert.equal(el('fin-detail-dialog').open,false);assert.equal(el('fin-detail-content').textContent,'');
 });
 test('history selects only approved records and review requires a reason with the displayed version',async t=>{
   const item=application(), snapshot=application({status:'pending'});

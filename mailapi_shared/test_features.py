@@ -918,6 +918,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     client_holder: dict[str, Optional[httpx.AsyncClient]] = {"client": None}
     invoice_limiter = anyio.CapacityLimiter(1)
     invoice_recognitions = OrderedDict()
+    preview_limiter = anyio.CapacityLimiter(1)
 
     def current_user(request: Request):
         user = getattr(request.state, "site_user", None)
@@ -1645,8 +1646,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
 
     @router.get("/api/finance/applications/{app_id}/history")
     def application_history(app_id: str, request: Request):
-        get_allowed_application(request, app_id)
-        return {"items": [public_event(request, event) for event in store.finance_history(app_id)]}
+        item = get_allowed_application(request, app_id)
+        return {"item":public_application(request,item),"items": [public_event(request, event) for event in store.finance_history(app_id)]}
 
     @router.get('/api/finance/applications/{app_id}/invoice')
     def finance_invoice_detail(app_id: str, request: Request):
@@ -1786,6 +1787,38 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         if not path.is_file():
             raise HTTPException(410, "文件已丢失")
         return FileResponse(path, media_type=file_item["content_type"], filename=application_filename(item, file_item))
+
+    @router.get('/api/finance/applications/{app_id}/invoice-preview')
+    async def preview_finance_invoice(app_id: str, request: Request, event_id: Optional[str] = None,
+                                      page: Optional[int] = Query(None,ge=1,le=5), thumbnail: bool = False):
+        from .finance_previews import invoice_preview
+        import subprocess
+        item = get_allowed_application(request,app_id,event_id)
+        file = next((entry for entry in item['files'] if entry['kind']=='invoice'),None)
+        if not file:
+            raise HTTPException(404,'未找到发票附件')
+        source = store.files/file['stored_name']
+        if not source.is_file():
+            raise HTTPException(410,'文件已丢失')
+        key = hashlib.sha256((file['id']+':'+file['sha256']).encode()).hexdigest()
+        try:
+            async with preview_limiter:
+                directory,pages = await anyio.to_thread.run_sync(lambda: invoice_preview(source,store.root/'finance_previews',key))
+        except (subprocess.SubprocessError,OSError,ValueError):
+            raise HTTPException(422,'无法预览此发票，请下载原文件查看；PDF 预览最多支持 5 页') from None
+        headers = {'Cache-Control':'no-store, private','X-Content-Type-Options':'nosniff'}
+        if page is None:
+            reference = event_id or next((event['id'] for event in store.finance_history(app_id)
+                if event['version']==item['version']),None)
+            base = f'/api/finance/applications/{quote(app_id,safe="")}/invoice-preview?'
+            if reference:
+                base += 'event_id='+quote(reference,safe='')+'&'
+            return JSONResponse({'pages':[dict(size,src=base+f'page={index}',thumbnail=base+f'page={index}&thumbnail=true')
+                for index,size in enumerate(pages,1)]},headers=headers)
+        if page > len(pages):
+            raise HTTPException(404,'未找到发票页')
+        path = directory/f'{page}.{ "jpg" if thumbnail else "png" }'
+        return FileResponse(path,media_type='image/jpeg' if thumbnail else 'image/png',headers=headers)
 
     @router.get("/api/finance/applications/{app_id}/download.zip")
     def download_finance_zip(app_id: str, request: Request):

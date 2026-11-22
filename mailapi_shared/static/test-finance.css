@@ -179,6 +179,22 @@ body.test-ui-features #view-finance { padding-top:0; }
 #view-finance .fin-dialog textarea { min-height:90px; resize:vertical; }
 #view-finance .fin-dialog-actions { display:flex; gap:7px; margin-top:0; }
 #view-finance #fin-detail-content { display:grid; gap:12px; }
+#view-finance #admin-finance-rows [data-open-finance] { cursor:pointer; }
+#view-finance #admin-finance-rows [data-open-finance]:hover { background:var(--fin-soft); }
+#view-finance #admin-finance-rows [data-open-finance]:focus-visible { outline:2px solid var(--fin-accent); outline-offset:-2px; }
+#view-finance #fin-detail-dialog { width:min(760px,calc(100vw - 28px)); }
+#view-finance #fin-detail-content h4 { margin:0 0 10px; font-size:14px; }
+#view-finance .fin-detail-summary dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:12px 0; padding:14px; border-radius:10px; background:var(--fin-soft); }
+#view-finance .fin-detail-summary dt { font-size:12px; color:var(--fin-muted); }
+#view-finance .fin-detail-summary dd { margin:3px 0 0; overflow-wrap:anywhere; }
+#view-finance .fin-invoice-thumbnails { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,220px)); gap:10px; margin-bottom:8px; }
+#view-finance button.fin-invoice-thumbnail { display:grid; gap:8px; padding:10px; white-space:normal; color:var(--fin-accent); }
+#view-finance .fin-invoice-thumbnail img { display:block; width:100%; height:130px; object-fit:contain; background:white; border-radius:4px; }
+#view-finance .fin-invoice-thumbnail span { font-size:12px; }
+#view-finance .pswp button { display:block; min-height:0; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; color:var(--pswp-icon-color); }
+#view-finance .pswp button:hover { background:transparent; }
+#view-finance .pswp button:disabled, #view-finance .pswp--one-slide .pswp__button--arrow,
+#view-finance .pswp:not(.pswp--zoom-allowed) .pswp__button--zoom { display:none; }
 #view-finance .fin-event { padding:0 0 13px; border-bottom:1px solid var(--fin-line); }
 #view-finance .fin-event:last-child { padding-bottom:0; border-bottom:0; }
 #view-finance .fin-event strong { font-size:14px; font-weight:600; }

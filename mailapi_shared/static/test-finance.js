@@ -17,6 +17,7 @@ const financeController = (() => {
   let admin = false, tab = 'mine', mine = [], all = [], history = [], announcements = [], groups = [], review = null, page = 1;
   let selected = new Set(), loading = null;
   let reportAbort = null;
+  let detailAbort = null, detailSequence = 0;
   const request = async (url, options={}) => {
     const response = await fetch(url, {cache:'no-store', ...options});
     const data = await response.json().catch(() => ({}));
@@ -79,7 +80,7 @@ const financeController = (() => {
     return `<a class="fin-file" title="${html(file.original_name)}" href="${url}"><span data-ui-text>${t(label)}</span> ↓</a>`;
   }
   function tableRows(items, own) {
-    return items.map(item => `<tr>
+    return items.map(item => `<tr${!own?` data-open-finance="${html(item.id)}" tabindex="0" aria-label="${html(t('查看申请详情'))} · ${html(item.project)}"`:''}>
       <td><span class="fin-tag" data-i18n-skip title="${html(t('当前分组'))}: ${html((item.groups || []).join('、') || t('未分组'))}">${html(item.expense_group_name || t('未分组'))}</span></td>
       ${!own ? `<td data-i18n-skip>${html(identity(item))}</td>` : ''}
       <td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date" title="${html(item.id)}">${html(item.id.slice(0,8))} · ${localDay(item.created_at).slice(5)} · v${item.version || 1}</span></td><td class="fin-money">${html(currency(cents(item)))}</td>
@@ -226,10 +227,20 @@ const financeController = (() => {
     $('announcement-id').value=item?.id || '';$('announcement-title').value=item?.title || '';$('announcement-body').value=item?.body || '';$('announcement-pinned').checked=item?.pinned || false;
     $('announcement-form-title').textContent=t(item?'编辑公告':'新增公告');show('fin-announcement-dialog');
   }
+  function cancelDetail(){detailAbort?.abort();detailAbort=null;detailSequence++;window.FinancePreviews?.reset();}
+  $('fin-detail-dialog').addEventListener('close',()=>{cancelDetail();$('fin-detail-content').replaceChildren();});
   async function detail(appId) {
-    const data=await request(`/api/finance/applications/${encodeURIComponent(appId)}/history`);
-    $('fin-detail-title').textContent=t('申请详情与历史');
-    $('fin-detail-content').innerHTML=data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');show('fin-detail-dialog');
+    cancelDetail();const abort=new AbortController(),seq=detailSequence;detailAbort=abort;
+    $('fin-detail-title').textContent=t('申请详情与历史');$('fin-detail-content').innerHTML=`<p role="status">${t('加载中…')}</p>`;show('fin-detail-dialog');
+    try{
+      const data=await request(`/api/finance/applications/${encodeURIComponent(appId)}/history`,{signal:abort.signal});
+      if(abort.signal.aborted||seq!==detailSequence||!$('fin-detail-dialog').open)return;
+      const item=data.item||all.find(item=>item.id===appId)||mine.find(item=>item.id===appId)||data.items[0]?.snapshot;
+      const currentEvent=data.items.find(event=>event.version===item?.version);
+      const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${html(value)}</dd></div>`).join('')}</dl><div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section><section id="fin-detail-previews"></section>`:'';
+      $('fin-detail-content').innerHTML=summary+`<h4>${t('操作历史')}</h4>`+data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');
+      window.FinancePreviews?.render(item,currentEvent);
+    }catch(error){if(!abort.signal.aborted&&seq===detailSequence)$('fin-detail-content').textContent=t(error.message);}
   }
   function openReview(item,status,eventId=null) {
     review={item,status,eventId};
@@ -247,6 +258,7 @@ const financeController = (() => {
   }
   function noticeDetail(id) {
     const item=announcements.find(value=>value.id===id);if(!item)return;
+    cancelDetail();
     $('fin-detail-title').textContent=t('财务公告');$('fin-detail-content').innerHTML=`<h3 data-i18n-skip>${html(item.title)}</h3><small class="muted">${html(date(item.updated_at))}</small><p class="fin-prewrap" data-i18n-skip>${html(item.body)}</p>`;show('fin-detail-dialog');
   }
   $('finance-open-form').addEventListener('click',()=>openApplication());
@@ -265,7 +277,8 @@ const financeController = (() => {
   $('view-finance').addEventListener('click',async event=>{
     const chart=event.target.closest('[data-fin-chart]');
     if(chart){$('fin-'+chart.dataset.finChart+'-details').open=true;return;}
-    const button=event.target.closest('button');if(!button)return;
+    const button=event.target.closest('button');
+    if(!button){const row=event.target.closest('#admin-finance-rows [data-open-finance]');if(row&&!event.target.closest('a,input,select,textarea,label,summary,[role="button"],[contenteditable="true"]'))await detail(row.dataset.openFinance);return;}
     try {
       if(button.dataset.finExport){await exportReport(button.dataset.finExport);return;}
       if(button.dataset.finPeriod){$('fin-period').value=button.dataset.finPeriod;period();page=1;render();}
@@ -277,13 +290,14 @@ const financeController = (() => {
       if(button.dataset.review)openReview(all.find(item=>item.id===button.dataset.review),button.dataset.result);
       if(button.dataset.reReview){const event=history.find(item=>item.id===button.dataset.reReview);const item=all.find(item=>item.id===event?.application_id);if(!event?.is_current_review || !item || item.version!==event.version || item.status!==event.action)throw new Error(t('申请或审批记录已变化，请刷新后再审核'));openReview(item,'',event.id);}
       if(button.dataset.readNotice)noticeDetail(button.dataset.readNotice);
-      if(button.id==='fin-notice-history'){$('fin-detail-title').textContent=t('历史公告');$('fin-detail-content').innerHTML=announcements.map(item=>`<article class="fin-event"><button type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button><small class="muted"> ${html(date(item.updated_at))}</small></article>`).join('') || t('暂无公告。');show('fin-detail-dialog');}
+      if(button.id==='fin-notice-history'){cancelDetail();$('fin-detail-title').textContent=t('历史公告');$('fin-detail-content').innerHTML=announcements.map(item=>`<article class="fin-event"><button type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button><small class="muted"> ${html(date(item.updated_at))}</small></article>`).join('') || t('暂无公告。');show('fin-detail-dialog');}
       if(button.dataset.editNotice)openNoticeForm(announcements.find(item=>item.id===button.dataset.editNotice));
       if(button.dataset.pinNotice){const item=announcements.find(item=>item.id===button.dataset.pinNotice);await request(`/api/admin/finance/announcements/${item.id}`,json('PUT',{title:item.title,body:item.body,pinned:!item.pinned}));await load();}
       if(button.dataset.deleteNotice && confirm(t('删除这条公告？'))){await request(`/api/admin/finance/announcements/${button.dataset.deleteNotice}`,{method:'DELETE'});await load();}
     }catch(e){error('finance-status',e.message);}
   });
   $('view-finance').addEventListener('keydown',event=>{
+    if(event.target.matches('#admin-finance-rows [data-open-finance]')&&['Enter',' '].includes(event.key)){event.preventDefault();detail(event.target.dataset.openFinance);return;}
     const chart=event.target.closest('[data-fin-chart]');
     if(chart && ['Enter',' '].includes(event.key)){event.preventDefault();$('fin-'+chart.dataset.finChart+'-details').open=true;}
   });
@@ -310,7 +324,7 @@ const financeController = (() => {
     finally{if(reportAbort===abort){reportAbort=null;document.querySelectorAll('[data-fin-export]').forEach(button=>{button.disabled=false;});}}
   }
   function cancelReport(){reportAbort?.abort();reportAbort=null;document.querySelectorAll('[data-fin-export]').forEach(button=>{button.disabled=false;});$('fin-export-menu').open=false;}
-  window.addEventListener('pagehide',cancelReport);window.addEventListener('hashchange',()=>{if(location.hash!=='#view-finance')cancelReport();});
+  window.addEventListener('pagehide',cancelReport);window.addEventListener('hashchange',()=>{if(location.hash!=='#view-finance'){cancelReport();if($('fin-detail-dialog').open)hide('fin-detail-dialog');}});
   document.addEventListener('click',event=>{if(!$('fin-export-menu').contains(event.target))$('fin-export-menu').open=false;});
   $('finance-form').addEventListener('submit',event=>{event.preventDefault();submit('finance-submit','fin-form-status',async()=>{
     if([...$('finance-project').value.trim()].length>20)throw new Error(t('报销项目最多 20 个字符。'));
