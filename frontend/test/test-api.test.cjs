@@ -32,11 +32,11 @@ test('native key is shown once and cleared when its dialog closes; user never re
   const key = 'sk-fixture-only-never-persist';
   const {w,el,calls,submit} = setup(t,(url,options) => options.method==='POST' ? {item:{id:'new-key',api_key:key}} : null);
   await w.apiUnderTest.load();
-  el('api-open-key').click(); el('api-key-name').value='Development'; submit('api-key-form'); await tick();
+  el('api-open-key').click(); el('api-limits-name').value='Development'; submit('api-limits-form'); await tick();
   assert.equal(el('new-api-key').textContent,key);
   assert.equal(el('api-key-result').hidden,false);
   assert.equal(el('api-admin-tab').hidden,true);
-  el('api-key-dialog').close();
+  el('api-limits-dialog').close();
   assert.equal(el('new-api-key').textContent,'');
   assert.equal(el('api-key-result').hidden,true);
   assert.ok(calls.every(([url]) => !url.startsWith('/api/admin/')));
@@ -46,11 +46,61 @@ test('native key is shown once and cleared when its dialog closes; user never re
 test('closing during key creation never leaves a late key in the cached page and revokes the unclaimed key',async t => {
   let resolveCreation;
   const {el,calls,submit} = setup(t,(url,options) => options.method==='POST' ? new Promise(resolve => {resolveCreation=resolve;}) : {ok:true,items:[]});
-  el('api-open-key').click(); el('api-key-name').value='Closing'; submit('api-key-form');
-  el('api-key-dialog').close();
+  el('api-open-key').click(); el('api-limits-name').value='Closing'; submit('api-limits-form');
+  el('api-limits-dialog').close();
   resolveCreation({item:{id:'unclaimed',api_key:'sk-late-secret'}}); await tick();
   assert.equal(el('new-api-key').textContent,'');
   assert.ok(calls.some(([url,options]) => url==='/api/api2api/keys/unclaimed' && options.method==='DELETE'));
+});
+
+test('creation shares the editor fields and sends restrictions in the initial create request',async t=>{
+  let copied='';
+  const {w,el,calls,submit}=setup(t,(url,options)=>url==='/api/api2api/keys'&&options.method==='POST'?{item:{id:'new',api_key:'sk-configured-create-fixture'}}:url==='/api/api2api/engine'?{models:['gpt-4o-mini']} : null);
+  Object.defineProperty(w.navigator,'clipboard',{value:{writeText:async value=>{copied=value;}}});
+  await w.apiUnderTest.load();el('api-open-key').click();
+  assert.equal(el('api-limits-title').textContent,'创建 API 密钥');assert.equal(el('api-limits-save').textContent,'创建密钥');
+  assert.equal(el('api-limits-save').disabled,true);assert.equal(el('api-limits-never').checked,true);
+  assert.equal(el('api-limits-unlimited').checked,true);assert.equal(el('api-limits-query-quota').checked,true);
+  el('api-limits-name').value='Development';el('api-limits-name').dispatchEvent(new w.Event('input',{bubbles:true}));
+  assert.equal(el('api-limits-save').disabled,false);
+  el('api-limits-unlimited').click();el('api-limits-quota').value='120';el('api-limits-query-quota').click();
+  el('api-limits-ips').value='192.0.2.5';el('api-limits-form').querySelector('[data-key-expiry="hour"]').click();
+  el('api-limits-model-options').querySelector('input').click();submit('api-limits-form');await tick();
+  const sent=JSON.parse(calls.find(([url,options])=>url==='/api/api2api/keys'&&options.method==='POST')[1].body);
+  assert.equal(sent.name,'Development');assert.equal(sent.unlimited_quota,false);assert.equal(sent.remaining_quota,120);
+  assert.equal(sent.allow_user_quota_query,false);assert.equal(sent.allowed_ips,'192.0.2.5');assert.deepEqual(sent.models,['gpt-4o-mini']);
+  assert.ok(Math.abs(sent.expired_at-Date.now()/1000-3600)<3);assert.equal(sent.group,undefined);
+  assert.ok(calls.every(([url,options])=>!url.endsWith('/limits')||options.method!=='PUT'));
+  assert.equal(el('api-limits-dialog').open,true);assert.equal(el('api-limits-form').hidden,true);assert.equal(el('api-key-result').hidden,false);
+  assert.equal(w.document.activeElement,el('api-copy-key'));
+  el('api-copy-key').click();await tick();assert.equal(copied,'sk-configured-create-fixture');
+  el('api-limits-dialog').close();assert.equal(el('new-api-key').textContent,'');
+  el('api-open-key').click();assert.equal(el('api-limits-name').value,'');assert.equal(el('api-limits-ips').value,'');
+  assert.equal(el('api-limits-models').value,'');assert.equal(el('api-limits-never').checked,true);assert.equal(el('api-limits-unlimited').checked,true);
+  assert.equal(el('api-limits-query-quota').checked,true);assert.equal(el('api-limits-form').hidden,false);
+});
+
+test('creation errors keep the entered settings and enable a corrected retry',async t=>{
+  const {w,el,submit}=setup(t);
+  el('api-open-key').click();el('api-limits-name').value='Development';el('api-limits-ips').value='invalid-address';
+  w.fetch=async()=>({ok:false,status:400,json:async()=>({detail:'Invalid IP whitelist'})});
+  submit('api-limits-form');await tick();
+  assert.equal(el('api-limits-dialog').open,true);assert.equal(el('api-limits-name').value,'Development');
+  assert.equal(el('api-limits-ips').value,'invalid-address');assert.equal(el('api-limits-status').textContent,'Invalid IP whitelist');
+  assert.equal(el('api-limits-save').disabled,false);assert.equal(el('api-key-result').hidden,true);
+});
+
+test('duplicate creation is blocked and a closed request cannot replace a reopened creation result',async t=>{
+  const pending=[];
+  const {el,calls,submit}=setup(t,(url,options)=>url==='/api/api2api/keys'&&options.method==='POST'?new Promise(resolve=>pending.push(resolve)):null);
+  el('api-open-key').click();el('api-limits-name').value='First';submit('api-limits-form');submit('api-limits-form');
+  assert.equal(pending.length,1);el('api-limits-dialog').close();el('api-open-key').click();
+  el('api-limits-name').value='Second';submit('api-limits-form');
+  pending[0]({item:{id:'old',api_key:'sk-old-create-fixture'}});await tick();
+  assert.equal(el('api-limits-save').disabled,true);assert.equal(el('api-limits-name').value,'Second');
+  assert.equal(el('new-api-key').textContent,'');assert.ok(calls.some(([url,options])=>url==='/api/api2api/keys/old'&&options.method==='DELETE'));
+  pending[1]({item:{id:'new',api_key:'sk-new-create-fixture'}});await tick();
+  assert.equal(el('new-api-key').textContent,'sk-new-create-fixture');assert.equal(el('api-key-result').hidden,false);
 });
 
 test('admin uses native management fields and clears the submitted secret',async t => {
@@ -113,12 +163,21 @@ test('manual copy fallback clears its full key on close and late copy results ca
   });
   await w.apiUnderTest.load();
   el('api-key-list').querySelector('[data-more-key]').click();el('api-key-menu').querySelector('[data-copy-key]').click();await tick();
-  assert.equal(el('api-key-dialog').open,true);assert.equal(el('api-key-title').textContent,'复制 API 密钥');
+  assert.equal(el('api-limits-dialog').open,true);assert.equal(el('api-limits-title').textContent,'复制 API 密钥');
   assert.equal(el('new-api-key').textContent,'sk-manual-copy-fixture');
-  el('api-key-dialog').close();assert.equal(el('new-api-key').textContent,'');
+  el('api-limits-dialog').close();assert.equal(el('new-api-key').textContent,'');
   delay=true;el('api-key-list').querySelector('[data-more-key]').click();el('api-key-menu').querySelector('[data-copy-key]').click();await tick();
   w.location.hash='#view-finance';await tick();resolveCopy({api_key:'sk-late-copy-fixture'});await tick();
-  assert.equal(el('api-key-dialog').open,false);assert.equal(el('new-api-key').textContent,'');
+  assert.equal(el('api-limits-dialog').open,false);assert.equal(el('new-api-key').textContent,'');
+});
+
+test('a delayed clipboard failure after navigation cannot reopen a drawer containing a key',async t=>{
+  let rejectCopy;
+  const {w,el}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Development',can_copy:true}]}:url.endsWith('/reveal')?{api_key:'sk-delayed-copy-fixture'}:null);
+  Object.defineProperty(w.navigator,'clipboard',{value:{writeText:()=>new Promise((resolve,reject)=>{rejectCopy=reject;})}});
+  await w.apiUnderTest.load();el('api-key-list').querySelector('[data-copy-key]').click();await tick();
+  w.location.hash='#view-finance';await tick();rejectCopy(new Error('Clipboard denied'));await tick();
+  assert.equal(el('api-limits-dialog').open,false);assert.equal(el('new-api-key').textContent,'');
 });
 
 test('key search and state filters combine without changing total active keys',async t=>{
@@ -195,9 +254,9 @@ test('connection copy fallback names the copied content correctly and clears it 
   const {el}=setup(t,url=>url==='/api/api2api/keys'?{items:[{id:'one',name:'Laptop',can_copy:true}]}:url.endsWith('/reveal')?{api_key:'sk-connection-fallback-fixture'}:null);
   await tick();el('api-refresh').click();await tick();
   el('api-key-list').querySelector('[data-more-key]').click();el('api-menu-connection').click();await tick();
-  assert.equal(el('api-key-title').textContent,'复制连接信息');assert.equal(el('api-copy-key').textContent,'复制连接信息');
+  assert.equal(el('api-limits-title').textContent,'复制连接信息');assert.equal(el('api-copy-key').textContent,'复制连接信息');
   assert.equal(JSON.parse(el('new-api-key').textContent)._type,'newapi_channel_conn');
-  el('api-key-dialog').close();assert.equal(el('new-api-key').textContent,'');assert.equal(el('api-copy-key').textContent,'复制密钥');
+  el('api-limits-dialog').close();assert.equal(el('new-api-key').textContent,'');assert.equal(el('api-copy-key').textContent,'复制密钥');
 });
 
 test('more menu supports arrows, Escape and outside dismissal without blocking navigation',async t=>{

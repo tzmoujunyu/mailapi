@@ -131,16 +131,50 @@ class NewAPIGateway:
                 self.store.finish_gateway_user(origin,user_id,session['user_id'])
             return user
 
-    async def create_key(self, user_id, name):
+    async def key_settings(self, user, payload, current=None):
+        models = payload.get('models',[]) if current is None else payload.get('models')
+        expires = payload.get('expired_at',-1) if current is None else payload.get('expired_at')
+        if not isinstance(models,list) or len(models)>100 or any(not isinstance(name,str) or not name or len(name)>120 or ',' in name or '\n' in name for name in models):
+            raise NewAPIError('模型限制须为有效模型名称列表',400)
+        if type(expires) is not int or (expires!=-1 and (expires<0 or expires>253402300799 or (expires<=time.time() and (current is None or expires!=current.get('expired_time'))))):
+            raise NewAPIError('请选择有效的未来到期时间，或设为永不过期',400)
+        allowed = self.config()['model_allowlist']
+        if models:
+            available = await self.request(user,'GET','/api/user/models')
+            if any(name not in available or (allowed and name not in allowed) for name in models):
+                raise NewAPIError('模型不在当前可用范围内',400)
+        models = list(dict.fromkeys(models)) or allowed
+        settings = {'expired_time':expires,'model_limits_enabled':bool(models),'model_limits':','.join(models)}
+        if current is None:
+            settings.update(unlimited_quota=True,remain_quota=0,allow_user_quota_query=True)
+        for field in ('unlimited_quota','allow_user_quota_query'):
+            if field in payload:
+                if type(payload[field]) is not bool:
+                    raise NewAPIError('密钥开关须为布尔值',400)
+                settings[field] = payload[field]
+        if 'remaining_quota' in payload:
+            quota = payload['remaining_quota']
+            if type(quota) is not int or not 0<=quota<=9007199254740991:
+                raise NewAPIError('剩余额度须为有效的非负整数',400)
+            if current is not None:
+                expected = payload.get('expected_remaining_quota')
+                if type(expected) is not int:
+                    raise NewAPIError('剩余额度须为有效的非负整数',400)
+                if current.get('remain_quota',0)!=expected:
+                    raise NewAPIError('密钥余额已变化，请刷新后重新设置额度',409)
+            settings['remain_quota'] = quota
+        return settings
+
+    async def create_key(self, user_id, name, payload=None):
         name = self.store._text(name,'API Key 名称',80,required=True)
+        payload = payload or {}
+        caller_ips = self.store.normalize_api_key_ips(payload.get('allowed_ips',''))
         user = await self.identity(user_id)
-        config = self.config()
+        settings = await self.key_settings(user,payload)
         item_id = secrets.token_hex(12)
         remote_name = 'mw_'+item_id
         await self.request(user,'POST','/api/token/',json={
-            'name':remote_name,'expired_time':-1,'unlimited_quota':True,'remain_quota':0,
-            'model_limits_enabled':bool(config['model_allowlist']),
-            'model_limits':','.join(config['model_allowlist']),'group':'default'})
+            **settings,'name':remote_name,'group':'default'})
         found = await self.request(user,'GET','/api/token/search',params={'keyword':remote_name,'size':100})
         matches = [row for row in found['items'] if row['name']==remote_name]
         if len(matches) != 1:
@@ -153,7 +187,7 @@ class NewAPIGateway:
                 raw = 'sk-'+raw
             if not raw or len(raw)>260:
                 raise NewAPIError('网关返回了无效密钥')
-            return self.store.register_gateway_key(user_id,name,item_id,remote_id,user['origin'],raw)
+            return self.store.register_gateway_key(user_id,name,item_id,remote_id,user['origin'],raw,caller_ips)
         except Exception:
             try:
                 await self.request(user,'DELETE',f'/api/token/{remote_id}')
@@ -263,34 +297,11 @@ class NewAPIGateway:
             if payload.get('revision')!=self.limits_revision(current,row['caller_ip_allowlist'],row['name']):
                 raise NewAPIError('密钥设置已变化，请刷新后重试',409)
             name = self.store._text(payload.get('name',row['name']),'API Key 名称',80,required=True)
-            for field in ('unlimited_quota','allow_user_quota_query'):
-                if field in payload and type(payload[field]) is not bool:
-                    raise NewAPIError('密钥开关须为布尔值',400)
-            if 'remaining_quota' in payload:
-                quota, expected = payload['remaining_quota'], payload.get('expected_remaining_quota')
-                if type(quota) is not int or not 0<=quota<=9007199254740991 or type(expected) is not int:
-                    raise NewAPIError('剩余额度须为有效的非负整数',400)
-                if current.get('remain_quota',0)!=expected:
-                    raise NewAPIError('密钥余额已变化，请刷新后重新设置额度',409)
             caller_ips = self.store.normalize_api_key_ips(payload.get('allowed_ips',row['caller_ip_allowlist']))
-            models, expires = payload.get('models'), payload.get('expired_at')
-            if not isinstance(models,list) or len(models)>100 or any(not isinstance(name,str) or not name or len(name)>120 or ',' in name or '\n' in name for name in models):
-                raise NewAPIError('模型限制须为有效模型名称列表',400)
-            if type(expires) is not int or (expires!=-1 and (expires<0 or expires>253402300799 or (expires<=time.time() and expires!=current.get('expired_time')))):
-                raise NewAPIError('请选择有效的未来到期时间，或设为永不过期',400)
-            available = await self.request(user,'GET','/api/user/models')
-            allowed = self.config()['model_allowlist']
-            if any(name not in available or (allowed and name not in allowed) for name in models):
-                raise NewAPIError('模型不在当前可用范围内',400)
-            models = list(dict.fromkeys(models)) or allowed
+            settings = await self.key_settings(user,payload,current)
             update = {name:current[name] for name in ('id','name','remain_quota','unlimited_quota','allow_ips','group',
                                                       'cross_group_retry','auto_groups','allow_user_quota_query') if name in current}
-            update.update(expired_time=expires,model_limits_enabled=bool(models),model_limits=','.join(models))
-            for field in ('unlimited_quota','allow_user_quota_query'):
-                if field in payload:
-                    update[field] = payload[field]
-            if 'remaining_quota' in payload:
-                update['remain_quota'] = payload['remaining_quota']
+            update.update(settings)
             await self.request(user,'PUT','/api/token/',json=update)
             if not self.store.update_api_key_settings(key_id,user_id,name,caller_ips,expected=row):
                 raise NewAPIError('密钥设置已变化，请刷新后重试',409)

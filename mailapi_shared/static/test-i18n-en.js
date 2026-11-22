@@ -1,4 +1,9 @@
 window.MILVLG_EN = {
+  "密钥创建成功": "API key created",
+  "创建中…": "Creating…",
+  "保存中…": "Saving…",
+  "请手动复制": "Copy manually",
+  "明文会在关闭抽屉后清除，也可在密钥列表中按需复制。": "The full key is cleared when you close this drawer. You can copy it again from the key list.",
   "更新 API 密钥": "Update API key",
   "设置密钥的基本信息、额度与访问限制。": "Set the key's basic information, quota and access limits.",
   "基本信息": "Basic information",

@@ -160,7 +160,21 @@ with tempfile.TemporaryDirectory(prefix='mailapi-engine-probe-') as directory:
                 assert server.started, 'Website readiness timeout'
                 with httpx.Client(base_url=f'http://127.0.0.1:{web_port}',timeout=20,trust_env=False) as web:
                     alice = web.post('/api/api2api/keys',json={'name':'Alice development'}).json()['item']
-                    bob = web.post('/api/api2api/keys',json={'name':'Bob development'},headers={'x-test-user':'bob-test'}).json()['item']
+                    bob_expiry=int(time.time())+86400
+                    bob_created=web.post('/api/api2api/keys',json={'name':'Bob development','models':['gpt-4o-mini'],
+                        'expired_at':bob_expiry,'unlimited_quota':False,'remaining_quota':40000,
+                        'allowed_ips':'192.0.2.42','allow_user_quota_query':False},headers={'x-test-user':'bob-test'})
+                    assert bob_created.status_code==201, ('Configured native creation',bob_created.status_code,bob_created.json().get('detail'))
+                    assert 'no-store' in bob_created.headers['cache-control']
+                    bob=bob_created.json()['item']
+                    bob_settings=web.get('/api/api2api/keys',headers={'x-test-user':'bob-test'}).json()['items'][0]
+                    assert bob_settings['remaining_quota']==40000 and not bob_settings['unlimited']
+                    assert bob_settings['expired_at']==bob_expiry and bob_settings['model_limits']=='gpt-4o-mini'
+                    assert not bob_settings['allow_user_quota_query'] and bob_settings['allowed_ips']=='192.0.2.42'
+                    assert web.get('/api2api/v1/usage/token',headers={'Authorization':'Bearer '+bob['api_key']}).status_code==403
+                    bob_edit=web.put('/api/api2api/keys/'+bob['id']+'/limits',headers={'x-test-user':'bob-test'},json={
+                        'models':['gpt-4o-mini'],'expired_at':bob_expiry,'allowed_ips':'','revision':bob_settings['limits_revision']})
+                    assert bob_edit.status_code==200, ('Release fixture IP restriction',bob_edit.status_code)
                     assert [row['id'] for row in web.get('/api/api2api/keys').json()['items']]==[alice['id']]
                     assert web.delete('/api/api2api/keys/'+bob['id']).status_code==404
                     bearer = {'Authorization':'Bearer '+alice['api_key']}
@@ -302,7 +316,7 @@ result:b.evaluate(input.expression,input.context)}));'''
                 assert metadata.get('matched_tier')==expected_tier, ('Native tier trace',metadata)
             probe_usage=None
             print(json.dumps({'engine':'v1.0.0-rc.51','real_engine_relay':True,'request_parameters_preserved':True,'tiered_pricing_native_parity':True,
-                              'streaming_before_completion':True,'website_http_native_keys':True,
+                              'streaming_before_completion':True,'website_http_native_keys':True,'configured_key_creation':True,
                               'pause_resume_and_copy':True,'retained_logs_145_rows':True,'full_export_cleanup':True,'model_catalog':True,'key_limit_edit':True,'key_name_quota_and_query_permission':True,'caller_ip_enforced':True,'spoofed_ip_headers_rejected':True,'admin_only_audit':True,'separate_engine_identities':True,'revocation_enforced':True,
                               'upstream':'local deterministic fixture','requests':len(seen)}),flush=True)
     finally:

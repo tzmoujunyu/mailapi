@@ -12,7 +12,7 @@ const apiController = (() => {
   const num = value => Number(value || 0).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN');
   const date = value => value ? new Date(value).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
   const baseUrl = `${location.origin}/api2api/v1`;
-  let isAdmin = false, activeTab = 'overview', keys = [], usage = {items:[]}, engine = {}, quotaUser = null, revokeKey = null, keyDialogVersion = 0, adminUsage = [], adminGatewayReady = false, limitsKey = null, limitsVersion = 0, limitsSnapshot = '', menuTrigger = null, calendarMonth = new Date();
+  let isAdmin = false, activeTab = 'overview', keys = [], usage = {items:[]}, engine = {}, quotaUser = null, revokeKey = null, keyDialogVersion = 0, adminUsage = [], adminGatewayReady = false, limitsKey = null, limitsVersion = 0, limitsSnapshot = '', editorMode = null, menuTrigger = null, calendarMonth = new Date();
   function message(id, value, success = false) { $(id).textContent = t(value); $(id).classList.toggle('success',success); }
   function tab(name) {
     if ((name === 'settings' || name === 'audit') && !isAdmin) return;
@@ -154,7 +154,7 @@ const apiController = (() => {
     const unlimited=$('api-limits-unlimited').checked;
     $('api-limits-quota-field').hidden=unlimited;
     $('api-limits-quota').required=!unlimited;
-    $('api-limits-save').disabled=$('api-limits-save').dataset.busy==='true' || JSON.stringify(editValues())===limitsSnapshot;
+    $('api-limits-save').disabled=$('api-limits-save').dataset.busy==='true' || (editorMode==='create'?!$('api-limits-name').value.trim():JSON.stringify(editValues())===limitsSnapshot);
   }
   function renderEditModels() {
     const selected=editModels(), query=$('api-limits-model-search').value.trim().toLowerCase();
@@ -164,7 +164,12 @@ const apiController = (() => {
     $('api-limits-model-chips').innerHTML=selected.map(name=>`<button type="button" data-remove-model="${esc(name)}" aria-label="${esc(t('移除模型')+' '+name)}"><span data-i18n-skip>${esc(name)}</span><svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-api-icons.svg#close"></use></svg></button>`).join('');
   }
   function openEditor(row) {
+    clearSecrets();
+    editorMode=row?'edit':'create';
     limitsKey=row; limitsVersion++;
+    row=row || {name:'',expired_at:-1};
+    $('api-limits-title').textContent=t(editorMode==='create'?'创建 API 密钥':'更新 API 密钥');
+    $('api-limits-save').textContent=t(editorMode==='create'?'创建密钥':'保存更改');
     $('api-limits-name').value=row.name;
     $('api-limits-models').value=row.model_limits || '';
     $('api-limits-model-search').value='';
@@ -179,6 +184,7 @@ const apiController = (() => {
     $('api-limits-query-quota').checked=row.allow_user_quota_query!==false;
     for(const id of ['api-limits-advanced','api-limits-calendar','api-limits-model-picker'])$(id).open=false;
     $('api-limits-save').dataset.busy='false';
+    $('api-limits-save').setAttribute('aria-busy','false');
     limitsSnapshot=JSON.stringify(editValues());
     calendarMonth=row.expired_at>0?new Date(row.expired_at*1000):new Date();calendarMonth.setDate(1);
     syncEditor();renderEditModels();renderKeyCalendar();message('api-limits-status','');$('api-limits-dialog').showModal();
@@ -188,11 +194,21 @@ const apiController = (() => {
     $('new-api-key').textContent = '';
     $('api-key-copy-status').textContent = '';
     $('api-key-result').hidden = true;
-    $('api-key-form').hidden = false;
-    $('api-key-form').reset();
+    $('api-limits-form').hidden = false;
     $('api-copy-key').textContent = t('复制密钥');
     $('api-config-password').value = '';
     $('api-channel-key').value = '';
+  }
+  function showKeyResult(value, title, created=false) {
+    clearSecrets();editorMode='result';limitsVersion++;limitsKey=null;
+    $('api-limits-title').textContent=t(title);
+    $('api-key-result-heading').textContent=t(created?'密钥创建成功':'请手动复制');
+    $('api-key-success-icon').hidden=!created;
+    $('new-api-key').textContent=value;
+    $('api-copy-key').textContent=t(title==='复制连接信息'?'复制连接信息':'复制密钥');
+    $('api-limits-form').hidden=true;$('api-key-result').hidden=false;
+    if(!$('api-limits-dialog').open)$('api-limits-dialog').showModal();
+    $('api-copy-key').focus({preventScroll:true});
   }
   $('api2api-base-url').textContent = baseUrl;
   $('copy-base-url').addEventListener('click',() => copy(baseUrl,'copy-url-status'));
@@ -201,11 +217,10 @@ const apiController = (() => {
   document.querySelectorAll('[data-api-tab]').forEach(node => node.addEventListener('click',() => tab(node.dataset.apiTab)));
   document.querySelectorAll('[data-api-go]').forEach(node => node.addEventListener('click',() => tab(node.dataset.apiGo)));
   document.querySelectorAll('[data-api-close]').forEach(node => node.addEventListener('click',() => $(node.dataset.apiClose).close()));
-  $('api-key-dialog').addEventListener('close',clearSecrets);
   $('api-channel-dialog').addEventListener('close',() => $('api-channel-form').reset());
   $('api-config-dialog').addEventListener('close',() => { $('api-config-password').value = ''; });
   $('api-open-config').addEventListener('click',() => { message('api-config-status',''); $('api-config-dialog').showModal(); });
-  $('api-open-key').addEventListener('click',() => { clearSecrets(); $('api-key-title').textContent=t('创建 API 密钥'); message('api-key-form-status',''); $('api-key-dialog').showModal(); });
+  $('api-open-key').addEventListener('click',() => openEditor());
   $('api-open-channel').addEventListener('click',() => { message('api-channel-status',''); $('api-channel-dialog').showModal(); });
   $('api-show-example').addEventListener('click',() => {
     $('api-example').textContent = `curl '${baseUrl}/chat/completions' \\\n  -H 'Authorization: Bearer YOUR_API_KEY' \\\n  -H 'Content-Type: application/json' \\\n  -d '${JSON.stringify({model:engine.models?.[0] || 'YOUR_MODEL',messages:[{role:'user',content:'Hello'}],stream:true})}'`;
@@ -215,28 +230,6 @@ const apiController = (() => {
   $('api-key-filter').addEventListener('change',renderKeys);
   $('api-user-search').addEventListener('input',renderAdminUsage);
   $('api-refresh').addEventListener('click',async () => { const button = $('api-refresh'); button.disabled = true; message('api-key-status',''); try { await Promise.all([load(),isAdmin ? loadAdmin() : null]); } catch(error) { message('api-key-status',error.message); } finally { button.disabled = false; } });
-  $('api-key-form').addEventListener('submit',async event => {
-    event.preventDefault();
-    const version = keyDialogVersion;
-    const button = event.submitter || $('api-key-form').querySelector('[type="submit"]'); button.disabled = true;
-    message('api-key-form-status','');
-    try {
-      const data = await send('/api/api2api/keys','POST',{name:$('api-key-name').value});
-      if (version !== keyDialogVersion || !$('api-key-dialog').open) {
-        try { await api(`/api/api2api/keys/${encodeURIComponent(data.item.id)}`,{method:'DELETE'}); }
-        catch { message('api-key-status','密钥创建期间窗口已关闭，请在密钥列表撤销该密钥。'); }
-        await load();
-        return;
-      }
-      $('new-api-key').textContent = data.item.api_key;
-      $('api-key-form').hidden = true;
-      $('api-key-result').hidden = false;
-      tab('keys');
-      await load();
-      if (isAdmin) await loadAdmin();
-    } catch(error) { message('api-key-form-status',error.message); }
-    finally { button.disabled = false; }
-  });
   async function keyAction(event) {
     const button=event.target.closest('button');
     if(!button || button.disabled)return;
@@ -275,7 +268,7 @@ const apiController = (() => {
         try{await navigator.clipboard.writeText(value);message('api-key-status',connection?'连接信息已复制':'密钥已复制',true);
           if(button.classList.contains('api-key-inline-copy')){const use=button.querySelector('use');use.setAttribute('href','/static/test-api-icons.svg#check');button.classList.add('is-copied');setTimeout(()=>{if(button.isConnected){use.setAttribute('href','/static/test-api-icons.svg#copy');button.classList.remove('is-copied');}},1600);}
         }
-        catch{clearSecrets();$('api-key-title').textContent=t(connection?'复制连接信息':'复制 API 密钥');$('api-copy-key').textContent=t(connection?'复制连接信息':'复制密钥');$('new-api-key').textContent=value;$('api-key-form').hidden=true;$('api-key-result').hidden=false;$('api-key-dialog').showModal();}
+        catch{if(version===keyDialogVersion && $('view-api2api').isConnected && location.hash==='#view-api2api')showKeyResult(value,connection?'复制连接信息':'复制 API 密钥');}
       }
       if(button.dataset.toggleKey){
         const enabled=button.dataset.keyEnabled==='true';
@@ -335,20 +328,33 @@ const apiController = (() => {
   $('api-limits-dialog').addEventListener('click',event=>{for(const id of ['api-limits-calendar','api-limits-model-picker']){const picker=$(id);if(picker.open && !picker.contains(event.target))picker.open=false;}});
   $('api-limits-dialog').addEventListener('keydown',event=>{if(event.key!=='Escape')return;const picker=['api-limits-calendar','api-limits-model-picker'].map($).find(node=>node.open);if(picker){event.preventDefault();picker.open=false;picker.querySelector('summary').focus();}});
   for(const event of ['resize','scroll'])window.addEventListener(event,()=>{if($('api-key-menu').open)$('api-key-menu').close();},true);
-  $('api-limits-dialog').addEventListener('close',()=>{limitsVersion++;limitsKey=null;$('api-limits-form').reset();});
+  $('api-limits-dialog').addEventListener('close',()=>{limitsVersion++;limitsKey=null;editorMode=null;$('api-limits-form').reset();clearSecrets();});
   $('api-limits-form').addEventListener('submit',async event=>{
-    event.preventDefault();if(!limitsKey)return;
-    const key=limitsKey,version=limitsVersion,button=event.submitter || $('api-limits-save');button.dataset.busy='true';button.disabled=true;
+    event.preventDefault();if(editorMode!=='create' && !limitsKey)return;
+    const key=limitsKey,creating=editorMode==='create',version=limitsVersion,secretVersion=keyDialogVersion,button=event.submitter || $('api-limits-save');
+    if(button.dataset.busy==='true')return;
+    button.dataset.busy='true';button.disabled=true;button.setAttribute('aria-busy','true');button.textContent=t(creating?'创建中…':'保存中…');message('api-limits-status','');
     const payload=editValues();
-    if(payload.remaining_quota===(key.remaining_quota || 0))delete payload.remaining_quota;
-    else payload.expected_remaining_quota=key.remaining_quota || 0;
+    if(!creating){if(payload.remaining_quota===(key.remaining_quota || 0))delete payload.remaining_quota;
+      else payload.expected_remaining_quota=key.remaining_quota || 0;}
     try{
       if(!Number.isFinite(payload.expired_at))throw new Error(t('请选择有效的未来到期时间，或设为永不过期'));
-      await send(`/api/api2api/keys/${encodeURIComponent(key.id)}/limits`,'PUT',{...payload,revision:key.limits_revision});
-      if(version===limitsVersion){$('api-limits-dialog').close();message('api-key-status','密钥已更新',true);}
+      if(creating){
+        const data=await send('/api/api2api/keys','POST',payload);
+        if(version!==limitsVersion || secretVersion!==keyDialogVersion || !$('api-limits-dialog').open){
+          try{await api(`/api/api2api/keys/${encodeURIComponent(data.item.id)}`,{method:'DELETE'});}
+          catch{message('api-key-status','密钥创建期间窗口已关闭，请在密钥列表撤销该密钥。');}
+          await load();return;
+        }
+        showKeyResult(data.item.api_key,'创建 API 密钥',true);tab('keys');
+      }else{
+        await send(`/api/api2api/keys/${encodeURIComponent(key.id)}/limits`,'PUT',{...payload,revision:key.limits_revision});
+        if(version===limitsVersion){$('api-limits-dialog').close();message('api-key-status','密钥已更新',true);}
+      }
       await load();
+      if(creating && isAdmin)await loadAdmin();
     }catch(error){if(version===limitsVersion)message('api-limits-status',error.message);}
-    finally{if(version===limitsVersion){button.dataset.busy='false';syncEditor();}}
+    finally{if(version===limitsVersion){button.dataset.busy='false';button.setAttribute('aria-busy','false');button.textContent=t(creating?'创建密钥':'保存更改');syncEditor();}}
   });
   $('api-revoke-form').addEventListener('submit',async event => {
     event.preventDefault(); const button = event.submitter || $('api-revoke-form').querySelector('[type="submit"]'); button.disabled = true;
@@ -381,7 +387,7 @@ const apiController = (() => {
     finally { button.disabled = false; }
   });
   window.addEventListener('hashchange',() => { if (location.hash !== '#view-api2api') { document.querySelectorAll('#view-api2api dialog[open]').forEach(node => node.close()); clearSecrets(); } });
-  window.addEventListener('pagehide',clearSecrets);
+  window.addEventListener('pagehide',()=>{if($('api-limits-dialog').open)$('api-limits-dialog').close();clearSecrets();});
   document.addEventListener('site:language',() => { renderKeys(); renderUsage(); renderEngine(); if($('api-limits-dialog').open)renderKeyCalendar();if(isAdmin)renderAdminUsage(); });
   return {start(admin) { isAdmin = admin; apiRecordsController.start(admin); $('api-admin-tab').hidden = !admin; tab(activeTab); },load,loadAdmin};
 })();

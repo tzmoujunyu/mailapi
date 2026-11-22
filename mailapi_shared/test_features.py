@@ -381,11 +381,11 @@ class TestFeatureStore:
         with self._lock, closing(self._connect()) as db, db:
             db.execute('UPDATE newapi_users SET remote_id=?, initialized=1 WHERE origin=? AND user_id=?', (remote_id,origin,user_id))
 
-    def register_gateway_key(self, user_id, name, item_id, remote_id, origin, raw):
+    def register_gateway_key(self, user_id, name, item_id, remote_id, origin, raw, caller_ips=''):
         now = _now()
         with self._lock, closing(self._connect()) as db, db:
-            db.execute('INSERT INTO api2api_keys(id,user_id,name,key_hash,key_prefix,created_at,provider,remote_id,engine_origin) VALUES(?,?,?,?,?,?,\'newapi\',?,?)',
-                       (item_id,user_id,name,hashlib.sha256(raw.encode()).hexdigest(),raw[:12],now,remote_id,origin))
+            db.execute('INSERT INTO api2api_keys(id,user_id,name,key_hash,key_prefix,created_at,provider,remote_id,engine_origin,caller_ip_allowlist) VALUES(?,?,?,?,?,?,\'newapi\',?,?,?)',
+                       (item_id,user_id,name,hashlib.sha256(raw.encode()).hexdigest(),raw[:12],now,remote_id,origin,caller_ips))
         return {'id':item_id,'name':name,'api_key':raw,'key_prefix':raw[:12],'provider':'newapi','created_at':now}
 
     def gateway_key(self, key_id, user_id=None):
@@ -978,9 +978,11 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     async def create_user_key(request: Request):
         user = current_user(request)
         payload = await gateway_payload(request)
+        if set(payload)-{'name','models','expired_at','allowed_ips','unlimited_quota','remaining_quota','allow_user_quota_query'}:
+            raise HTTPException(400,'密钥限制字段无效')
         name = store._text(payload.get('name'),'API Key 名称',80,required=True)
-        item = await audited_key_change(user,'created',{'name':name},lambda:gateway.create_key(user['id'],name))
-        return {'item':item}
+        item = await audited_key_change(user,'created',{'name':name},lambda:gateway.create_key(user['id'],name,payload))
+        return JSONResponse({'item':item},status_code=201,headers={'Cache-Control':'no-store, private','Pragma':'no-cache'})
 
     @router.post('/api/api2api/keys/{key_id}/reveal')
     async def reveal_user_key(key_id: str, request: Request):

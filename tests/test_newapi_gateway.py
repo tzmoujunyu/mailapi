@@ -63,7 +63,8 @@ class EngineFixture:
         if path == '/api/token/' and request.method == 'POST':
             token_id = len(self.tokens)+1
             self.tokens[token_id] = {**body,'id': token_id, 'user_id': owner, 'name': body['name'], 'status': 1,
-                                     'key': f'sk-engine-issued-{token_id:032d}', 'used_quota': 7, 'remain_quota': 93}
+                                     'key': f'sk-engine-issued-{token_id:032d}', 'used_quota': 7,
+                                     'remain_quota':body['remain_quota'] if not body['unlimited_quota'] else 93}
             return self.response()
         if path == '/api/token/search':
             return self.response({'items': [x for x in self.tokens.values() if x['user_id'] == owner and x['name'] == request.url.params['keyword']]})
@@ -306,6 +307,38 @@ class GatewayHttpTests(unittest.TestCase):
         self.assertNotIn('management-secret',response.text)
         self.assertNotIn('key_hash',response.text)
         self.assertEqual(rows[-1]['key_id'],item['id'])
+
+    def test_creation_applies_all_settings_before_the_key_is_returned(self):
+        payload={'name':'Configured creation','models':['gpt-4o-mini'],'expired_at':4102444800,
+                 'unlimited_quota':False,'remaining_quota':120,'allow_user_quota_query':False,
+                 'allowed_ips':'192.0.2.5\n198.51.100.5/24'}
+        response=self.client.post('/api/api2api/keys',json=payload)
+        self.assertEqual(response.status_code,201,response.text)
+        self.assertIn('no-store',response.headers['cache-control'])
+        item=response.json()['item'];token=self.engine.tokens[1]
+        self.assertEqual(token['expired_time'],4102444800)
+        self.assertEqual(token['remain_quota'],120)
+        self.assertFalse(token['unlimited_quota']);self.assertFalse(token['allow_user_quota_query'])
+        self.assertTrue(token['model_limits_enabled']);self.assertEqual(token['model_limits'],'gpt-4o-mini')
+        self.assertEqual(token['group'],'default');self.assertEqual(token.get('allow_ips',''),'')
+        self.assertEqual(self.store.gateway_key(item['id'],'alice')['caller_ip_allowlist'],'192.0.2.5\n198.51.100.0/24')
+        calls=[(method,body) for method,path,body in self.engine.calls if path=='/api/token/']
+        self.assertEqual([method for method,body in calls if method in {'POST','PUT'}],['POST'])
+        self.assertEqual(self.client.post('/api/api2api/keys/'+item['id']+'/reveal',headers={'x-test-user':'bob'}).status_code,404)
+        listed=self.client.get('/api/api2api/keys').json()['items'][0]
+        self.assertNotIn(item['api_key'],json.dumps(listed));self.assertEqual(listed['remaining_quota'],120)
+
+    def test_invalid_creation_settings_cannot_issue_or_register_a_token(self):
+        invalid=[{'models':['unavailable-model']},{'models':'gpt-4o-mini'},{'expired_at':0},{'expired_at':True},
+                 {'unlimited_quota':'false'},{'remaining_quota':-1},{'remaining_quota':True},
+                 {'allow_user_quota_query':1},{'allowed_ips':'example.com'},{'group':'other'},
+                 {'name':' '},{'name':'x'*81},{'expected_remaining_quota':0}]
+        for settings in invalid:
+            response=self.client.post('/api/api2api/keys',json={'name':'Invalid creation',**settings})
+            self.assertEqual(response.status_code,400,(settings,response.text))
+        self.assertEqual(self.engine.tokens,{})
+        self.assertEqual(self.store.list_api_keys('alice'),[])
+        self.assertFalse(any(method=='POST' and path=='/api/token/' for method,path,body in self.engine.calls))
 
     def test_usage_log_pagination_reads_all_retained_rows_and_enforces_exact_owner(self):
         item=self.create()
