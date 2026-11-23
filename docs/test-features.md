@@ -20,6 +20,8 @@ Authorization: Bearer <网站生成的 API Key>
 
 请求会异步转发到 NewAPI，使用共享连接池，最多保留 200 个并发连接。非流式响应从 `usage` 读取输入、输出和总 Token，流式响应会解析 SSE 中的 usage 片段。每个网站 API Key 关联网站账户，SQLite WAL 表记录用户、模型、状态码、耗时和 Token 汇总。早期 legacy 原型仅统计 Token；现已停止通过网站签发旧模式密钥或使用共享上游转发，原有数据保留供历史查询。当前由原生网关管理额度。
 
+转发中的密钥查询、配置查询及用量写入在线程池执行，避免同步 SQLite 操作阻塞网页事件循环。测试应用运行期间保留一个空闲数据库连接，维持 WAL 生命周期，退出时关闭；不会缓存密钥鉴权结果，每次调用仍等待用量写入完成。网站 HTTP 入口目前仍为每进程 128 个连接/任务，并与网页共用，所以连接池的 200 不是实际容量承诺。213 服务器的 30/50/100 并发模拟压测、资源采样及优化前后结果见 [压测报告](benchmarks/api-relay-2026-11-22.md)。压测只使用全新临时数据库、回环 NewAPI 和模拟上游，未部署到正式实例。
+
 NewAPI 本身提供 OpenAI 兼容接口、API Key、模型组和用量日志，适合作为上游网关。[NewAPI README](https://github.com/unorouter/new-api/blob/main/README.en.md)、[API Key 文档](https://github.com/QuantumNous/new-api-docs-v1/blob/main/content/docs/en/guide/feature-guide/user/token.mdx)、[Token 用量接口](https://github.com/QuantumNous/new-api-docs/blob/main/docs/api/token-usage.md)
 
 ### NewAPI 引擎接入验证

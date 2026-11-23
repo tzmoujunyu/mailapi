@@ -1,0 +1,168 @@
+{
+  "label": "optimized-pool-8",
+  "timestamp_utc": "2026-11-23T07:00:52Z",
+  "environment": {
+    "host": "mil-id1",
+    "system": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+    "python": "3.14.5",
+    "logical_cpus": 32,
+    "engine": "v1.0.0-rc.51",
+    "database": "Website SQLite WAL; NewAPI SQLite release defaults; fresh disposable databases",
+    "engine_sql_connections": 8,
+    "upstream": "loopback synthetic SSE; first content 200ms; no external model calls",
+    "request_prompt_bytes": 8192,
+    "website": "full code-receive-test application, default concurrency 128"
+  },
+  "stages": [
+    {
+      "profile": "short",
+      "concurrency": 100,
+      "requests": 853,
+      "success": 853,
+      "errors": 0,
+      "status_counts": {
+        "200": 853
+      },
+      "elapsed_s": 22.39,
+      "requests_per_second": 38.1,
+      "ttft_ms": {
+        "median": 719.41,
+        "p95": 1249.75,
+        "max": 1805.07
+      },
+      "total_ms": {
+        "median": 2470.0,
+        "p95": 3434.2,
+        "max": 4335.41
+      },
+      "gap_p95_ms": {
+        "median": 103.35,
+        "p95": 107.97,
+        "max": 162.87
+      },
+      "web_probe_ms": {
+        "median": 10.03,
+        "p95": 36.95,
+        "max": 267.38
+      },
+      "web_probe_errors": 0,
+      "resources": {
+        "website": {
+          "cpu_avg_percent_one_core": 103.85,
+          "cpu_peak_percent_one_core": 2288.15,
+          "rss_peak_mib": 149.73,
+          "rss_end_mib": 149.73,
+          "fd_peak": 252,
+          "disk_write_mib": 11.36
+        },
+        "engine": {
+          "cpu_avg_percent_one_core": 132.92,
+          "cpu_peak_percent_one_core": 2071.34,
+          "rss_peak_mib": 143.59,
+          "rss_end_mib": 129.05,
+          "fd_peak": 226,
+          "disk_write_mib": 103.56
+        },
+        "upstream": {
+          "cpu_avg_percent_one_core": 16.48,
+          "cpu_peak_percent_one_core": 77.02,
+          "rss_peak_mib": 61.18,
+          "rss_end_mib": 61.18,
+          "fd_peak": 107,
+          "disk_write_mib": 0.0
+        },
+        "generator": {
+          "cpu_avg_percent_one_core": 38.1,
+          "cpu_peak_percent_one_core": 99.78,
+          "rss_peak_mib": 91.3,
+          "rss_end_mib": 91.3,
+          "fd_peak": 108,
+          "disk_write_mib": 0.0
+        }
+      },
+      "target": "website",
+      "website_usage_rows": 853,
+      "upstream": {
+        "active": 0,
+        "peak": 100,
+        "rejected": 0,
+        "accepted": 853
+      }
+    },
+    {
+      "profile": "long",
+      "concurrency": 100,
+      "requests": 100,
+      "success": 100,
+      "errors": 0,
+      "status_counts": {
+        "200": 100
+      },
+      "elapsed_s": 33.22,
+      "requests_per_second": 3.01,
+      "ttft_ms": {
+        "median": 2001.61,
+        "p95": 2170.2,
+        "max": 2199.35
+      },
+      "total_ms": {
+        "median": 32720.06,
+        "p95": 32986.39,
+        "max": 33166.51
+      },
+      "gap_p95_ms": {
+        "median": 502.23,
+        "p95": 504.82,
+        "max": 507.89
+      },
+      "web_probe_ms": {
+        "median": 6.91,
+        "p95": 14.44,
+        "max": 288.83
+      },
+      "web_probe_errors": 0,
+      "resources": {
+        "website": {
+          "cpu_avg_percent_one_core": 32.3,
+          "cpu_peak_percent_one_core": 1771.07,
+          "rss_peak_mib": 150.98,
+          "rss_end_mib": 150.98,
+          "fd_peak": 252,
+          "disk_write_mib": 1.46
+        },
+        "engine": {
+          "cpu_avg_percent_one_core": 15.75,
+          "cpu_peak_percent_one_core": 1522.56,
+          "rss_peak_mib": 133.83,
+          "rss_end_mib": 134.33,
+          "fd_peak": 226,
+          "disk_write_mib": 14.12
+        },
+        "upstream": {
+          "cpu_avg_percent_one_core": 4.88,
+          "cpu_peak_percent_one_core": 38.44,
+          "rss_peak_mib": 61.93,
+          "rss_end_mib": 61.93,
+          "fd_peak": 107,
+          "disk_write_mib": 0.0
+        },
+        "generator": {
+          "cpu_avg_percent_one_core": 14.54,
+          "cpu_peak_percent_one_core": 103.37,
+          "rss_peak_mib": 91.8,
+          "rss_end_mib": 91.8,
+          "fd_peak": 108,
+          "disk_write_mib": 0.0
+        }
+      },
+      "target": "website",
+      "website_usage_rows": 100,
+      "upstream": {
+        "active": 0,
+        "peak": 100,
+        "rejected": 0,
+        "accepted": 100
+      }
+    }
+  ]
+}

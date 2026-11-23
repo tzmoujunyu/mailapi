@@ -13,7 +13,7 @@ from collections import OrderedDict
 from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from functools import lru_cache
+from functools import lru_cache, partial
 import hashlib
 import io
 import ipaddress
@@ -899,6 +899,10 @@ class _StreamUsage:
 
 def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optional[CredentialKeyring]):
     store = TestFeatureStore(data_dir, keyring)
+    # Keep WAL alive across short request connections; otherwise each last
+    # connection close checkpoints and recreates it on the next request.
+    wal_keeper = sqlite3.connect(store.path, check_same_thread=False)
+    wal_keeper.execute('SELECT id FROM api2api_config LIMIT 1').fetchall()
     from .newapi_gateway import NewAPIGateway, NewAPIError
     gateway = NewAPIGateway(store)
     app.state.newapi_gateway = gateway
@@ -916,6 +920,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     install_finance_notifications(app, store)
     router = APIRouter()
     client_holder: dict[str, Optional[httpx.AsyncClient]] = {"client": None}
+
+    async def record_api_usage(**values):
+        await anyio.to_thread.run_sync(partial(store.record_usage, **values))
     invoice_limiter = anyio.CapacityLimiter(1)
     invoice_recognitions = OrderedDict()
     preview_limiter = anyio.CapacityLimiter(1)
@@ -1383,13 +1390,13 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             return Response(status_code=204)
         authorization = request.headers.get("authorization", "")
         raw_key = authorization.removeprefix("Bearer ").strip() if authorization.startswith("Bearer ") else ""
-        key = store.authenticate_api_key(raw_key)
+        key = await anyio.to_thread.run_sync(store.authenticate_api_key, raw_key)
         if not key:
             return JSONResponse({"error": {"message": "Invalid API key", "type": "authentication_error"}}, status_code=401)
         owner = request.app.state.site_accounts.get_user(key['user_id'],include_status=True)
         if not owner or owner.get('status','active') != 'active':
             return JSONResponse({'error':{'message':'API owner is unavailable','type':'authentication_error'}},status_code=401)
-        config = store.api2api_config_public()
+        config = await anyio.to_thread.run_sync(store.api2api_config_public)
         if not config.get('configured') or not config['enabled'] or config.get('engine') != 'newapi':
             return JSONResponse({"error": {"message": "API2API is not configured", "type": "configuration_error"}}, status_code=503)
         if key['provider'] != 'newapi' or key['engine_origin'] != config['base_url'][:-3]:
@@ -1460,7 +1467,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                             await upstream.aclose()
                             collector.feed(b'\n')
                             prompt, completion, total = collector.usage
-                            store.record_usage(key_id=key["id"], user_id=key["user_id"], model=model,
+                            await record_api_usage(key_id=key["id"], user_id=key["user_id"], model=model,
                                                prompt_tokens=prompt, completion_tokens=completion, total_tokens=total,
                                                status_code=upstream.status_code, request_ms=int((time.perf_counter() - started) * 1000),
                                                error=stream_error or ("" if upstream.status_code < 400 else "upstream_error"))
@@ -1472,13 +1479,13 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             except (UnicodeDecodeError, json.JSONDecodeError):
                 response_payload = {}
             prompt, completion, total = _usage_from_payload(response_payload)
-            store.record_usage(key_id=key["id"], user_id=key["user_id"], model=model,
+            await record_api_usage(key_id=key["id"], user_id=key["user_id"], model=model,
                                prompt_tokens=prompt, completion_tokens=completion, total_tokens=total,
                                status_code=upstream.status_code, request_ms=int((time.perf_counter() - started) * 1000),
                                error="" if upstream.status_code < 400 else "upstream_error")
             return Response(content=content, status_code=upstream.status_code, headers=response_headers)
         except httpx.HTTPError as error:
-            store.record_usage(key_id=key["id"], user_id=key["user_id"], model=model,
+            await record_api_usage(key_id=key["id"], user_id=key["user_id"], model=model,
                                prompt_tokens=0, completion_tokens=0, total_tokens=0, status_code=502,
                                request_ms=int((time.perf_counter() - started) * 1000), error=type(error).__name__)
             return JSONResponse({"error": {"message": "Upstream API unavailable", "type": "upstream_error"}}, status_code=502)
@@ -1866,9 +1873,12 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
 
     @app.on_event("shutdown")
     async def close_test_feature_client():
-        await gateway.close()
-        client = client_holder["client"]
-        if client is not None:
-            await client.aclose()
+        try:
+            await gateway.close()
+            client = client_holder["client"]
+            if client is not None:
+                await client.aclose()
+        finally:
+            await anyio.to_thread.run_sync(wal_keeper.close)
 
     return store
