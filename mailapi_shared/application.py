@@ -97,7 +97,6 @@ from .resource_accounts import ResourceStore, ResourceStoreError
 from .site_accounts import ADMIN_ROLES, SiteAccountError
 from .site_database import DATABASE_NAME, LEGACY_NAME, open_site_accounts
 from .accounts import SESSION_COOKIE, create_account_router, read_payload, themed_page
-from .login_protection import TurnstileVerifier
 from .codex_tip_content import MAX_IMAGE_BYTES, image_directory, image_file, legacy_blocks, save_image, validate_blocks
 from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
 from .resource_database import DATABASE_NAME as RESOURCE_DATABASE_NAME, SECRET_DIRECTORY as RESOURCE_SECRET_DIRECTORY
@@ -2713,7 +2712,7 @@ async def access_guard(request: FastAPIRequest, call_next):
         "/static/test-i18n-en.js", "/static/test-i18n.js", "/static/test-ui.js", "/static/test-ui.css",
         "/static/test-header.js", "/static/test-header.css", "/static/test-notifications.js", "/static/test-navigation.svg",
     }
-    public = callback or test_api2api or test_ui_asset or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js", "/static/login-protection.js"}
+    public = callback or test_api2api or test_ui_asset or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
     role = request_access_role(request)
     if not public and (role is None or (requires_admin_access(request) and role != "admin")):
         if path.startswith("/api/"):
@@ -5096,14 +5095,7 @@ if IS_TEST:
     TEST_FEATURE_STORE = install_test_features(app, STATIC_DIR, DATA_DIR, CREDENTIAL_KEYRING)
 
 
-turnstile_site_key = _setting("TURNSTILE_SITE_KEY", "TEST_TURNSTILE_SITE_KEY")
-turnstile_secret_key = _setting("TURNSTILE_SECRET_KEY", "TEST_TURNSTILE_SECRET_KEY")
-login_verifier = None
-if turnstile_site_key or turnstile_secret_key:
-    login_verifier = TurnstileVerifier(turnstile_site_key, turnstile_secret_key, urllib.parse.urlsplit(APP_BASE_URL).hostname,
-                                      test_mode=IS_TEST)
-app.include_router(create_account_router(STATIC_DIR, resource_catalog, on_admin_failure=log_admin_login_failure,
-                                        login_verifier=login_verifier))
+app.include_router(create_account_router(STATIC_DIR, resource_catalog, on_admin_failure=log_admin_login_failure))
 app.add_middleware(SecurityHeadersMiddleware)
 
 

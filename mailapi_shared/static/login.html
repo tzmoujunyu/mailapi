@@ -13,22 +13,14 @@
     p { font-size: 13px; color: var(--theme-muted, #6b7280); line-height: 1.6; }
     label { display: block; font-size: 14px; margin: 16px 0; }
     label[hidden] { display: none; }
-    [hidden] { display: none !important; }
     input { width: 100%; padding: 10px; margin-top: 7px; border: 1px solid var(--theme-border-strong, #c7ced6); border-radius: 6px; font: inherit; }
     input:focus { outline: 2px solid var(--theme-info-border, #bfdbfe); border-color: var(--theme-focus, #2563eb); }
     button { width: 100%; padding: 10px; color: white; background: #2563eb; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
     .mode-link { display: block; margin-top: 12px; padding: 9px; text-align: center; color: var(--theme-link, #1d4ed8); border: 1px solid var(--theme-border-strong, #c7ced6); border-radius: 6px; text-decoration: none; }
     .error { min-height: 20px; color: var(--theme-danger-text, #b91c1c); }
-    #login-challenge { margin-top: 20px; padding-top: 4px; border-top: 1px solid var(--theme-border, #dfe3e8); }
-    #login-challenge-widget { min-height: 65px; }
-    #login-challenge-status { min-height: 20px; }
-    #login-challenge-retry { color: var(--theme-link, #1d4ed8); background: var(--theme-page-bg, #f4f6f8); }
-    .challenge-demo { color: var(--theme-warning-text, #92400e); }
-    button:disabled { opacity: .65; cursor: wait; }
   </style>
   <link rel="stylesheet" href="/static/theme.css">
   <script src="/static/theme.js" defer></script>
-  <!-- LOGIN_PROTECTION -->
 </head>
 <body class="login-page">
   <header class="login-theme-header"><div data-theme-control></div></header>
@@ -40,7 +32,6 @@
     <label>用户名<input name="username" autocomplete="username" maxlength="64" required autofocus></label>
     <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
     <label id="totp-field" hidden>动态验证码<input name="totp_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" disabled></label>
-    <!-- LOGIN_CHALLENGE -->
     <p class="error" role="alert"><!-- LOGIN_ERROR --></p>
     <button type="submit">登录</button>
     <a class="mode-link" id="login-mode" href="/login?mode=admin">管理员登录</a>
