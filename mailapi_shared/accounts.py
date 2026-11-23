@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .site_accounts import SESSION_SECONDS, SiteAccountError
 from .web_security import LoginThrottle
+from .login_protection import ChallengeUnavailable, ProtectedLoginThrottle
 
 
 SESSION_COOKIE = "mailapi_session"
@@ -97,9 +98,9 @@ async def read_payload(request, fields):
     return payload
 
 
-def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None):
+def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None, login_verifier=None):
     router = APIRouter()
-    throttle = LoginThrottle()
+    throttle = ProtectedLoginThrottle() if login_verifier else LoginThrottle()
 
     def store(request):
         return request.app.state.site_accounts
@@ -110,22 +111,67 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
             raise SiteAccountError("请先使用网站账户登录", 401)
         return user["id"]
 
-    def login_error(request, browser, message, status, headers=None):
-        if browser:
-            page = (static_dir / "login.html").read_text(encoding="utf-8")
-            return HTMLResponse(themed_page(page.replace("<!-- LOGIN_ERROR -->", message), request), status_code=status, headers=headers)
-        return JSONResponse({"detail": message}, status_code=status, headers=headers)
+    def challenge():
+        return {"site_key": login_verifier.site_key, "testing": login_verifier.testing}
 
-    def login_response(request, username, password, totp_code, *, browser=False):
-        retry_after = throttle.check(request.client.host if request.client else "", username)
+    def login_page_html(request, message="", required=False):
+        page = (static_dir / "login.html").read_text(encoding="utf-8")
+        assets = '<script src="/static/login-protection.js" defer></script>' if login_verifier else ""
+        host = ""
+        if login_verifier:
+            notice = '<p class="challenge-demo">演示验证：仅用于隔离测试</p>' if login_verifier.testing else ""
+            host = (
+                f'<section id="login-challenge" data-sitekey="{escape(login_verifier.site_key, quote=True)}" '
+                f'data-required="{int(required)}" aria-label="安全验证"' + ("" if required else " hidden") + '>'
+                '<p>为保护账户，请先完成安全验证。</p>' + notice +
+                '<div id="login-challenge-widget"></div><p id="login-challenge-status" role="status"></p>'
+                '<button id="login-challenge-retry" type="button" hidden>重新加载验证</button>'
+                '<noscript><p>此登录需要启用 JavaScript 完成安全验证。</p></noscript></section>'
+            )
+        return themed_page(page.replace("<!-- LOGIN_ERROR -->", escape(message)).replace(
+            "<!-- LOGIN_PROTECTION -->", assets).replace("<!-- LOGIN_CHALLENGE -->", host), request)
+
+    def login_error(request, browser, message, status, headers=None, *, required=False, code=None):
+        if browser:
+            return HTMLResponse(login_page_html(request, message, required), status_code=status, headers=headers)
+        payload = {"detail": message}
+        if required:
+            payload["challenge"] = challenge()
+        if code:
+            payload["code"] = code
+        return JSONResponse(payload, status_code=status, headers=headers)
+
+    def login_response(request, username, password, totp_code, turnstile_token=None, *, browser=False):
+        address = request.client.host if request.client else ""
+        attempt = throttle.begin(address, username) if login_verifier else None
+        retry_after = attempt.retry_after if attempt else throttle.check(address, username)
         if retry_after:
             return login_error(request, browser, "登录尝试过多，请稍后再试", 429, {"Retry-After": str(retry_after)})
-        result = store(request).login(username, password, totp_code, on_admin_failure=on_admin_failure)
+        authenticated = None
+        try:
+            if attempt and attempt.challenge_required:
+                if not turnstile_token:
+                    return login_error(request, browser, "请先完成安全验证", 403, required=True, code="challenge_required")
+                try:
+                    valid = login_verifier.verify(turnstile_token, address)
+                except ChallengeUnavailable:
+                    return login_error(request, browser, "安全验证暂时不可用，请稍后重试", 503,
+                                       {"Retry-After": "30"}, required=True, code="verification_unavailable")
+                if not valid:
+                    return login_error(request, browser, "安全验证未通过或已过期，请重新验证", 403,
+                                       required=True, code="challenge_failed")
+            result = store(request).login(username, password, totp_code, on_admin_failure=on_admin_failure)
+            authenticated = result is not None
+        finally:
+            if attempt:
+                throttle.finish(attempt, authenticated)
         if result is None:
-            return login_error(request, browser, "用户名、密码或动态验证码错误", 401)
+            required = bool(login_verifier and throttle.challenge_required(address, username))
+            return login_error(request, browser, "用户名、密码或动态验证码错误", 401, required=required)
         token, user = result
         landing = "/test-features#view-overview" if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test" else "/"
-        response = RedirectResponse(landing, status_code=303) if browser else JSONResponse({"user": user})
+        payload = {"user": user, **({"redirect": landing} if login_verifier else {})}
+        response = RedirectResponse(landing, status_code=303) if browser else JSONResponse(payload)
         response.set_cookie(SESSION_COOKIE, token, httponly=True, max_age=SESSION_SECONDS,
                             samesite="lax", secure=request.url.scheme == "https")
         return response
@@ -134,8 +180,7 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
     def login_page(request: Request):
         if request.state.site_user:
             return RedirectResponse("/", status_code=303)
-        page = (static_dir / "login.html").read_text(encoding="utf-8")
-        return HTMLResponse(themed_page(page.replace("<!-- LOGIN_ERROR -->", ""), request))
+        return HTMLResponse(login_page_html(request))
 
     @router.post("/login")
     def login_form(
@@ -143,18 +188,20 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
         username: Optional[str] = Form(None),
         password: Optional[str] = Form(None),
         totp_code: Optional[str] = Form(None),
+        turnstile_token: Optional[str] = Form(None, alias="cf-turnstile-response"),
     ):
-        return login_response(request, username, password, totp_code, browser=True)
+        return login_response(request, username, password, totp_code, turnstile_token, browser=True)
 
     @router.post("/api/auth/login")
     async def login_api(request: Request):
-        payload = await read_payload(request, {"username", "password", "totp_code"})
+        payload = await read_payload(request, {"username", "password", "totp_code", "turnstile_token"})
         return await run_in_threadpool(
             login_response,
             request,
             payload.get("username"),
             payload.get("password"),
             payload.get("totp_code"),
+            payload.get("turnstile_token"),
         )
 
     @router.post("/api/auth/logout")

@@ -203,6 +203,10 @@ class TestAppIsolationTests(unittest.TestCase):
                 "GMAIL_ACCOUNTS": '[{"name":"production-only","email":"real@example.com"}]',
                 "GMAIL_OAUTH_REDIRECT_BASE": "http://localhost:8000",
                 "TEST_PORT": "8001",
+                "TURNSTILE_SITE_KEY": "production-site-key",
+                "TURNSTILE_SECRET_KEY": "production-secret-key",
+                "TEST_TURNSTILE_SITE_KEY": "",
+                "TEST_TURNSTILE_SECRET_KEY": "",
             }
             result = subprocess.run(
                 [sys.executable, "-c", "\n".join([
@@ -212,12 +216,39 @@ class TestAppIsolationTests(unittest.TestCase):
                     "assert main.GMAIL_OAUTH_REDIRECT_BASE == 'http://localhost:8001'",
                     "assert main.AccountCredentialStore.__module__ == 'mailapi_shared.account_credentials'",
                     "assert main.CODEX_LOGIN_SERVER is None",
+                    "assert main.login_verifier is None",
                     "assert isinstance(main.should_use_console_auth(), bool)",
                     "assert (main.STATIC_DIR / 'index.html').is_file()",
                 ])],
                 cwd=ROOT, env=environment, capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_turnstile_configuration_is_scoped_and_incomplete_configuration_fails_startup(self):
+        from mailapi_shared.login_protection import TEST_SECRET_KEY, TEST_SITE_KEY
+
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {
+                **os.environ, "MAILAPI_MODE": "test", "TEST_DATA_DIR": directory,
+                "TEST_SNAPSHOT_FROM_PRODUCTION": "0", "TEST_EXTERNAL_WATCHERS": "0",
+                "TEST_APP_BASE_URL": "http://localhost:8001",
+                "TURNSTILE_SITE_KEY": "production-site-key", "TURNSTILE_SECRET_KEY": "production-secret-key",
+                "TEST_TURNSTILE_SITE_KEY": TEST_SITE_KEY, "TEST_TURNSTILE_SECRET_KEY": TEST_SECRET_KEY,
+            }
+            script = "\n".join([
+                "from test_app import main",
+                "assert main.login_verifier.testing is True",
+                "assert main.login_verifier._hostname == 'localhost'",
+            ])
+            result = subprocess.run([sys.executable, "-c", script], cwd=ROOT, env=environment,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            environment["TEST_TURNSTILE_SECRET_KEY"] = ""
+            result = subprocess.run([sys.executable, "-c", "from test_app import main"], cwd=ROOT, env=environment,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("启用登录验证必须同时配置", result.stderr)
+            self.assertNotIn("production-secret-key", result.stderr)
 
     def test_production_runtime_cannot_be_selected(self):
         for directory in (ROOT / "runtime", ROOT):
