@@ -21,10 +21,10 @@ class FinancePreviewTests(unittest.TestCase):
             image.save(output,format='PDF' if pdf else 'PNG',save_all=pdf,append_images=[image]*(pages-1) if pdf else [])
             return output.getvalue()
 
-    def file(self, content, pdf=False):
+    def file(self, content, pdf=False, kind='invoice'):
         key=secrets.token_hex(12);name=key+('.pdf' if pdf else '.png')
         (self.store.files/name).write_bytes(content)
-        return {'id':key,'kind':'invoice','stored_name':name,'original_name':'测试发票'+Path(name).suffix,
+        return {'id':key,'kind':kind,'stored_name':name,'original_name':'测试附件'+Path(name).suffix,
                 'content_type':'application/pdf' if pdf else 'image/png','size':len(content),'sha256':hashlib.sha256(content).hexdigest()}
 
     def application(self, content=None, pdf=False):
@@ -91,6 +91,51 @@ class FinancePreviewTests(unittest.TestCase):
         response=self.client.get(page['src'],headers={'x-test-user':'alice-id'})
         with Image.open(io.BytesIO(response.content)) as image:
             self.assertEqual(image.getpixel((0,0)),(255,0,0))
+
+    def test_payment_previews_are_cached_private_and_separate_from_invoices(self):
+        item=self.application();app_id=item['id']
+        self.store.update_finance_application(app_id,'alice-id','支付截图',1250,
+            {'payment':self.file(self.image('blue'),kind='payment')},expected_version=1)
+        url=f'/api/finance/applications/{app_id}/attachment-preview?kind=payment'
+        with patch('mailapi_shared.finance_previews.subprocess.run',wraps=subprocess.run) as renderer, \
+                patch('mailapi_shared.finance_invoices.recognize_file',side_effect=AssertionError('Preview must not run OCR')):
+            response=self.client.get(url,headers={'x-test-user':'alice-id'})
+            self.assertEqual(response.status_code,200,response.text)
+            page=response.json()['pages'][0]
+            self.assertIn('kind=payment',page['src'])
+            thumb=self.client.get(page['thumbnail'],headers={'x-test-user':'alice-id'})
+            full=self.client.get(page['src'],headers={'x-test-user':'admin-id'})
+            self.assertEqual(renderer.call_count,1)
+        self.assertEqual(thumb.headers['content-type'],'image/jpeg')
+        self.assertIn('no-store',full.headers['cache-control'])
+        with Image.open(io.BytesIO(full.content)) as image:
+            self.assertEqual(image.getpixel((0,0)),(0,0,255))
+        invoice=self.get(app_id).json()['pages'][0]
+        with Image.open(io.BytesIO(self.client.get(invoice['src']).content)) as image:
+            self.assertEqual(image.getpixel((0,0)),(255,0,0))
+        self.site.users['bob-id']={'id':'bob-id','username':'bob','role':'user','note':''}
+        for target in (url,page['src'],page['thumbnail']):
+            self.assertEqual(self.client.get(target,headers={'x-test-user':'bob-id'}).status_code,404)
+        self.assertEqual(self.client.get(url.replace('payment','other')).status_code,422)
+
+    def test_payment_pdf_history_and_links_keep_the_displayed_attachment(self):
+        item=self.application();app_id=item['id']
+        self.store.update_finance_application(app_id,'alice-id','支付记录',1250,
+            {'payment':self.file(self.image('blue',pdf=True,pages=2),pdf=True,kind='payment')},expected_version=1)
+        event=self.store.finance_history(app_id)[0]
+        url=f'/api/finance/applications/{app_id}/attachment-preview?kind=payment'
+        old=self.client.get(url).json()['pages']
+        self.assertEqual(len(old),2)
+        self.store.update_finance_application(app_id,'alice-id','更新支付记录',1250,
+            {'payment':self.file(self.image('green'),kind='payment')},expected_version=2)
+        self.assertEqual(self.client.get(url+'&event_id='+event['id']).json()['pages'],old)
+        current=self.client.get(url).json()['pages'][0]
+        for page,color in [(old[0],(0,0,255)),(current,(0,128,0))]:
+            with Image.open(io.BytesIO(self.client.get(page['src']).content)) as image:
+                self.assertLessEqual(max(abs(actual-expected) for actual,expected in zip(image.getpixel((0,0)),color)),1)
+        first=self.store.finance_history(app_id)[-1]
+        self.assertEqual(self.client.get(url+'&event_id='+first['id']).status_code,404)
+        self.assertEqual(self.client.get(url+'&event_id=missing').status_code,404)
 
     def test_invalid_oversized_pdf_and_missing_files_offer_a_safe_download_fallback(self):
         item=self.application(b'invalid PDF',pdf=True)

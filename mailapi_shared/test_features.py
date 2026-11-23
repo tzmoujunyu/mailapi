@@ -26,7 +26,7 @@ import secrets
 import sqlite3
 import time
 import tempfile
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote, urlsplit
 import zipfile
 
@@ -1789,34 +1789,37 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return FileResponse(path, media_type=file_item["content_type"], filename=application_filename(item, file_item))
 
     @router.get('/api/finance/applications/{app_id}/invoice-preview')
-    async def preview_finance_invoice(app_id: str, request: Request, event_id: Optional[str] = None,
+    @router.get('/api/finance/applications/{app_id}/attachment-preview')
+    async def preview_finance_attachment(app_id: str, request: Request, event_id: Optional[str] = None,
+                                      kind: Literal['invoice','payment'] = 'invoice',
                                       page: Optional[int] = Query(None,ge=1,le=5), thumbnail: bool = False):
-        from .finance_previews import invoice_preview
+        from .finance_previews import attachment_preview
         import subprocess
         item = get_allowed_application(request,app_id,event_id)
-        file = next((entry for entry in item['files'] if entry['kind']=='invoice'),None)
+        label = '发票' if kind == 'invoice' else '支付记录'
+        file = next((entry for entry in item['files'] if entry['kind']==kind),None)
         if not file:
-            raise HTTPException(404,'未找到发票附件')
+            raise HTTPException(404,f'未找到{label}附件')
         source = store.files/file['stored_name']
         if not source.is_file():
             raise HTTPException(410,'文件已丢失')
         key = hashlib.sha256((file['id']+':'+file['sha256']).encode()).hexdigest()
         try:
             async with preview_limiter:
-                directory,pages = await anyio.to_thread.run_sync(lambda: invoice_preview(source,store.root/'finance_previews',key))
+                directory,pages = await anyio.to_thread.run_sync(lambda: attachment_preview(source,store.root/'finance_previews',key))
         except (subprocess.SubprocessError,OSError,ValueError):
-            raise HTTPException(422,'无法预览此发票，请下载原文件查看；PDF 预览最多支持 5 页') from None
+            raise HTTPException(422,f'无法预览此{label}，请下载原文件查看；PDF 预览最多支持 5 页') from None
         headers = {'Cache-Control':'no-store, private','X-Content-Type-Options':'nosniff'}
         if page is None:
             reference = event_id or next((event['id'] for event in store.finance_history(app_id)
                 if event['version']==item['version']),None)
-            base = f'/api/finance/applications/{quote(app_id,safe="")}/invoice-preview?'
+            base = f'/api/finance/applications/{quote(app_id,safe="")}/attachment-preview?kind={kind}&'
             if reference:
                 base += 'event_id='+quote(reference,safe='')+'&'
             return JSONResponse({'pages':[dict(size,src=base+f'page={index}',thumbnail=base+f'page={index}&thumbnail=true')
                 for index,size in enumerate(pages,1)]},headers=headers)
         if page > len(pages):
-            raise HTTPException(404,'未找到发票页')
+            raise HTTPException(404,f'未找到{label}页')
         path = directory/f'{page}.{ "jpg" if thumbnail else "png" }'
         return FileResponse(path,media_type='image/jpeg' if thumbnail else 'image/png',headers=headers)
 

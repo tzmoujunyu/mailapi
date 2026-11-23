@@ -192,6 +192,7 @@ body.test-ui-features #view-finance { padding-top:0; }
 #view-finance .fin-detail-summary dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:12px 0; padding:14px; border-radius:10px; background:var(--fin-soft); }
 #view-finance .fin-detail-summary dt { font-size:12px; color:var(--fin-muted); }
 #view-finance .fin-detail-summary dd { margin:3px 0 0; overflow-wrap:anywhere; }
+#view-finance #fin-detail-previews { display:grid; gap:12px; }
 #view-finance .fin-invoice-thumbnails { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,220px)); gap:10px; margin-bottom:8px; }
 #view-finance button.fin-invoice-thumbnail { display:grid; gap:8px; padding:10px; white-space:normal; color:var(--fin-accent); }
 #view-finance .fin-invoice-thumbnail img { display:block; width:100%; height:130px; object-fit:contain; background:white; border-radius:4px; }

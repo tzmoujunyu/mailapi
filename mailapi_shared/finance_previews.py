@@ -1,4 +1,4 @@
-"""Private, cached invoice images. Rendering does not run invoice recognition."""
+"""Private, cached finance attachment images. Rendering does not run recognition."""
 from contextlib import closing
 import json
 import os
@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 
-def invoice_preview(source, cache_root, key):
+def attachment_preview(source, cache_root, key):
     directory = cache_root / key
     manifest = directory / 'manifest.json'
     if not manifest.is_file():
