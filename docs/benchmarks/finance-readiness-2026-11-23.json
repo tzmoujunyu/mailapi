@@ -1,0 +1,291 @@
+{
+  "date": "2026-11-23",
+  "environment": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "logical_cpus": 10,
+    "python": "3.12.13",
+    "attachment_bytes_per_file": 131072,
+    "attachments_per_application": 2,
+    "sequential_cases": true,
+    "real_data_used_for_load": false
+  },
+  "storage": {
+    "database_count": 4,
+    "private_copied_file_count": 27,
+    "backup_restore_match": true,
+    "source_database_hash_unchanged": {
+      "data/site_accounts.sqlite3": true,
+      "data/resources.sqlite3": true,
+      "data/test_features.sqlite3": true,
+      "newapi.db": false
+    },
+    "source_business_tables_unchanged": true,
+    "source_runtime_metadata_updated": [
+      "newapi.db:system_instances"
+    ],
+    "production_baseline_files_unchanged": 50,
+    "native_gateway_table_counts": {
+      "users": 3,
+      "tokens": 7,
+      "logs": 12,
+      "channels": 1
+    },
+    "website_table_counts": {
+      "finance_applications": 13,
+      "finance_files": 22,
+      "finance_events": 26,
+      "finance_versions": 16,
+      "finance_invoice_details": 2,
+      "api2api_keys": 12,
+      "api2api_usage": 26,
+      "api2api_audit": 9
+    }
+  },
+  "functional": {
+    "applications": 13,
+    "events": 26,
+    "unique_current_and_historical_files": 22,
+    "present_attachment_hashes_match": true,
+    "preexisting_missing_demo_attachments": 4,
+    "gateway_configuration_decrypts": true,
+    "legacy_invoice_checks": {
+      "real_invoices_without_confirmed_fields": 3,
+      "unique_files_recognized": [
+        {
+          "method": "ocr",
+          "seconds": 1.589,
+          "recognized_fields": [
+            "date",
+            "number",
+            "total"
+          ],
+          "multiple": false
+        },
+        {
+          "method": "ocr",
+          "seconds": 1.212,
+          "recognized_fields": [
+            "date",
+            "number",
+            "total"
+          ],
+          "multiple": false
+        }
+      ],
+      "preexisting_active_duplicate_file_groups": [
+        {
+          "active_applications": 2,
+          "distinct_users": 1,
+          "contains_parseable_real_invoice": true
+        },
+        {
+          "active_applications": 6,
+          "distinct_users": 3,
+          "contains_parseable_real_invoice": false
+        }
+      ],
+      "invalid_non_demo_pdf_attachments": 2
+    },
+    "historical_downloads_verified": 18,
+    "missing_attachment_downloads_return_410": 4,
+    "csv_and_xlsx_amounts_match": true,
+    "group_totals_match_without_cancelled_or_double_counting": true,
+    "review_export_includes_history_and_marks_current_results": true,
+    "current_approved_archive_verified": true,
+    "incomplete_archive_rejected": true,
+    "real_invoice_recognition": [
+      {
+        "alias": "invoice-1",
+        "method": "ocr",
+        "seconds": 1.623,
+        "recognized_field_count": 3,
+        "confirmed_field_matches": {
+          "date": true,
+          "number": true,
+          "total": true
+        }
+      },
+      {
+        "alias": "invoice-2",
+        "method": "ocr",
+        "seconds": 0.697,
+        "recognized_field_count": 3,
+        "confirmed_field_matches": {
+          "date": true,
+          "number": true,
+          "total": true
+        }
+      }
+    ],
+    "current_attachment_previews": {
+      "available": 6,
+      "demo_fallback": 10,
+      "other_fallback": 2
+    },
+    "real_invoice_full_workflow": {
+      "reject_resubmit_approve_re_review": true,
+      "old_and_new_versions_preserved": true,
+      "stale_review_rejected": true,
+      "other_user_denied": true
+    }
+  },
+  "load_initial": [
+    {
+      "mode": "list",
+      "rows": 1000,
+      "seconds": 0.03,
+      "response_mib": 0.37,
+      "baseline_peak_rss_mib": 81.59,
+      "peak_rss_mib": 86.48,
+      "cpu_seconds": 0.03,
+      "health_errors": 0,
+      "http_chunks": null
+    },
+    {
+      "mode": "list",
+      "rows": 10000,
+      "seconds": 0.226,
+      "response_mib": 3.7,
+      "baseline_peak_rss_mib": 83.09,
+      "peak_rss_mib": 120.84,
+      "cpu_seconds": 0.226,
+      "health_errors": 0,
+      "http_chunks": null
+    },
+    {
+      "mode": "list",
+      "rows": 50000,
+      "seconds": 1.267,
+      "response_mib": 18.501,
+      "baseline_peak_rss_mib": 83.58,
+      "peak_rss_mib": 254.44,
+      "cpu_seconds": 1.256,
+      "health_errors": 0,
+      "http_chunks": null
+    },
+    {
+      "mode": "zip",
+      "rows": 10,
+      "seconds": 1.053,
+      "response_mib": 2.505,
+      "baseline_peak_rss_mib": 81.41,
+      "peak_rss_mib": 88.53,
+      "cpu_seconds": 0.609,
+      "health_errors": 0,
+      "http_chunks": 10176
+    },
+    {
+      "mode": "zip",
+      "rows": 100,
+      "seconds": 10.92,
+      "response_mib": 25.045,
+      "baseline_peak_rss_mib": 81.25,
+      "peak_rss_mib": 112.33,
+      "cpu_seconds": 6.261,
+      "health_errors": 0,
+      "http_chunks": 106008
+    },
+    {
+      "mode": "zip",
+      "rows": 500,
+      "seconds": 55.316,
+      "response_mib": 125.224,
+      "baseline_peak_rss_mib": 81.22,
+      "peak_rss_mib": 194.62,
+      "cpu_seconds": 31.554,
+      "health_errors": 0,
+      "http_chunks": 537068
+    }
+  ],
+  "load_final": [
+    {
+      "mode": "list",
+      "rows": 1000,
+      "seconds": 0.031,
+      "response_mib": 0.37,
+      "baseline_peak_rss_mib": 81.67,
+      "peak_rss_mib": 86.56,
+      "cpu_seconds": 0.031,
+      "health_samples": 1,
+      "health_max_ms": 6.76,
+      "health_p95_ms": null,
+      "health_errors": 0,
+      "http_chunks": null
+    },
+    {
+      "mode": "list",
+      "rows": 10000,
+      "seconds": 0.236,
+      "response_mib": 3.7,
+      "baseline_peak_rss_mib": 83.08,
+      "peak_rss_mib": 120.89,
+      "cpu_seconds": 0.234,
+      "health_samples": 2,
+      "health_max_ms": 119.48,
+      "health_p95_ms": null,
+      "health_errors": 0,
+      "http_chunks": null
+    },
+    {
+      "mode": "list",
+      "rows": 50000,
+      "seconds": 1.312,
+      "response_mib": 18.501,
+      "baseline_peak_rss_mib": 83.83,
+      "peak_rss_mib": 273.67,
+      "cpu_seconds": 1.295,
+      "health_samples": 6,
+      "health_max_ms": 645.98,
+      "health_p95_ms": null,
+      "health_errors": 0,
+      "http_chunks": null
+    },
+    {
+      "mode": "zip",
+      "rows": 10,
+      "seconds": 1.114,
+      "response_mib": 2.505,
+      "baseline_peak_rss_mib": 81.72,
+      "peak_rss_mib": 88.78,
+      "cpu_seconds": 0.645,
+      "health_samples": 11,
+      "health_max_ms": 41.92,
+      "health_p95_ms": null,
+      "health_errors": 0,
+      "http_chunks": 10546
+    },
+    {
+      "mode": "zip",
+      "rows": 100,
+      "seconds": 10.886,
+      "response_mib": 25.045,
+      "baseline_peak_rss_mib": 81.58,
+      "peak_rss_mib": 112.0,
+      "cpu_seconds": 6.192,
+      "health_samples": 104,
+      "health_max_ms": 321.93,
+      "health_p95_ms": 1.14,
+      "health_errors": 0,
+      "http_chunks": 104608
+    },
+    {
+      "mode": "zip",
+      "rows": 500,
+      "seconds": 54.977,
+      "response_mib": 125.224,
+      "baseline_peak_rss_mib": 81.72,
+      "peak_rss_mib": 214.41,
+      "cpu_seconds": 31.115,
+      "health_samples": 521,
+      "health_max_ms": 1621.86,
+      "health_p95_ms": 0.99,
+      "health_errors": 0,
+      "http_chunks": 526068
+    }
+  ],
+  "regression": {
+    "local_uv_backend_tests_passed": 51,
+    "node_frontend_tests_passed": 26
+  }
+}
