@@ -137,6 +137,14 @@ class FinanceFeatureHttpTests(unittest.TestCase):
             self.assertEqual(response.status_code,status,response.text)
         self.assertEqual(self.store.list_finance_applications(),[])
 
+    def test_delegate_endpoint_keeps_finance_upload_limits_for_invoice_and_payment_files(self):
+        response=self.client.post('/api/admin/finance/applications',
+            data={'payer_user_id':'alice-id','project':'代交附件','invoice_fields':self.invoice_fields()},
+            files={'invoice':('invoice.pdf',b'i'*(1024*1024+20),'application/pdf'),
+                   'payment_record':('payment.pdf',b'p'*(1024*1024+20),'application/pdf')})
+        self.assertEqual(response.status_code,201,response.text)
+        self.assertEqual(len(response.json()['item']['files']),2)
+
     def test_admin_submission_belongs_to_payer_and_keeps_actual_creator_through_resubmission(self):
         self.site.groups['group-id']['member_ids'] = ['alice-id']
         response = self.client.post('/api/admin/finance/applications',
