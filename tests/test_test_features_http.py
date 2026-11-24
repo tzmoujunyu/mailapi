@@ -59,12 +59,12 @@ class FinanceFeatureHttpTests(unittest.TestCase):
     def invoice_fields(number='20261122000000000001'):
         return json.dumps({'number':number,'code':'','date':'2026-11-22','total':'12.50','check_code':''})
 
-    def create_application(self, user_id="alice-id", project="模型订阅"):
+    def create_application(self, user_id="alice-id", project="模型订阅", application_note=""):
         self.invoice_counter += 1
         return self.client.post(
             "/api/finance/applications",
             headers={"x-test-user": user_id},
-            data={"project": project, "amount": "12.50", "invoice_fields":self.invoice_fields(f'20261122{self.invoice_counter:012d}')},
+            data={"project": project, "amount": "12.50", "application_note":application_note, "invoice_fields":self.invoice_fields(f'20261122{self.invoice_counter:012d}')},
             files=self.upload(),
         )
 
@@ -117,6 +117,57 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertFalse(updated.json()["item"]["pinned"])
         self.assertEqual(updated.json()["item"]["title"], "新公告")
+
+    def test_application_notes_survive_edits_resubmission_and_explicit_clearing_with_history(self):
+        note = '第一行\n第二行 <补充说明>'
+        created = self.create_application(application_note='  '+note+'  ')
+        self.assertEqual(created.status_code,201,created.text)
+        item = created.json()['item'];app_id = item['id']
+        self.assertEqual(item['application_note'],note)
+        headers = {'x-test-user':'alice-id'}
+        original = self.client.get(f'/api/finance/applications/{app_id}/history',headers=headers).json()['items'][0]['snapshot']
+        updated = self.client.put(f'/api/finance/applications/{app_id}',headers=headers,data={'project':'旧页面修改','version':'1'})
+        self.assertEqual(updated.status_code,200,updated.text)
+        self.assertEqual(updated.json()['item']['application_note'],note)
+        reviewed = self.client.post(f'/api/admin/finance/applications/{app_id}/review',json={'status':'rejected','note':'补充用途','version':2})
+        self.assertEqual(reviewed.status_code,200,reviewed.text)
+        updated = self.client.put(f'/api/finance/applications/{app_id}',headers=headers,
+            data={'project':'补充后重提','version':'2','application_note':'新的用途说明'})
+        self.assertEqual(updated.status_code,200,updated.text)
+        self.assertEqual(updated.json()['item']['application_note'],'新的用途说明')
+        stale = self.client.put(f'/api/finance/applications/{app_id}',headers=headers,
+            data={'project':'过期页面','version':'2','application_note':'不能覆盖'})
+        self.assertEqual(stale.status_code,409,stale.text)
+        cleared = self.client.put(f'/api/finance/applications/{app_id}',headers=headers,
+            data={'project':'清除备注','version':'3','application_note':''})
+        self.assertEqual(cleared.status_code,200,cleared.text)
+        self.assertEqual(cleared.json()['item']['application_note'],'')
+        events = self.client.get(f'/api/finance/applications/{app_id}/history').json()['items']
+        self.assertEqual(events[-1]['snapshot'],original)
+        self.assertEqual(next(event for event in events if event['action']=='resubmitted')['snapshot']['application_note'],'新的用途说明')
+        self.assertEqual(events[0]['snapshot']['application_note'],'')
+        from mailapi_shared.test_features import TestFeatureStore
+        reopened = TestFeatureStore(Path(self.directory),None)
+        self.assertEqual(reopened.finance_history(app_id)[-1]['snapshot']['application_note'],note)
+
+    def test_application_note_limit_and_proxy_notes_do_not_change_payer_ownership(self):
+        rejected = self.create_application(application_note='长'*501)
+        self.assertEqual(rejected.status_code,400,rejected.text)
+        self.assertEqual(list(self.store.files.iterdir()),[])
+        created = self.client.post('/api/admin/finance/applications',
+            data={'project':'代提交备注','payer_user_id':'alice-id','application_note':'长'*500,'invoice_fields':self.invoice_fields()},
+            files=self.upload())
+        self.assertEqual(created.status_code,201,created.text)
+        item=created.json()['item'];app_id=item['id']
+        self.assertEqual(item['application_note'],'长'*500)
+        self.assertEqual(self.store.finance_application(app_id)['user_id'],'alice-id')
+        too_long = self.client.put(f'/api/finance/applications/{app_id}',headers={'x-test-user':'alice-id'},
+            data={'project':'不能改写','version':'1','application_note':'长'*501})
+        self.assertEqual(too_long.status_code,400,too_long.text)
+        self.assertEqual(self.store.finance_application(app_id)['version'],1)
+        forbidden = self.client.put(f'/api/finance/applications/{app_id}',
+            data={'project':'不授予修改权','version':'1','application_note':'管理员不能改他人备注'})
+        self.assertEqual(forbidden.status_code,404,forbidden.text)
 
     def test_payer_directory_is_admin_only_and_contains_no_login_or_security_data(self):
         self.site.users['alice-id']['password_hash'] = 'private-password-hash'
@@ -202,12 +253,14 @@ class FinanceFeatureHttpTests(unittest.TestCase):
             history = db.execute('SELECT snapshot_json FROM finance_versions').fetchall()
             db.execute('ALTER TABLE finance_applications DROP COLUMN submitted_by_id')
             db.execute('ALTER TABLE finance_applications DROP COLUMN submitted_by_name')
+            db.execute('ALTER TABLE finance_applications DROP COLUMN application_note')
         from mailapi_shared.test_features import TestFeatureStore
         migrated = TestFeatureStore(Path(self.directory),None)
         restored = migrated.finance_application(item['id'])
         self.assertEqual(restored['amount_cents'],1250)
         self.assertEqual(restored['user_id'],'alice-id')
         self.assertEqual(restored['submitted_by_id'],'')
+        self.assertEqual(restored['application_note'],'')
         self.assertEqual(len(restored['files']),1)
         with sqlite3.connect(database) as db:
             self.assertEqual(db.execute('SELECT snapshot_json FROM finance_versions').fetchall(),history)

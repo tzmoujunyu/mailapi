@@ -263,6 +263,7 @@ const financeController = (() => {
     $('fin-payer-user').innerHTML=`<option value="">${t('请选择付款人')}</option>`;error('fin-payer-status');
     $('finance-edit-id').value=item?.id || '';$('finance-version').value=item?.version || '';
     $('finance-project').value=item?.project || '';
+    $('finance-note').value=item?.application_note || '';
     $('finance-invoice').required=!item;
     $('fin-invoice-label').textContent=t(item?'发票（不选则保留原文件）':'发票（必选）');
     $('finance-dialog-title').textContent=t(item ? item.status==='rejected'?'修改并重提':'编辑报销申请':proxyActive?'替用户提交申请':'提交报销申请');
@@ -300,6 +301,7 @@ const financeController = (() => {
   }
   function cancelDetail(){detailAbort?.abort();detailAbort=null;detailSequence++;detailItem=detailEvent=null;$('fin-detail-actions').replaceChildren();$('fin-detail-actions').hidden=true;window.FinancePreviews?.reset();}
   $('fin-detail-dialog').addEventListener('close',()=>{cancelDetail();$('fin-detail-content').replaceChildren();});
+  function applicationNote(note) {return note?`<div class="fin-application-note"><span class="fin-secondary">${t('申请备注')}</span><p class="fin-prewrap" data-i18n-skip>${html(note)}</p></div>`:'';}
   async function detail(appId) {
     cancelDetail();const abort=new AbortController(),seq=detailSequence;detailAbort=abort;
     $('fin-detail-title').textContent=t('申请详情与历史');$('fin-detail-content').innerHTML=`<p role="status">${t('加载中…')}</p>`;show('fin-detail-dialog');
@@ -308,8 +310,8 @@ const financeController = (() => {
       if(abort.signal.aborted||seq!==detailSequence||!$('fin-detail-dialog').open)return;
       const item=data.item||all.find(item=>item.id===appId)||mine.find(item=>item.id===appId)||data.items[0]?.snapshot;
       const currentEvent=data.items.find(event=>event.version===item?.version);
-      const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${label==='付款人'?payer(item):html(value)}</dd></div>`).join('')}</dl><div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section><section id="fin-detail-previews"></section>`:'';
-      $('fin-detail-content').innerHTML=summary+`<h4>${t('操作历史')}</h4>`+data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');
+      const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${label==='付款人'?payer(item):html(value)}</dd></div>`).join('')}</dl>${applicationNote(item.application_note)}<div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section><section id="fin-detail-previews"></section>`:'';
+      $('fin-detail-content').innerHTML=summary+`<h4>${t('操作历史')}</h4>`+data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}${applicationNote(event.snapshot.application_note)}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');
       detailItem=item;detailEvent=data.items.find(event=>event.is_current_review&&event.version===item?.version&&event.action===item?.status);
       const actions=$('fin-detail-actions');
       if(admin&&item?.status==='pending')actions.innerHTML=`<button type="button" class="fin-reject" data-detail-review="rejected">${t('驳回')}</button><button type="button" class="primary" data-detail-review="approved">${t('通过')}</button>`;
@@ -434,7 +436,7 @@ const financeController = (() => {
     if([...$('finance-project').value.trim()].length>20)throw new Error(t('报销项目最多 20 个字符。'));
     const form=new FormData(),id=$('finance-edit-id').value;
     if(proxyActive){const selected=$('fin-payer-user').value;if(!payers.some(user=>user.id===selected))throw new Error(t('请先选择付款人'));form.set('payer_user_id',selected);}
-    for(const [key,field] of [['project','finance-project'],['expense_group_id','fin-expense-group']])form.set(key,$(field).value);
+    for(const [key,field] of [['project','finance-project'],['expense_group_id','fin-expense-group'],['application_note','finance-note']])form.set(key,$(field).value);
     if(id)form.set('version',$('finance-version').value);
     if(window.FinanceInvoices)form.set('invoice_fields',JSON.stringify(window.FinanceInvoices.getFields()));
     for(const [key,field] of [['invoice','finance-invoice'],['payment_record','finance-payment']]){const file=$(field).files[0];if(file){if(file.size>10*1024*1024)throw new Error(t('单个报销文件不能超过 10 MB'));form.set(key,file);}}

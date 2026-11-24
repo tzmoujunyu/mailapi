@@ -237,7 +237,8 @@ class TestFeatureStore:
                                      ("expense_group_id", "TEXT NOT NULL DEFAULT ''"),
                                      ("expense_group_name", "TEXT NOT NULL DEFAULT '未分组'"),
                                      ("submitted_by_id", "TEXT NOT NULL DEFAULT ''"),
-                                     ("submitted_by_name", "TEXT NOT NULL DEFAULT ''")):
+                                     ("submitted_by_name", "TEXT NOT NULL DEFAULT ''"),
+                                     ("application_note", "TEXT NOT NULL DEFAULT ''")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE finance_applications ADD COLUMN {name} {definition}")
             # Legacy rows have no reliable group id. Preserve a single recorded name;
@@ -689,7 +690,7 @@ class TestFeatureStore:
                                    groups: list[str], project: str, amount_cents: int,
                                    files: list[dict[str, Any]], expense_group_id: str = "",
                                    expense_group_name: str = "未分组", invoice_fields=None, recognition=None,
-                                   submitted_by=None) -> dict[str, Any]:
+                                   submitted_by=None, application_note: str = "") -> dict[str, Any]:
         app_id, now = secrets.token_hex(12), _now()
         actor = submitted_by or {'id':user_id, 'username':username}
         with self._lock, closing(self._connect()) as db, db:
@@ -697,9 +698,9 @@ class TestFeatureStore:
             invoice = next((file for file in files if file['kind'] == 'invoice'),None)
             self._assert_invoice_available(db,app_id,invoice_fields,invoice['sha256'] if invoice else '')
             db.execute(
-                """INSERT INTO finance_applications(id,user_id,username,user_note,groups_json,project,amount_cents,status,created_at,updated_at,review_note,expense_group_id,expense_group_name,submitted_by_id,submitted_by_name)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '', ?, ?, ?, ?)""",
-                (app_id, user_id, username, user_note, json.dumps(groups, ensure_ascii=False), project, amount_cents, now, now, expense_group_id, expense_group_name, actor['id'], actor['username']),
+                """INSERT INTO finance_applications(id,user_id,username,user_note,groups_json,project,amount_cents,status,created_at,updated_at,review_note,expense_group_id,expense_group_name,submitted_by_id,submitted_by_name,application_note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '', ?, ?, ?, ?, ?)""",
+                (app_id, user_id, username, user_note, json.dumps(groups, ensure_ascii=False), project, amount_cents, now, now, expense_group_id, expense_group_name, actor['id'], actor['username'], application_note),
             )
             for item in files:
                 self._insert_finance_file(db, app_id, item["kind"], item)
@@ -782,7 +783,8 @@ class TestFeatureStore:
     def update_finance_application(self, app_id: str, user_id: str, project: str,
                                    amount_cents: int, replacements: dict[str, dict[str, Any]], *,
                                    expense_group: Optional[tuple[str, str]] = None,
-                                   expected_version: Optional[int] = None, invoice_fields=None, recognition=None) -> Optional[dict[str, Any]]:
+                                   expected_version: Optional[int] = None, invoice_fields=None, recognition=None,
+                                   application_note: Optional[str] = None) -> Optional[dict[str, Any]]:
         with self._lock, closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             row = self._finance_row(db, app_id)
@@ -795,8 +797,8 @@ class TestFeatureStore:
             group_id, group_name = expense_group or (row["expense_group_id"], row["expense_group_name"])
             db.execute("""UPDATE finance_applications SET project=?,amount_cents=?,updated_at=?,version=version+1,
                           status='pending',reviewed_at=NULL,reviewer_id=NULL,reviewer_name=NULL,review_note='',
-                          expense_group_id=?,expense_group_name=? WHERE id=?""",
-                       (project, amount_cents, _now(), group_id, group_name, app_id))
+                          expense_group_id=?,expense_group_name=?,application_note=? WHERE id=?""",
+                       (project, amount_cents, _now(), group_id, group_name, row['application_note'] if application_note is None else application_note, app_id))
             for kind, item in replacements.items():
                 db.execute("DELETE FROM finance_files WHERE application_id=? AND kind=?", (app_id, kind))
                 self._insert_finance_file(db, app_id, kind, item)
@@ -1604,7 +1606,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
 
     @router.post('/api/admin/finance/applications', status_code=201)
     @router.post("/api/finance/applications", status_code=201)
-    async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None), payer_user_id: Optional[str] = Form(None)):
+    async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None), payer_user_id: Optional[str] = Form(None), application_note: str = Form("")):
         actor = current_user(request)
         if request.url.path == '/api/admin/finance/applications':
             require_admin(request)
@@ -1621,6 +1623,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         group_id, group_name = expense_group(request, expense_group_id, user_id=account['id'])
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
+            application_note = store._text(application_note, "申请备注", MAX_FINANCE_NOTE)
             uploads = [("invoice", invoice)] + ([('payment', payment_record)] if payment_record else [])
             saved = await save_finance_uploads(uploads)
         except TestFeatureError as error:
@@ -1632,7 +1635,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                                                     user_note=account.get("note", ""), groups=groups,
                                                     project=project, amount_cents=amount_cents, files=saved,
                                                     expense_group_id=group_id, expense_group_name=group_name, invoice_fields=fields, recognition=recognition,
-                                                    submitted_by=actor)
+                                                    submitted_by=actor, application_note=application_note)
         except Exception:
             for entry in saved:
                 (store.files / entry["stored_name"]).unlink(missing_ok=True)
@@ -1640,10 +1643,12 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return {"item": public_application(request, item)}
 
     @router.put("/api/finance/applications/{app_id}")
-    async def update_finance(app_id: str, request: Request, project: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None), invoice_fields: Optional[str] = Form(None)):
+    async def update_finance(app_id: str, request: Request, project: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None), invoice_fields: Optional[str] = Form(None), application_note: Optional[str] = Form(None)):
         user = current_user(request)
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
+            if 'application_note' in await request.form():
+                application_note = store._text(application_note, "申请备注", MAX_FINANCE_NOTE)
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         existing = store.finance_application(app_id)
@@ -1665,7 +1670,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             fields, recognition = await prepare_invoice(saved,invoice_fields,user['id'],existing)
             amount_cents = application_amount(fields, saved, existing)
             updated = store.update_finance_application(app_id, user["id"], project, amount_cents, {item["kind"]: item for item in saved},
-                                                       expense_group=group, expected_version=version if version is not None else existing["version"],invoice_fields=fields,recognition=recognition)
+                                                       expense_group=group, expected_version=version if version is not None else existing["version"],invoice_fields=fields,recognition=recognition,application_note=application_note)
         except Exception:
             for item in saved:
                 (store.files / item["stored_name"]).unlink(missing_ok=True)

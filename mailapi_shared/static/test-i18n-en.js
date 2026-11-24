@@ -1,4 +1,8 @@
 window.MILVLG_EN = {
+  "申请备注（可选）": "Application notes (optional)",
+  "填写补充说明": "Add any additional details",
+  "申请备注": "Application notes",
+  "申请备注不能超过 500 个字符": "Application notes cannot exceed 500 characters",
   "支付记录预览": "Payment record preview",
   "正在加载支付记录预览…": "Loading payment record preview…",
   "放大支付记录": "Enlarge payment record",

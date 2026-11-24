@@ -19,6 +19,38 @@ async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[], pa
   w.financeFixtureController.start(admin,'admin');await w.financeFixtureController.load();
   return {w,el:id=>w.document.getElementById(id),requests};
 }
+test('application notes can be edited and cleared and do not leak into a new application',async t=>{
+  const item=application({status:'rejected',application_note:'上次备注\n保留换行'});
+  const {w,el,requests}=await setup(t,{mine:[item]});
+  w.document.querySelector('[data-edit-finance]').click();
+  assert.equal(el('finance-note').value,item.application_note);
+  assert.equal(el('finance-note').required,false);assert.equal(el('finance-note').maxLength,500);
+  el('finance-note').value='修改后的用途\n第二行';
+  el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+  assert.equal(requests.find(([,options])=>options.method==='PUT')[1].body.get('application_note'),'修改后的用途\n第二行');
+  w.document.querySelector('[data-edit-finance]').click();el('finance-note').value='';
+  el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+  assert.equal(requests.filter(([,options])=>options.method==='PUT').at(-1)[1].body.get('application_note'),'');
+  el('finance-open-form').click();assert.equal(el('finance-note').value,'');
+});
+test('notes only appear in details and version history as escaped plain text',async t=>{
+  const note='用途说明\n<img src=x onerror="alert(1)">',item=application({application_note:note});
+  const {w,el,requests}=await setup(t,{admin:true,all:[item]});
+  assert.ok(!el('admin-finance-rows').textContent.includes('用途说明'));
+  const original=w.fetch;
+  w.fetch=async(url,options)=>url==='/api/finance/applications/app-1/history'
+    ?(requests.push([url,options]),{ok:true,json:async()=>({item,items:[{id:'event-1',version:1,action:'submitted',actor_name:'alice',created_at:item.created_at,snapshot:application({application_note:'历史备注\n旧用途'})}]})})
+    :original(url,options);
+  w.document.querySelector('[data-history]').click();await tick();
+  const notes=el('fin-detail-content').querySelectorAll('.fin-application-note .fin-prewrap');
+  assert.equal(notes.length,2);assert.equal(notes[0].textContent,note);assert.equal(notes[1].textContent,'历史备注\n旧用途');
+  assert.equal(el('fin-detail-content').querySelector('img'),null);
+  el('fin-detail-dialog').close();
+  w.fetch=async(url,options)=>url==='/api/finance/applications/app-1/history'
+    ?{ok:true,json:async()=>({item:application(),items:[{id:'legacy',version:1,action:'submitted',actor_name:'alice',snapshot:application()}]})}:original(url,options);
+  w.document.querySelector('[data-history]').click();await tick();
+  assert.equal(el('fin-detail-content').querySelectorAll('.fin-application-note').length,0);
+});
 test('admin reimbursement menu names the current payer and supports keyboard dismissal without affecting ordinary submission',async t=>{
   const {w,el,requests}=await setup(t,{admin:true,groups:[{id:'own',name:'管理员组'}]});
   el('finance-open-form').click();
@@ -44,6 +76,7 @@ test('proxy submission searches payers, uses their groups and sends an explicit 
   el('finance-open-form').click();el('fin-apply-other').click();await tick();
   assert.equal(el('fin-payer-picker').hidden,false);assert.equal(el('fin-payer-user').required,true);
   el('finance-project').value='代提交订阅';
+  el('finance-note').value='管理员填写的补充说明';
   el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
   assert.match(el('fin-form-status').textContent,/选择付款人/);
   assert.ok(!requests.some(([,o])=>o.method==='POST'));
@@ -59,6 +92,7 @@ test('proxy submission searches payers, uses their groups and sends an explicit 
   el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
   const [url,options]=requests.find(([url,o])=>url==='/api/admin/finance/applications'&&o.method==='POST');
   assert.equal(url,'/api/admin/finance/applications');assert.equal(options.body.get('payer_user_id'),'bob');
+  assert.equal(options.body.get('application_note'),'管理员填写的补充说明');
   assert.equal(options.body.get('expense_group_id'),'c');assert.equal(el('finance-dialog').open,false);
 });
 test('late payer lists do not change a closed or personal application and failed lists cannot silently submit as self',async t=>{
