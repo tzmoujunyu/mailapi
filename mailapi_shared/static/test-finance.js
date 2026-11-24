@@ -13,12 +13,15 @@ const financeController = (() => {
   const localDay = value => { const d = new Date(value); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
   const date = value => value ? new Date(value).toLocaleString(document.documentElement.lang === 'en' ? 'en-US' : 'zh-CN') : '—';
   const identity = item => `${item.username || ''}${item.user_note ? `（${item.user_note}）` : ''}`;
+  const delegateNote = item => item.submitted_on_behalf ? `<small class="fin-delegate"><span data-ui-text>${t('由')}</span> ${html(item.submitted_by_name)} <span data-ui-text>${t('代替申请')}</span></small>` : '';
+  const payer = item => html(identity(item)) + delegateNote(item);
   const groupKey = item => item.expense_group_id || `legacy:${item.expense_group_name || '未分组'}`;
   let admin = false, tab = 'mine', mine = [], all = [], history = [], announcements = [], groups = [], review = null, page = 1;
   let selected = new Set(), loading = null;
   let noticePage = 1, adminNoticePage = 1;
   let reportAbort = null;
   let detailAbort = null, detailSequence = 0, detailItem = null, detailEvent = null;
+  let accountName = '', proxyActive = false, payers = [], payerAbort = null, payerSequence = 0;
   const request = async (url, options={}) => {
     const response = await fetch(url, {cache:'no-store', ...options});
     const data = await response.json().catch(() => ({}));
@@ -83,8 +86,8 @@ const financeController = (() => {
   function tableRows(items, own) {
     return items.map(item => `<tr${!own?` data-open-finance="${html(item.id)}" tabindex="0" aria-label="${html(t('查看申请详情'))} · ${html(item.project)}"`:''}>
       <td><span class="fin-tag" data-i18n-skip title="${html(t('当前分组'))}: ${html((item.groups || []).join('、') || t('未分组'))}">${html(item.expense_group_name || t('未分组'))}</span></td>
-      ${!own ? `<td data-i18n-skip>${html(identity(item))}</td>` : ''}
-      <td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date" title="${html(item.id)}">${html(item.id.slice(0,8))} · ${localDay(item.created_at).slice(5)} · v${item.version || 1}</span></td><td class="fin-money">${html(currency(cents(item)))}</td>
+      ${!own ? `<td data-i18n-skip>${payer(item)}</td>` : ''}
+      <td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date" title="${html(item.id)}">${html(item.id.slice(0,8))} · ${localDay(item.created_at).slice(5)} · v${item.version || 1}</span>${own?delegateNote(item):''}</td><td class="fin-money">${html(currency(cents(item)))}</td>
       <td>${fileLink(item,'payment')}</td><td>${fileLink(item,'invoice')}${window.FinanceInvoices?.summary(item)||''}</td><td>${pill(item.status)}${item.review_note ? `<small data-i18n-skip>${html(item.review_note)}</small>` : ''}</td>
       <td><div class="actions">
       ${own && ['pending','rejected'].includes(item.status) ? `<button type="button" data-edit-finance="${html(item.id)}">${t(item.status === 'rejected' ? '修改并重提' : '编辑')}</button>` : ''}
@@ -103,7 +106,7 @@ const financeController = (() => {
       <div class="card table-wrap"><table aria-label="${html(day)} ${t('审批记录')}"><thead><tr><th>${t('选择')}</th><th>${t('付款人 / 费用归属')}</th><th>${t('报销项目')}</th><th class="fin-money">${t('金额')}</th><th>${t('结果 / 意见')}</th><th>${t('审核人')}</th><th>${t('附件与历史')}</th></tr></thead><tbody>${rows.map(item => {
         const event = item.event;
         return `<tr><td>${event.action === 'approved' && event.is_current_review ? `<input class="fin-check" type="checkbox" aria-label="${html(t('选择审批记录'))}" data-select-event="${html(event.id)}" ${selected.has(event.id) ? 'checked' : ''} />` : '—'}</td>
-          <td data-i18n-skip>${html(identity(item))}<span class="fin-date">${html(item.expense_group_name)}</span></td><td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date">${html(item.id.slice(0,8))} · v${event.version}</span></td><td class="fin-money">${html(currency(cents(item)))}</td><td>${pill(event.action)}${event.supersedes_event_id ? `<small data-ui-text>${t('再审核')} · ${t(names[event.previous_status])} → ${t(names[event.action])}</small>` : ''}${event.is_current_review === false ? `<small data-ui-text>${t('已被后续操作替代')}</small>` : ''}<small data-i18n-skip>${html(event.note)}</small></td><td data-i18n-skip>${html(event.actor_name)}<span class="fin-date">${html(date(event.created_at))}</span></td><td><div class="actions">${fileLink(item,'invoice',event)} ${fileLink(item,'payment',event)}${event.is_current_review ? `<button type="button" data-re-review="${html(event.id)}">${t('再审核')}</button>` : ''}<button type="button" data-history="${html(item.id)}">${t('详情')}</button></div></td></tr>`;
+          <td data-i18n-skip>${payer(item)}<span class="fin-date">${html(item.expense_group_name)}</span></td><td class="fin-project" data-i18n-skip>${html(item.project)}<span class="fin-date">${html(item.id.slice(0,8))} · v${event.version}</span></td><td class="fin-money">${html(currency(cents(item)))}</td><td>${pill(event.action)}${event.supersedes_event_id ? `<small data-ui-text>${t('再审核')} · ${t(names[event.previous_status])} → ${t(names[event.action])}</small>` : ''}${event.is_current_review === false ? `<small data-ui-text>${t('已被后续操作替代')}</small>` : ''}<small data-i18n-skip>${html(event.note)}</small></td><td data-i18n-skip>${html(event.actor_name)}<span class="fin-date">${html(date(event.created_at))}</span></td><td><div class="actions">${fileLink(item,'invoice',event)} ${fileLink(item,'payment',event)}${event.is_current_review ? `<button type="button" data-re-review="${html(event.id)}">${t('再审核')}</button>` : ''}<button type="button" data-history="${html(item.id)}">${t('详情')}</button></div></td></tr>`;
       }).join('')}</tbody></table></div>`).join('') || `<p class="fin-secondary" data-ui-text>${t('暂无审批记录。')}</p>`;
   }
   function stats(items) {
@@ -227,13 +230,42 @@ const financeController = (() => {
     })();
     try {await loading;} finally {loading=null;}
   }
-  function openApplication(item=null) {
+  function applicationGroups(currentGroups, item=null) {
+    const choices=[...currentGroups];
+    if(item?.expense_group_id && !choices.some(group=>group.id===item.expense_group_id)) choices.push({id:item.expense_group_id,name:item.expense_group_name});
+    $('fin-expense-group').innerHTML='<option value="">'+t('请选择费用归属')+'</option>'+choices.map(group=>`<option value="${html(group.id)}" data-i18n-skip>${html(group.name)}</option>`).join('');
+    $('fin-expense-label').hidden=currentGroups.length<=1;
+    $('fin-expense-group').required=currentGroups.length>1;
+    $('fin-expense-group').value=item?.expense_group_id || (currentGroups.length===1?currentGroups[0].id:'');
+    $('fin-expense-hint').textContent=proxyActive&&!$('fin-payer-user').value?'':currentGroups.length>1?t('多分组账户需选择一个费用归属，金额只计入该分组。'):`${t('费用归属')}：${item?.expense_group_name || currentGroups[0]?.name || t('未分组')}`;
+  }
+  function renderPayers() {
+    const previous=$('fin-payer-user').value,query=$('fin-payer-search').value.trim().toLocaleLowerCase();
+    const matches=payers.filter(user=>[user.username,user.note,...user.groups.map(group=>group.name)].join(' ').toLocaleLowerCase().includes(query));
+    $('fin-payer-user').innerHTML=`<option value="">${t('请选择付款人')}</option>`+matches.map(user=>`<option value="${html(user.id)}" data-i18n-skip>${html(identity({username:user.username,user_note:user.note}))}</option>`).join('');
+    if(matches.some(user=>user.id===previous))$('fin-payer-user').value=previous;
+    if(previous!==$('fin-payer-user').value)applicationGroups([]);
+    error('fin-payer-status',matches.length?'':'没有匹配的账户');
+  }
+  async function loadPayers() {
+    const abort=new AbortController(),seq=++payerSequence;payerAbort=abort;
+    $('fin-payer-user').disabled=true;error('fin-payer-status','正在加载账户…');
+    try {
+      const data=await request('/api/admin/finance/payers',{signal:abort.signal});
+      if(abort.signal.aborted||seq!==payerSequence||!proxyActive||!$('finance-dialog').open)return;
+      payers=data.items||[];renderPayers();$('fin-payer-user').disabled=false;
+    } catch(e) {if(!abort.signal.aborted&&seq===payerSequence)error('fin-payer-status',e.message);}
+  }
+  function openApplication(item=null,onBehalf=false) {
+    payerAbort?.abort();payerSequence++;payers=[];proxyActive=admin&&onBehalf&&!item;
     $('finance-form').reset();error('fin-form-status');
+    $('fin-payer-picker').hidden=!proxyActive;$('fin-payer-user').required=proxyActive;
+    $('fin-payer-user').innerHTML=`<option value="">${t('请选择付款人')}</option>`;error('fin-payer-status');
     $('finance-edit-id').value=item?.id || '';$('finance-version').value=item?.version || '';
     $('finance-project').value=item?.project || '';
     $('finance-invoice').required=!item;
     $('fin-invoice-label').textContent=t(item?'发票（不选则保留原文件）':'发票（必选）');
-    $('finance-dialog-title').textContent=t(item ? item.status==='rejected'?'修改并重提':'编辑报销申请':'提交报销申请');
+    $('finance-dialog-title').textContent=t(item ? item.status==='rejected'?'修改并重提':'编辑报销申请':proxyActive?'替用户提交申请':'提交报销申请');
     $('finance-submit').textContent=t(item ? item.status==='rejected'?'修改并重提':'保存修改':'提交申请');
     $('finance-file-hint').textContent=t(item?'支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。不选择文件则保留原文件。':'支持 PDF、JPG、PNG、WebP，单个文件不超过 10 MB。');
     for(const kind of ['invoice','payment']) {
@@ -242,20 +274,29 @@ const financeController = (() => {
       $('fin-'+kind+'-name').title=existing?.original_name || '';
       $('fin-'+kind+'-prompt').textContent=t(existing ? (kind==='invoice'?'保留现有发票 / 替换':'保留现有支付记录 / 替换') : (kind==='invoice'?'＋ 选择发票 · PDF / JPG / PNG / WebP':'＋ 选择支付记录'));
     }
-    const choices=[...groups];
-    if(item?.expense_group_id && !choices.some(group=>group.id===item.expense_group_id)) choices.push({id:item.expense_group_id,name:item.expense_group_name});
-    $('fin-expense-group').innerHTML='<option value="">'+t('请选择费用归属')+'</option>'+choices.map(group=>`<option value="${html(group.id)}" data-i18n-skip>${html(group.name)}</option>`).join('');
-    $('fin-expense-label').hidden=groups.length<=1;
-    $('fin-expense-group').required=groups.length>1;
-    $('fin-expense-group').value=item?.expense_group_id || (groups.length===1?groups[0].id:'');
-    $('fin-expense-hint').textContent=groups.length>1?t('多分组账户需选择一个费用归属，金额只计入该分组。'):`${t('费用归属')}：${item?.expense_group_name || groups[0]?.name || t('未分组')}`;
+    applicationGroups(proxyActive?[]:groups,item);
     show('finance-dialog');
     window.FinanceInvoices?.fill(item);
+    if(proxyActive)loadPayers();
+  }
+  function resizeNoticeEditor() {
+    const dialog=$('fin-announcement-dialog'),body=$('announcement-body');if(!dialog.open)return;
+    const scrollTop=body.scrollTop;
+    body.style.minHeight='0px';body.style.height='0px';body.style.maxHeight='none';body.style.overflowY='hidden';
+    const viewport=window.visualViewport;
+    const bottom=viewport?viewport.height+viewport.offsetTop:window.innerHeight;
+    const chrome=dialog.scrollHeight-body.offsetHeight;
+    const cssMaximum=Number.parseFloat(getComputedStyle(dialog).maxHeight);
+    const available=Math.min(bottom-dialog.getBoundingClientRect().top-24,Number.isFinite(cssMaximum)?cssMaximum:Infinity);
+    const maximum=Math.max(80,available-chrome-(dialog.offsetHeight-dialog.clientHeight));
+    const minimum=Math.min(140,maximum);
+    body.style.minHeight=minimum+'px';body.style.maxHeight=maximum+'px';
+    body.style.height=Math.min(maximum,Math.max(minimum,body.scrollHeight+2))+'px';body.style.overflowY='auto';body.scrollTop=scrollTop;
   }
   function openNoticeForm(item=null) {
     $('announcement-form').reset();error('announcement-status');
     $('announcement-id').value=item?.id || '';$('announcement-title').value=item?.title || '';$('announcement-body').value=item?.body || '';$('announcement-pinned').checked=item?.pinned || false;
-    $('announcement-form-title').textContent=t(item?'编辑公告':'新增公告');show('fin-announcement-dialog');
+    $('announcement-form-title').textContent=t(item?'编辑公告':'新增公告');show('fin-announcement-dialog');resizeNoticeEditor();
   }
   function cancelDetail(){detailAbort?.abort();detailAbort=null;detailSequence++;detailItem=detailEvent=null;$('fin-detail-actions').replaceChildren();$('fin-detail-actions').hidden=true;window.FinancePreviews?.reset();}
   $('fin-detail-dialog').addEventListener('close',()=>{cancelDetail();$('fin-detail-content').replaceChildren();});
@@ -267,7 +308,7 @@ const financeController = (() => {
       if(abort.signal.aborted||seq!==detailSequence||!$('fin-detail-dialog').open)return;
       const item=data.item||all.find(item=>item.id===appId)||mine.find(item=>item.id===appId)||data.items[0]?.snapshot;
       const currentEvent=data.items.find(event=>event.version===item?.version);
-      const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${html(value)}</dd></div>`).join('')}</dl><div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section><section id="fin-detail-previews"></section>`:'';
+      const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${label==='付款人'?payer(item):html(value)}</dd></div>`).join('')}</dl><div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section><section id="fin-detail-previews"></section>`:'';
       $('fin-detail-content').innerHTML=summary+`<h4>${t('操作历史')}</h4>`+data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');
       detailItem=item;detailEvent=data.items.find(event=>event.is_current_review&&event.version===item?.version&&event.action===item?.status);
       const actions=$('fin-detail-actions');
@@ -298,7 +339,29 @@ const financeController = (() => {
   }
   $('fin-notice-search').addEventListener('input',()=>{noticePage=1;renderNoticeHistory();});
   $('fin-admin-notice-search').addEventListener('input',()=>{adminNoticePage=1;renderAdminNotices();});
-  $('finance-open-form').addEventListener('click',()=>openApplication());
+  function applyMenu(open) {
+    $('fin-apply-options').hidden=!open;
+    if(admin)$('finance-open-form').setAttribute('aria-expanded',String(open));
+  }
+  function ownPayerLabel() {
+    $('fin-apply-self').innerHTML=`<span data-ui-text>${t('本账户')}</span>${accountName?`<span data-i18n-skip>（${html(accountName)}）</span>`:''}<span data-ui-text>${t('为付款人')}</span>`;
+  }
+  $('finance-open-form').addEventListener('click',()=>{if(admin){applyMenu($('fin-apply-options').hidden);if(!$('fin-apply-options').hidden)$('fin-apply-self').focus();}else openApplication();});
+  $('fin-apply-self').addEventListener('click',()=>{applyMenu(false);$('finance-open-form').focus();openApplication();});
+  $('fin-apply-other').addEventListener('click',()=>{applyMenu(false);$('finance-open-form').focus();openApplication(null,true);});
+  $('fin-apply-options').addEventListener('keydown',event=>{
+    const buttons=[$('fin-apply-self'),$('fin-apply-other')];
+    if(event.key==='Escape'){event.preventDefault();applyMenu(false);$('finance-open-form').focus();}
+    else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();const index=buttons.indexOf(document.activeElement);buttons[event.key==='Home'?0:event.key==='End'?1:(index+(event.key==='ArrowDown'?1:-1)+2)%2].focus();}
+    else if(event.key==='Tab')applyMenu(false);
+  });
+  document.addEventListener('click',event=>{if(!$('finance-open-form').parentElement.contains(event.target))applyMenu(false);});
+  $('fin-payer-search').addEventListener('input',renderPayers);
+  $('fin-payer-user').addEventListener('change',()=>{applicationGroups(payers.find(user=>user.id===$('fin-payer-user').value)?.groups||[]);});
+  $('finance-dialog').addEventListener('close',()=>{payerAbort?.abort();payerSequence++;proxyActive=false;payers=[];$('fin-payer-user').replaceChildren();$('fin-payer-search').value='';});
+  $('announcement-body').addEventListener('input',resizeNoticeEditor);
+  window.addEventListener('resize',resizeNoticeEditor);
+  window.visualViewport?.addEventListener('resize',resizeNoticeEditor);
   $('fin-new-notice').addEventListener('click',()=>openNoticeForm());
   for(const kind of ['invoice','payment']) $(kind==='invoice'?'finance-invoice':'finance-payment').addEventListener('change',event=>{
     const name=event.target.files[0]?.name || '';
@@ -365,11 +428,12 @@ const financeController = (() => {
     finally{if(reportAbort===abort){reportAbort=null;document.querySelectorAll('[data-fin-export]').forEach(button=>{button.disabled=false;});}}
   }
   function cancelReport(){reportAbort?.abort();reportAbort=null;document.querySelectorAll('[data-fin-export]').forEach(button=>{button.disabled=false;});$('fin-export-menu').open=false;}
-  window.addEventListener('pagehide',cancelReport);window.addEventListener('hashchange',()=>{if(location.hash!=='#view-finance'){cancelReport();if($('fin-detail-dialog').open)hide('fin-detail-dialog');if($('fin-notice-history-dialog').open)hide('fin-notice-history-dialog');}});
+  window.addEventListener('pagehide',cancelReport);window.addEventListener('hashchange',()=>{if(location.hash!=='#view-finance'){cancelReport();applyMenu(false);if($('finance-dialog').open)hide('finance-dialog');if($('fin-detail-dialog').open)hide('fin-detail-dialog');if($('fin-notice-history-dialog').open)hide('fin-notice-history-dialog');}});
   document.addEventListener('click',event=>{if(!$('fin-export-menu').contains(event.target))$('fin-export-menu').open=false;});
   $('finance-form').addEventListener('submit',event=>{event.preventDefault();submit('finance-submit','fin-form-status',async()=>{
     if([...$('finance-project').value.trim()].length>20)throw new Error(t('报销项目最多 20 个字符。'));
     const form=new FormData(),id=$('finance-edit-id').value;
+    if(proxyActive){const selected=$('fin-payer-user').value;if(!payers.some(user=>user.id===selected))throw new Error(t('请先选择付款人'));form.set('payer_user_id',selected);}
     for(const [key,field] of [['project','finance-project'],['expense_group_id','fin-expense-group']])form.set(key,$(field).value);
     if(id)form.set('version',$('finance-version').value);
     if(window.FinanceInvoices)form.set('invoice_fields',JSON.stringify(window.FinanceInvoices.getFields()));
@@ -398,8 +462,8 @@ const financeController = (() => {
     if(!response.ok){const data=await response.json();throw new Error(data.detail || t('批量下载失败'));}
     const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download='approved-finance.zip';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }));
-  document.addEventListener('site:language',()=>{renderNotices();render();});
+  document.addEventListener('site:language',()=>{ownPayerLabel();renderNotices();render();resizeNoticeEditor();});
   document.addEventListener('finance:changed',()=>load().catch(e=>error('finance-status',e.message)));
   document.addEventListener('finance:open-application',event=>{if(location.hash==='#view-finance'&&typeof event.detail?.id==='string')load().then(()=>detail(event.detail.id)).catch(e=>error('finance-status',e.message));});
-  return {load,start(value){admin=value;window.FinanceInvoices?.start(value);$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');}};
+  return {load,start(value,username=''){admin=value;accountName=username;ownPayerLabel();applyMenu(false);if(admin)$('finance-open-form').setAttribute('aria-haspopup','menu');else{$('finance-open-form').removeAttribute('aria-haspopup');$('finance-open-form').removeAttribute('aria-expanded');if(proxyActive&&$('finance-dialog').open)hide('finance-dialog');}window.FinanceInvoices?.start(value);$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');}};
 })();

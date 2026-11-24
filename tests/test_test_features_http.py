@@ -1,5 +1,6 @@
 import io
 import json
+import sqlite3
 import zipfile
 from pathlib import Path
 import tempfile
@@ -23,6 +24,9 @@ class FakeSiteAccounts:
     def get_user(self, user_id, *, include_note=False):
         user = self.users.get(user_id)
         return dict(user) if user else None
+
+    def list_users(self, actor_id):
+        return [dict(user) for user in self.users.values()]
 
     def user_groups(self, user_id):
         return [{"id": group["id"], "name": group["name"]}
@@ -113,6 +117,85 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertFalse(updated.json()["item"]["pinned"])
         self.assertEqual(updated.json()["item"]["title"], "新公告")
+
+    def test_payer_directory_is_admin_only_and_contains_no_login_or_security_data(self):
+        self.site.users['alice-id']['password_hash'] = 'private-password-hash'
+        self.site.users['alice-id']['totp_secret'] = 'private-totp'
+        self.site.groups['group-id']['member_ids'] = ['alice-id']
+        self.assertEqual(self.client.get('/api/admin/finance/payers', headers={'x-test-user':'alice-id'}).status_code,403)
+        response = self.client.get('/api/admin/finance/payers')
+        self.assertEqual(response.status_code,200,response.text)
+        alice = next(user for user in response.json()['items'] if user['id']=='alice-id')
+        self.assertEqual(set(alice),{'id','username','note','groups'})
+        self.assertEqual(alice['groups'],[{'id':'group-id','name':'Agent'}])
+        self.assertNotIn('private-',response.text)
+
+    def test_admin_submission_belongs_to_payer_and_keeps_actual_creator_through_resubmission(self):
+        self.site.groups['group-id']['member_ids'] = ['alice-id']
+        response = self.client.post('/api/finance/applications',
+            data={'payer_user_id':'alice-id','project':'代提交订阅','invoice_fields':self.invoice_fields()},files=self.upload())
+        self.assertEqual(response.status_code,201,response.text)
+        item = response.json()['item'];app_id = item['id']
+        self.assertEqual(item['username'],'alice')
+        self.assertEqual(item['expense_group_id'],'group-id')
+        self.assertTrue(item['submitted_on_behalf'])
+        self.assertEqual((item['submitted_by_id'],item['submitted_by_name']),('admin-id','admin'))
+        self.assertEqual(self.store.finance_application(app_id)['user_id'],'alice-id')
+        self.assertEqual(self.client.get('/api/finance/applications').json()['items'],[])
+        self.assertEqual(len(self.client.get('/api/finance/applications',headers={'x-test-user':'alice-id'}).json()['items']),1)
+        events = self.client.get(f'/api/finance/applications/{app_id}/history').json()['items']
+        self.assertEqual((events[0]['actor_id'],events[0]['actor_name']),('admin-id','admin'))
+        self.assertTrue(events[0]['snapshot']['submitted_on_behalf'])
+        self.assertEqual(self.client.put(f'/api/finance/applications/{app_id}',data={'project':'他人不能修改'}).status_code,404)
+        reviewed = self.client.post(f'/api/admin/finance/applications/{app_id}/review',json={'status':'rejected','note':'补充材料','version':1})
+        self.assertEqual(reviewed.status_code,200,reviewed.text)
+        updated = self.client.put(f'/api/finance/applications/{app_id}',headers={'x-test-user':'alice-id'},
+            data={'project':'本人修改后重提','version':'1','payer_user_id':'admin-id'})
+        self.assertEqual(updated.status_code,200,updated.text)
+        self.assertEqual(updated.json()['item']['submitted_by_name'],'admin')
+        self.assertEqual(self.store.finance_application(app_id)['user_id'],'alice-id')
+        events = self.client.get(f'/api/finance/applications/{app_id}/history',headers={'x-test-user':'alice-id'}).json()['items']
+        self.assertEqual(events[0]['actor_name'],'alice')
+        self.assertTrue(all(event['snapshot']['submitted_on_behalf'] for event in events))
+        from mailapi_shared.test_features import TestFeatureStore
+        reopened = TestFeatureStore(Path(self.directory),None)
+        self.assertEqual(reopened.finance_application(app_id)['submitted_by_id'],'admin-id')
+
+    def test_proxy_permission_missing_account_and_payer_group_are_checked_before_saving_files(self):
+        self.site.groups['group-id']['member_ids'] = ['admin-id']
+        self.site.groups['payer-one'] = {'id':'payer-one','name':'用户组一','member_ids':['alice-id']}
+        self.site.groups['payer-two'] = {'id':'payer-two','name':'用户组二','member_ids':['alice-id']}
+        before = set(self.store.files.iterdir())
+        for actor,payer,group,status in [('alice-id','admin-id','',403),('admin-id','missing','',404),
+                                         ('admin-id','alice-id','',400),('admin-id','alice-id','group-id',400)]:
+            with self.subTest(actor=actor,payer=payer,group=group):
+                response = self.client.post('/api/finance/applications',headers={'x-test-user':actor},
+                    data={'payer_user_id':payer,'expense_group_id':group,'project':'权限验证','invoice_fields':self.invoice_fields()},files=self.upload())
+                self.assertEqual(response.status_code,status,response.text)
+                self.assertEqual(set(self.store.files.iterdir()),before)
+        self.site.users['manager-id'] = {'id':'manager-id','username':'manager','role':'manager','note':''}
+        response = self.client.post('/api/finance/applications',headers={'x-test-user':'manager-id'},
+            data={'payer_user_id':'alice-id','expense_group_id':'payer-two','project':'普通管理员代交','invoice_fields':self.invoice_fields()},files=self.upload())
+        self.assertEqual(response.status_code,201,response.text)
+        self.assertEqual(response.json()['item']['expense_group_id'],'payer-two')
+        self.assertEqual(response.json()['item']['submitted_by_name'],'manager')
+
+    def test_existing_finance_rows_and_history_survive_submitter_metadata_migration(self):
+        item = self.create_application().json()['item']
+        database = Path(self.directory)/'test_features.sqlite3'
+        with sqlite3.connect(database) as db:
+            history = db.execute('SELECT snapshot_json FROM finance_versions').fetchall()
+            db.execute('ALTER TABLE finance_applications DROP COLUMN submitted_by_id')
+            db.execute('ALTER TABLE finance_applications DROP COLUMN submitted_by_name')
+        from mailapi_shared.test_features import TestFeatureStore
+        migrated = TestFeatureStore(Path(self.directory),None)
+        restored = migrated.finance_application(item['id'])
+        self.assertEqual(restored['amount_cents'],1250)
+        self.assertEqual(restored['user_id'],'alice-id')
+        self.assertEqual(restored['submitted_by_id'],'')
+        self.assertEqual(len(restored['files']),1)
+        with sqlite3.connect(database) as db:
+            self.assertEqual(db.execute('SELECT snapshot_json FROM finance_versions').fetchall(),history)
 
     def test_group_attribution_is_validated_and_stays_separate_from_current_groups(self):
         self.site.groups["group-id"]["member_ids"] = ["alice-id"]

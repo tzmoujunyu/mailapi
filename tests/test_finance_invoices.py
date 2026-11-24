@@ -59,6 +59,25 @@ class FinanceInvoiceHttpTests(unittest.TestCase):
         return self.client.post('/api/finance/invoices/analyze',headers={'x-test-user':user},
             files={'invoice':('测试发票.pdf',io.BytesIO(content),content_type)})
 
+    def test_delegated_submission_reuses_uploading_admin_recognition_and_keeps_duplicate_and_payment_rules(self):
+        content=b'admin-uploaded-invoice'
+        self.assertEqual(self.analyze(content,user='admin-id').status_code,200)
+        created=self.client.post('/api/finance/applications',
+            data={'payer_user_id':'alice-id','project':'代提交','invoice_fields':json.dumps(FIELDS)},
+            files={'invoice':('发票.pdf',content,'application/pdf')})
+        self.assertEqual(created.status_code,201,created.text)
+        self.assertEqual(self.recognizer.call_count,1)
+        duplicate=self.client.post('/api/finance/applications',
+            data={'project':'重复票据','invoice_fields':json.dumps(FIELDS)},
+            files={'invoice':('发票.pdf',content,'application/pdf')})
+        self.assertEqual(duplicate.status_code,409,duplicate.text)
+        large={**FIELDS,'number':'20261122000000000099','total':'1000.00'}
+        missing_payment=self.client.post('/api/finance/applications',
+            data={'payer_user_id':'alice-id','project':'满千代提交','invoice_fields':json.dumps(large)},
+            files={'invoice':('发票.pdf',b'another-admin-invoice','application/pdf')})
+        self.assertEqual(missing_payment.status_code,400,missing_payment.text)
+        self.assertIn('支付记录',missing_payment.json()['detail'])
+
     def test_invoice_total_is_the_only_amount_and_payment_is_required_at_1000(self):
         for index, total in enumerate(('999.99', '1000.00', '1000.01')):
             fields = {**FIELDS, 'total': total, 'number': f'202611220000000000{index+10:02d}'}

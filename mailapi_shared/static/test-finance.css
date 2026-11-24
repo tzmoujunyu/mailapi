@@ -194,6 +194,16 @@ body.test-ui-features #view-finance { padding-top:0; }
 #view-finance .fin-upload-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--fin-muted); }
 #view-finance .fin-upload-name:empty { display:none; }
 #view-finance .fin-dialog textarea { min-height:90px; resize:vertical; }
+#view-finance #fin-announcement-dialog { width:min(680px,calc(100vw - 28px)); }
+#view-finance #announcement-body { resize:none; line-height:1.6; }
+#view-finance .fin-apply-menu { position:relative; }
+#view-finance #finance-open-form[aria-haspopup]::after { content:""; width:7px; height:7px; margin-left:3px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:translateY(-2px) rotate(45deg); }
+#view-finance #fin-apply-options { position:absolute; z-index:20; top:calc(100% + 8px); right:0; width:max-content; min-width:250px; max-width:calc(100vw - 48px); padding:6px; border:1px solid var(--fin-line); border-radius:12px; background:var(--fin-panel); box-shadow:0 8px 24px #0001; }
+#view-finance #fin-apply-options button { display:block; width:100%; padding:10px 12px; border:0; border-radius:7px; text-align:left; white-space:normal; overflow-wrap:anywhere; }
+#view-finance #fin-apply-options button:hover, #view-finance #fin-apply-options button:focus-visible { background:var(--fin-accent-bg); color:var(--fin-accent); }
+#view-finance .fin-payer-picker { min-width:0; display:grid; gap:12px; margin:0; padding:14px; border:1px solid var(--fin-line); border-radius:12px; }
+#view-finance .fin-payer-picker legend { padding:0 5px; font-size:13px; font-weight:600; }
+#view-finance .fin-delegate { display:block; margin-top:3px; color:var(--fin-muted); font-size:12px; font-weight:400; line-height:1.5; }
 #view-finance .fin-dialog-actions { display:flex; gap:7px; margin-top:0; }
 #view-finance #fin-detail-content { display:grid; gap:12px; }
 #view-finance #admin-finance-rows [data-open-finance] { cursor:pointer; }

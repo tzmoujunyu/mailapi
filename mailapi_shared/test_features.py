@@ -235,7 +235,9 @@ class TestFeatureStore:
                 db.execute("UPDATE finance_applications SET updated_at=created_at WHERE updated_at IS NULL")
             for name, definition in (("version", "INTEGER NOT NULL DEFAULT 1"),
                                      ("expense_group_id", "TEXT NOT NULL DEFAULT ''"),
-                                     ("expense_group_name", "TEXT NOT NULL DEFAULT '未分组'")):
+                                     ("expense_group_name", "TEXT NOT NULL DEFAULT '未分组'"),
+                                     ("submitted_by_id", "TEXT NOT NULL DEFAULT ''"),
+                                     ("submitted_by_name", "TEXT NOT NULL DEFAULT ''")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE finance_applications ADD COLUMN {name} {definition}")
             # Legacy rows have no reliable group id. Preserve a single recorded name;
@@ -686,22 +688,24 @@ class TestFeatureStore:
     def create_finance_application(self, *, user_id: str, username: str, user_note: str,
                                    groups: list[str], project: str, amount_cents: int,
                                    files: list[dict[str, Any]], expense_group_id: str = "",
-                                   expense_group_name: str = "未分组", invoice_fields=None, recognition=None) -> dict[str, Any]:
+                                   expense_group_name: str = "未分组", invoice_fields=None, recognition=None,
+                                   submitted_by=None) -> dict[str, Any]:
         app_id, now = secrets.token_hex(12), _now()
+        actor = submitted_by or {'id':user_id, 'username':username}
         with self._lock, closing(self._connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
             invoice = next((file for file in files if file['kind'] == 'invoice'),None)
             self._assert_invoice_available(db,app_id,invoice_fields,invoice['sha256'] if invoice else '')
             db.execute(
-                """INSERT INTO finance_applications(id,user_id,username,user_note,groups_json,project,amount_cents,status,created_at,updated_at,review_note,expense_group_id,expense_group_name)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '', ?, ?)""",
-                (app_id, user_id, username, user_note, json.dumps(groups, ensure_ascii=False), project, amount_cents, now, now, expense_group_id, expense_group_name),
+                """INSERT INTO finance_applications(id,user_id,username,user_note,groups_json,project,amount_cents,status,created_at,updated_at,review_note,expense_group_id,expense_group_name,submitted_by_id,submitted_by_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, '', ?, ?, ?, ?)""",
+                (app_id, user_id, username, user_note, json.dumps(groups, ensure_ascii=False), project, amount_cents, now, now, expense_group_id, expense_group_name, actor['id'], actor['username']),
             )
             for item in files:
                 self._insert_finance_file(db, app_id, item["kind"], item)
             if invoice_fields and invoice:
                 self._save_finance_invoice(db,app_id,invoice,invoice_fields,recognition or {})
-            self._finance_event(db, app_id, "submitted", user_id, username)
+            self._finance_event(db, app_id, "submitted", actor['id'], actor['username'])
         return self.finance_application(app_id)
 
     @staticmethod
@@ -976,12 +980,13 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             raise HTTPException(404, "未找到报销申请")
         item = hydrate_application(request, item)
         result = {key: value for key, value in item.items() if key != "user_id"}
+        result['submitted_on_behalf'] = bool(item.get('submitted_by_id') and item['submitted_by_id'] != item['user_id'])
         result["files"] = [{key: value for key, value in file_item.items() if key not in {"stored_name", "sha256"}}
                            for file_item in item["files"]]
         return result
 
-    def expense_group(request: Request, selected: Optional[str], existing=None):
-        groups = request.app.state.site_accounts.user_groups(current_user(request)["id"])
+    def expense_group(request: Request, selected: Optional[str], existing=None, *, user_id=None):
+        groups = request.app.state.site_accounts.user_groups(user_id or current_user(request)["id"])
         if existing and (selected is None or selected == existing["expense_group_id"]):
             return existing["expense_group_id"], existing["expense_group_name"]
         if not groups:
@@ -1101,7 +1106,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     def feature_status(request: Request):
         user = current_user(request)
         config = store.api2api_config_public()
-        return {"role": user["role"], "api2api": {key:config.get(key) for key in ('engine','configured','enabled')}}
+        return {"role": user["role"], "username":user['username'], "api2api": {key:config.get(key) for key in ('engine','configured','enabled')}}
 
     @router.get("/api/test-ui/views/{name}.js")
     def workspace_controller(name: str, request: Request):
@@ -1519,6 +1524,13 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     def finance_groups(request: Request):
         return {"items": request.app.state.site_accounts.user_groups(current_user(request)["id"])}
 
+    @router.get('/api/admin/finance/payers')
+    def finance_payers(request: Request):
+        actor = require_admin(request)
+        accounts = request.app.state.site_accounts
+        return {'items':[{'id':user['id'], 'username':user['username'], 'note':user.get('note',''),
+                          'groups':accounts.user_groups(user['id'])} for user in accounts.list_users(actor['id'])]}
+
     @router.post('/api/finance/invoices/analyze')
     async def analyze_finance_invoice(request: Request, invoice: Optional[UploadFile] = File(None), app_id: Optional[str] = Form(None)):
         from .finance_invoices import confirmed_fields
@@ -1591,9 +1603,17 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             background=BackgroundTask(path.unlink, missing_ok=True))
 
     @router.post("/api/finance/applications", status_code=201)
-    async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None)):
-        account, groups = user_snapshot(request)
-        group_id, group_name = expense_group(request, expense_group_id)
+    async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None), payer_user_id: Optional[str] = Form(None)):
+        actor = current_user(request)
+        if payer_user_id and payer_user_id != actor['id']:
+            require_admin(request)
+            account = request.app.state.site_accounts.get_user(payer_user_id, include_note=True)
+            if not account:
+                raise HTTPException(404, '未找到付款人账户，请重新选择')
+            groups = [group['name'] for group in request.app.state.site_accounts.user_groups(account['id'])]
+        else:
+            account, groups = user_snapshot(request)
+        group_id, group_name = expense_group(request, expense_group_id, user_id=account['id'])
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
             uploads = [("invoice", invoice)] + ([('payment', payment_record)] if payment_record else [])
@@ -1601,12 +1621,13 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         try:
-            fields, recognition = await prepare_invoice(saved,invoice_fields,account['id'])
+            fields, recognition = await prepare_invoice(saved,invoice_fields,actor['id'])
             amount_cents = application_amount(fields, saved)
             item = store.create_finance_application(user_id=account["id"], username=account["username"],
                                                     user_note=account.get("note", ""), groups=groups,
                                                     project=project, amount_cents=amount_cents, files=saved,
-                                                    expense_group_id=group_id, expense_group_name=group_name, invoice_fields=fields, recognition=recognition)
+                                                    expense_group_id=group_id, expense_group_name=group_name, invoice_fields=fields, recognition=recognition,
+                                                    submitted_by=actor)
         except Exception:
             for entry in saved:
                 (store.files / entry["stored_name"]).unlink(missing_ok=True)

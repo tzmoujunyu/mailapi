@@ -7,18 +7,101 @@ const assets = path.resolve(__dirname, '../../mailapi_shared/static');
 const read = name => fs.readFileSync(path.join(assets,name),'utf8');
 const tick = () => new Promise(resolve=>setImmediate(resolve));
 const application = (extra={}) => ({id:'app-1', username:'alice', user_note:'Agent', project:'模型订阅', amount:'12.50', amount_cents:1250, version:1, groups:['A','B'], expense_group_id:'a', expense_group_name:'A', status:'pending', created_at:new Date().toISOString(), files:[{kind:'invoice',original_name:'Invoice.pdf'}], ...extra});
-async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[], announcements=[{id:'notice',title:'公告<1>',body:'请补齐材料',pinned:true}]}={}) {
+async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[], payers=[], announcements=[{id:'notice',title:'公告<1>',body:'请补齐材料',pinned:true}]}={}) {
   const dom=new JSDOM(read('test-features.html'),{url:'http://localhost/test-features#view-finance',runScripts:'outside-only'});
   t.after(()=>dom.window.close());const w=dom.window;
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
   w.confirm=()=>true;
   const requests=[];
-  const fixtures={'/api/finance/applications':{items:mine},'/api/finance/announcements':{items:announcements},'/api/finance/groups':{items:groups},'/api/admin/finance/applications':{items:all},'/api/admin/finance/history':{items:history}};
+  const fixtures={'/api/finance/applications':{items:mine},'/api/finance/announcements':{items:announcements},'/api/finance/groups':{items:groups},'/api/admin/finance/applications':{items:all},'/api/admin/finance/history':{items:history},'/api/admin/finance/payers':{items:payers}};
   w.fetch=async(url,options={})=>{requests.push([url,options]);return {ok:true,json:async()=>fixtures[url] || {items:[]}};};
   w.eval(read('test-finance.js')+`\nwindow.financeFixtureController=financeController;`);
-  w.financeFixtureController.start(admin);await w.financeFixtureController.load();
+  w.financeFixtureController.start(admin,'admin');await w.financeFixtureController.load();
   return {w,el:id=>w.document.getElementById(id),requests};
 }
+test('admin reimbursement menu names the current payer and supports keyboard dismissal without affecting ordinary submission',async t=>{
+  const {w,el,requests}=await setup(t,{admin:true,groups:[{id:'own',name:'管理员组'}]});
+  el('finance-open-form').click();
+  assert.equal(el('finance-dialog').open,false);assert.equal(el('fin-apply-options').hidden,false);
+  assert.match(el('fin-apply-self').textContent,/admin/);
+  el('fin-apply-self').dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));
+  assert.equal(w.document.activeElement,el('fin-apply-other'));
+  el('fin-apply-other').dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  assert.equal(el('fin-apply-options').hidden,true);assert.equal(w.document.activeElement,el('finance-open-form'));
+  el('finance-open-form').click();el('fin-apply-self').click();
+  assert.equal(el('finance-dialog').open,true);assert.equal(el('fin-payer-picker').hidden,true);
+  assert.equal(el('fin-expense-group').value,'own');
+  assert.ok(!requests.some(([url])=>url==='/api/admin/finance/payers'));
+  const user=await setup(t);user.el('finance-open-form').click();
+  assert.equal(user.el('finance-dialog').open,true);assert.equal(user.el('fin-apply-options').hidden,true);
+  assert.equal(user.el('finance-open-form').hasAttribute('aria-haspopup'),false);
+});
+test('proxy submission searches payers, uses their groups and sends an explicit owner rather than the administrator',async t=>{
+  const {w,el,requests}=await setup(t,{admin:true,groups:[{id:'own',name:'管理员组'}],payers:[
+    {id:'alice',username:'alice',note:'财务组',groups:[{id:'a',name:'A'},{id:'b',name:'B'}]},
+    {id:'bob',username:'bob',note:'研发组',groups:[{id:'c',name:'C'}]},
+  ]});
+  el('finance-open-form').click();el('fin-apply-other').click();await tick();
+  assert.equal(el('fin-payer-picker').hidden,false);assert.equal(el('fin-payer-user').required,true);
+  el('finance-project').value='代提交订阅';
+  el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+  assert.match(el('fin-form-status').textContent,/选择付款人/);
+  assert.ok(!requests.some(([,o])=>o.method==='POST'));
+  el('fin-payer-user').value='alice';el('fin-payer-user').dispatchEvent(new w.Event('change'));
+  assert.equal(el('fin-expense-label').hidden,false);assert.equal(el('fin-expense-group').required,true);
+  assert.ok(![...el('fin-expense-group').options].some(o=>o.value==='own'));
+  el('fin-payer-search').value='研发';el('fin-payer-search').dispatchEvent(new w.Event('input'));
+  assert.equal(el('fin-payer-user').value,'');assert.equal(el('fin-expense-group').value,'');
+  el('fin-payer-user').value='bob';el('fin-payer-user').dispatchEvent(new w.Event('change'));
+  assert.equal(el('fin-expense-group').value,'c');assert.equal(el('fin-expense-label').hidden,true);
+  w.FinanceInvoices={getFields:()=>({number:'20261122000000000001',code:'',date:'2026-11-22',total:'123.45',check_code:''})};
+  Object.defineProperty(el('finance-invoice'),'files',{value:[new w.File(['invoice'],'invoice.pdf',{type:'application/pdf'})]});
+  el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+  const [url,options]=requests.find(([url,o])=>url==='/api/finance/applications'&&o.method==='POST');
+  assert.equal(url,'/api/finance/applications');assert.equal(options.body.get('payer_user_id'),'bob');
+  assert.equal(options.body.get('expense_group_id'),'c');assert.equal(el('finance-dialog').open,false);
+});
+test('late payer lists do not change a closed or personal application and failed lists cannot silently submit as self',async t=>{
+  const {w,el,requests}=await setup(t,{admin:true,groups:[{id:'own',name:'自己的组'}]});
+  const original=w.fetch;let resolve;
+  w.fetch=(url,options)=>url==='/api/admin/finance/payers'?new Promise(done=>{resolve=done;}):original(url,options);
+  el('finance-open-form').click();el('fin-apply-other').click();el('finance-dialog').close();
+  el('finance-open-form').click();el('fin-apply-self').click();
+  resolve({ok:true,json:async()=>({items:[{id:'late',username:'late',groups:[]}]})});await tick();
+  assert.equal(el('fin-payer-picker').hidden,true);assert.equal(el('fin-expense-group').value,'own');
+  assert.ok(!el('fin-payer-user').textContent.includes('late'));el('finance-dialog').close();
+  w.fetch=async(url,options)=>url==='/api/admin/finance/payers'?{ok:false,json:async()=>({detail:'账户加载失败'})}:original(url,options);
+  el('finance-open-form').click();el('fin-apply-other').click();await tick();
+  assert.match(el('fin-payer-status').textContent,/加载失败/);assert.equal(el('fin-payer-user').disabled,true);
+  el('finance-project').value='不能误提交';el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+  assert.ok(!requests.some(([,o])=>o.method==='POST'));
+});
+test('delegated applications show escaped actor names beside the payer and remain visible in the owner list',async t=>{
+  const item=application({submitted_on_behalf:true,submitted_by_name:'<img src=x onerror=alert(1)>'});
+  const {el}=await setup(t,{admin:true,all:[item]});
+  assert.match(el('admin-finance-rows').querySelector('.fin-delegate').textContent,/<img src=x/);
+  assert.equal(el('admin-finance-rows').querySelector('.fin-delegate img'),null);
+  const user=await setup(t,{mine:[item]});
+  assert.match(user.el('finance-rows').querySelector('.fin-delegate').textContent,/代替申请/);
+});
+test('announcement content grows with text, caps near the viewport bottom, and resets for a new announcement',async t=>{
+  const {w,el}=await setup(t,{admin:true});const dialog=el('fin-announcement-dialog'),body=el('announcement-body');
+  Object.defineProperty(w,'innerHeight',{configurable:true,value:900});
+  Object.defineProperty(body,'offsetHeight',{get:()=>Number.parseFloat(body.style.height)||0});
+  Object.defineProperty(dialog,'scrollHeight',{get:()=>280+body.offsetHeight});
+  Object.defineProperty(body,'scrollHeight',{get:()=>body.value.split('\n').length*22+16});
+  dialog.getBoundingClientRect=()=>({top:100});
+  el('fin-new-notice').click();const initial=Number.parseFloat(body.style.height);
+  body.value='公告内容\n'.repeat(12);body.dispatchEvent(new w.Event('input'));
+  assert.ok(Number.parseFloat(body.style.height)>initial);
+  body.value='公告内容\n'.repeat(80);body.scrollTop=37;body.dispatchEvent(new w.Event('input'));
+  assert.equal(Number.parseFloat(body.style.height),496);assert.equal(body.style.overflowY,'auto');assert.equal(body.scrollTop,37);
+  dialog.style.maxHeight='500px';body.dispatchEvent(new w.Event('input'));
+  assert.equal(Number.parseFloat(body.style.height),220);dialog.style.maxHeight='';
+  Object.defineProperty(w,'innerHeight',{configurable:true,value:600});w.dispatchEvent(new w.Event('resize'));
+  assert.equal(Number.parseFloat(body.style.height),196);
+  dialog.close();el('fin-new-notice').click();assert.equal(body.value,'');assert.equal(Number.parseFloat(body.style.height),initial);
+});
 test('ordinary users select one expense group and resubmit a rejected version without discarding its files',async t=>{
   const item=application({status:'rejected',review_note:'请补齐材料'});
   const {w,el,requests}=await setup(t,{mine:[item],groups:[{id:'a',name:'A'},{id:'b',name:'B'}]});

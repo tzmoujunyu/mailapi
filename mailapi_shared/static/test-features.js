@@ -18,7 +18,7 @@
   api('/api/test-features/status').then(async status => {
     isAdmin = ['admin','manager'].includes(status.role);
     apiController.start(isAdmin);
-    financeController.start(isAdmin);
+    financeController.start(isAdmin,status.username);
     await load();
   }).catch(error => { $('api-key-status').textContent = error.message; });
 })();
