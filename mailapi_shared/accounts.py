@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .site_accounts import SESSION_SECONDS, SiteAccountError
 from .web_security import LoginThrottle
+from .workspace_config import workspace_enabled
 
 
 SESSION_COOKIE = "mailapi_session"
@@ -22,12 +23,13 @@ def themed_page(page, request):
     page = page.replace('data-theme="system"', f'data-theme="{theme}"', 1).replace(
         'data-theme-account=""', 'data-theme-account="signed-in"' if user else 'data-theme-account=""', 1,
     )
-    if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test":
+    if workspace_enabled():
+        test_mode = os.getenv("MAILAPI_MODE", "test").strip().lower() == "test"
         path = request.url.path
         page_name = "home" if path in {"/", "/preview"} else "admin" if path == "/admin" else "access" if path == "/admin/access" else "login" if path == "/login" else "features" if path == "/test-features" else ""
         if page_name in {"home", "admin", "access", "features"}:
             from .test_navigation import prepare_workspace_page
-            page = prepare_workspace_page(page, page_name)
+            page = prepare_workspace_page(page, page_name, performance_monitor=test_mode)
             page = page.replace('data-test-view="' + page_name + '"',
                                 'data-test-view="' + page_name + '" data-test-account-id="' + escape(user["id"], quote=True)
                                 + '" data-test-account-role="' + escape(user["role"], quote=True) + '"', 1)
@@ -81,6 +83,10 @@ def themed_page(page, request):
             '<link rel="stylesheet" href="/static/test-ui.css"><script src="/static/test-ui.js" defer></script><link rel="stylesheet" href="/static/test-header.css"><script src="/static/test-header.js" defer></script><script src="/static/test-notifications.js" defer></script>' + router_script + '</head>',
             1,
         )
+        if not test_mode:
+            page = page.replace('<title>MailAPI 测试版</title>', '<title>MILVLG</title>')
+            page = page.replace('aria-label="测试版导航"', 'aria-label="网站导航"').replace('aria-label="MailAPI 测试版"', 'aria-label="MILVLG"')
+            page = page.replace('<p class="api-hint">测试版 API：请确认渠道配置，模拟上游数据仅供功能验证。</p>', '')
     return page
 
 
@@ -124,7 +130,7 @@ def create_account_router(static_dir, resource_catalog, *, on_admin_failure=None
         if result is None:
             return login_error(request, browser, "用户名、密码或动态验证码错误", 401)
         token, user = result
-        landing = "/test-features#view-overview" if os.getenv("MAILAPI_MODE", "test").strip().lower() == "test" else "/"
+        landing = "/test-features#view-overview" if workspace_enabled() else "/"
         response = RedirectResponse(landing, status_code=303) if browser else JSONResponse({"user": user})
         response.set_cookie(SESSION_COOKIE, token, httponly=True, max_age=SESSION_SECONDS,
                             samesite="lax", secure=request.url.scheme == "https")

@@ -1,8 +1,8 @@
-"""Test-only API2API and finance features.
+"""API2API and finance features for the optional shared workspace.
 
-This module is intentionally mounted only when ``MAILAPI_MODE=test``. It uses
-its own SQLite database under the test data directory so experiments cannot
-write production resource pools or website-account data.
+Test mode enables this module by default; production requires the explicit
+MAILAPI_WORKSPACE_ENABLED switch. Its SQLite database and attachments use the
+active mode's data directory. Test data is never imported into production here.
 """
 from __future__ import annotations
 

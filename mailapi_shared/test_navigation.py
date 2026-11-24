@@ -1,8 +1,8 @@
-"""Test-only page controllers for the persistent workspace shell.
+"""Page controllers for the optional persistent workspace shell.
 
 Reuse the existing page scripts in a local scope, rather than evaluating fetched
 HTML or maintaining a second implementation of account and resource operations.
-Production templates and their script entry points remain unchanged.
+Production keeps its original templates unless the workspace is enabled.
 """
 import re
 from html.parser import HTMLParser
@@ -16,7 +16,7 @@ SHARED_SCRIPTS = {"/static/theme.js", "/static/session.js", "/static/performance
 SHARED_STYLES = {"/static/theme.css", "/static/session.css"}
 
 
-def prepare_workspace_page(page, name):
+def prepare_workspace_page(page, name, *, performance_monitor=True):
     if name == 'home':
         page = page.replace('<nav class="home-directory"', '<header class="workspace-page-heading resources-page-heading"><h1>资源</h1></header><nav class="home-directory"', 1)
         page = page.replace('<h1 id="chatgpt-title">GPT账号</h1>', '<h2 id="chatgpt-title">GPT账号</h2>', 1)
@@ -27,6 +27,8 @@ def prepare_workspace_page(page, name):
 
     def script(match):
         source = re.search(r'\bsrc="([^"]+)"', match.group(1))
+        if source and source.group(1) == '/static/performance-monitor.js' and not performance_monitor:
+            return ''
         return match.group(0) if source and source.group(1) in SHARED_SCRIPTS else ""
 
     page = re.sub(r"<script\b([^>]*)>[\s\S]*?</script>", script, page)
@@ -39,11 +41,12 @@ def prepare_workspace_page(page, name):
 
     page = re.sub(r'<style\b[^>]*>|<link\b(?=[^>]*rel="stylesheet")[^>]*>', style, page)
     page = re.sub(r"(<body[^>]*>)", rf'\1<div class="test-page-view" data-test-view="{name}">', page, count=1)
-    page = page.replace('data-performance-monitor="disabled"', 'data-performance-monitor="test"', 1)
+    mode = 'test' if performance_monitor else 'disabled'
+    page = page.replace('data-performance-monitor="disabled"', f'data-performance-monitor="{mode}"', 1)
     if 'data-performance-monitor=' not in page:
-        page = page.replace("<html ", '<html data-performance-monitor="test" ', 1)
+        page = page.replace("<html ", f'<html data-performance-monitor="{mode}" ', 1)
     return page.replace("</body>", "</div></body>", 1).replace("<!-- PERFORMANCE_MONITOR_SCRIPT -->", "").replace(
-        "</head>", '<script src="/static/performance-monitor.js" defer></script></head>', 1,
+        "</head>", ('<script src="/static/performance-monitor.js" defer></script>' if performance_monitor else '') + '</head>', 1,
     )
 
 

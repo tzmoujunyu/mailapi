@@ -52,6 +52,7 @@ flowchart TD
 | --- | --- | --- |
 | 入口 | `code-receive.py` | `code-receive-test.py` |
 | 模式变量 | `MAILAPI_MODE=production` | `MAILAPI_MODE=test` |
+| 新版工作台、财务和 API | `MAILAPI_WORKSPACE_ENABLED=1` 时注册，默认关闭 | 默认注册 |
 | 默认端口 | `8000` | `8001` |
 | 默认主机 | `127.0.0.1`，公网通过可信反代接入 | `127.0.0.1`，仅允许回环 |
 | 数据目录 | `runtime/`，可用 `MAILAPI_DATA_DIR` 覆盖 | 启动时从 `runtime/` 创建隔离快照，可用 `TEST_DATA_DIR` 指定空的快照目录 |
@@ -65,6 +66,11 @@ flowchart TD
 快照，默认进程退出即删除。测试快照中的网站账户密码和资源授权只供隔离验证，不会自动同步到正式版。
 
 两版都使用网站账号会话。正式版的 admin 和普通管理员还需要一次性 TOTP 验证码。
+
+`workspace_config.py` 只决定新版界面与功能路由是否启用，不改变运行模式。
+正式工作台继续使用正式数据库、加密密钥及登录规则，测试版继续使用独立快照和测试配置；
+两版不会因开关而互相导入数据。工作台的额外 Python 依赖列在 `requirements-workspace.txt`，
+正式入口和进程管理方式无需改成测试入口。
 
 ## 请求和权限流程
 
@@ -103,6 +109,7 @@ GPT 账号与邮箱池分别持久化。`account_credentials.py` 保存 GPT 登�
 | Google、Outlook 客户端配置 | 加密的 `oauth_clients.json` | 必须保留 OAuth 密钥 |
 | 收件规则、接码历史、历史游标 | JSON 文件和历史目录 | 与邮箱资源及保留策略配套 |
 | Codex 图文提示、图片、错误日志 | JSON、WebP 和日志文件 | 按文件权限和保留期备份 |
+| 财务申请、历史、公告、通知、本站 API 关联与本地用量 | 启用工作台后的 `test_features.sqlite3`，位于当前模式的数据目录 | 与 `finance_files/`、凭据密钥及独立 NewAPI 数据库配套 |
 
 旧版 JSON 只作为历史迁移或回滚材料，不作为正式版当前数据源。切换完成后，旧明文副本应移出
 运行目录并使用加密归档保存。

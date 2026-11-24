@@ -82,6 +82,7 @@ from .oauth_clients import gmail_token_info, load_clients
 from .mail_retention import retain_mail_records
 from .log_privacy import error_diagnostic, redact_log_text, safe_traceback
 from .configuration import dotenv_entries
+from .workspace_config import workspace_enabled
 from .auth_artifact_versions import AuthArtifactVersionStore
 from .gpt_history import SOURCE_LABELS, describe_change
 from .subscription_dates import public_subscription, read_subscription_claims
@@ -118,6 +119,7 @@ if APP_MODE not in {"test", "production"}:
 IS_TEST = APP_MODE == "test"
 STATIC_DIR = BASE_DIR / "mailapi_shared" / "static"
 load_dotenv_file(BASE_DIR / (".env.test" if IS_TEST else ".env"))
+WORKSPACE_ENABLED = workspace_enabled()
 APP_PORT = int(os.getenv("TEST_PORT" if IS_TEST else "PORT", "8001" if IS_TEST else "8000"))
 TEST_PORT = APP_PORT if IS_TEST else 8001
 
@@ -2707,12 +2709,12 @@ async def access_guard(request: FastAPIRequest, call_next):
             origin is not None and not same_origin(origin, request.url.scheme, request.headers.get("host", ""))
         ):
             return JSONResponse({"detail": "不允许跨站请求"}, status_code=403)
-    test_api2api = IS_TEST and path.startswith("/api2api/v1/")
-    test_ui_asset = IS_TEST and path in {
+    workspace_api2api = WORKSPACE_ENABLED and path.startswith("/api2api/v1/")
+    workspace_ui_asset = WORKSPACE_ENABLED and path in {
         "/static/test-i18n-en.js", "/static/test-i18n.js", "/static/test-ui.js", "/static/test-ui.css",
         "/static/test-header.js", "/static/test-header.css", "/static/test-notifications.js", "/static/test-navigation.svg",
     }
-    public = callback or test_api2api or test_ui_asset or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
+    public = callback or workspace_api2api or workspace_ui_asset or path in {"/login", "/api/auth/login", "/static/theme.css", "/static/theme.js"}
     role = request_access_role(request)
     if not public and (role is None or (requires_admin_access(request) and role != "admin")):
         if path.startswith("/api/"):
@@ -3558,19 +3560,19 @@ def preview_page(request: FastAPIRequest):
 def render_index_page(request: FastAPIRequest, preview: bool = False):
     page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     role = request_access_role(request)
-    admin_link = '<a class="small-btn" href="/admin">账号控制台</a>' if not IS_TEST else ""
-    test_features_link = '<a class="small-btn" href="/test-features">测试版 API 与财务</a>' if not IS_TEST else ""
+    admin_link = '<a class="small-btn" href="/admin">账号控制台</a>' if not WORKSPACE_ENABLED else ""
+    test_features_link = '<a class="small-btn" href="/test-features">测试版 API 与财务</a>' if not WORKSPACE_ENABLED else ""
     preview_banner = (
         '<div class="preview-banner" role="status">用户账户主页预览：仅显示所选账户分组中已分配且上架的资源。请在账户管理中选择预览对象。'
         '<a href="/admin">返回账号控制台</a></div>'
-        if preview
+        if preview and not WORKSPACE_ENABLED
         else ""
     )
     subject_id = request.query_params.get("user_id")
     if not subject_id and request.state.site_user:
         subject_id = request.state.site_user["id"]
     preview_script = ("<script>window.__USER_PREVIEW__ = true;window.__PREVIEW_USER_ID__ = "
-                      + json.dumps(subject_id) + ";</script>") if preview and not IS_TEST else ""
+                      + json.dumps(subject_id) + ";</script>") if preview and not WORKSPACE_ENABLED else ""
     performance_mode = "test" if IS_TEST else "disabled"
     performance_script = '<script src="/static/performance-monitor.js"></script>' if IS_TEST else ""
     return HTMLResponse(
@@ -3591,7 +3593,7 @@ def admin_page(request: FastAPIRequest):
     performance_mode = "test" if IS_TEST else "disabled"
     performance_script = '<script src="/static/performance-monitor.js"></script>' if IS_TEST else ""
     test_features_link = ""
-    return_resource_link = '<a class="btn" href="/">返回账号主页</a>' if not IS_TEST else ""
+    return_resource_link = '<a class="btn" href="/">返回账号主页</a>' if not WORKSPACE_ENABLED else ""
     return HTMLResponse(
         themed_page(page, request)
         .replace('data-performance-monitor="disabled"', f'data-performance-monitor="{performance_mode}"', 1)
@@ -5089,7 +5091,7 @@ def log_admin_login_failure(reason: str) -> None:
 
 
 TEST_FEATURE_STORE = None
-if IS_TEST:
+if WORKSPACE_ENABLED:
     from .test_features import install_test_features
 
     TEST_FEATURE_STORE = install_test_features(app, STATIC_DIR, DATA_DIR, CREDENTIAL_KEYRING)

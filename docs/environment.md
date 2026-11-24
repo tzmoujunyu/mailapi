@@ -17,9 +17,12 @@
 
 ## Python 依赖
 
-生产和测试服务都安装 `requirements.txt`，开发和测试环境再安装 `requirements-dev.txt`。
+保留原界面的正式服务安装 `requirements.txt`。启用新版工作台、财务和 API 时安装
+`requirements-workspace.txt`；开发和测试环境安装 `requirements-dev.txt`，其中已包含工作台依赖。
 
-`requirements.txt` 当前包含 FastAPI、Uvicorn、Google API/OAuth、MSAL、python-multipart、pyotp、Pillow 和 pillow-heif。`requirements-dev.txt` 当前额外包含 httpx，用于 FastAPI `TestClient`。
+`requirements.txt` 当前包含 FastAPI、Uvicorn、Google API/OAuth、MSAL、python-multipart、pyotp、Pillow 和 pillow-heif。
+`requirements-workspace.txt` 另包含 httpx、Excel 导出所需的 openpyxl，以及发票 PDF/OCR 所需的
+pypdfium2、RapidOCR 和 ONNX Runtime。切换前须在目标服务器的独立 Conda 环境检查安装与导入，不能仅凭本地测试判断服务器已经具备依赖。
 
 Codex 图文提示需要 Pillow 的 WebP/AVIF 支持及 pillow-heif 的 HEIC 解码支持。本次验证版本为 Pillow 13.0.0、pillow-heif 1.8.1，
 macOS arm64 和 Linux x86_64 均使用预编译 wheel，无需另建 Node.js 运行服务。Tiptap 和 PhotoSwipe 静态文件已包含在仓库中。
@@ -73,6 +76,7 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 | `PORT`、`MAILAPI_HOST` | 正式网站端口和监听地址 |
 | `MAILAPI_TRUSTED_PROXY_IPS` | 反代连接源站时使用的确切 IP，逗号分隔 |
 | `MAILAPI_DATA_DIR` | 正式运行数据目录，默认 `runtime` |
+| `MAILAPI_WORKSPACE_ENABLED` | 正式模式显式设为 `1` 后启用新版工作台、财务和 API；默认不启用 |
 | `MAILAPI_EXTERNAL_WATCHERS` | 外部邮箱和 Codex 监听，默认开启 |
 | `MAILAPI_AUTH_ARTIFACT_CLEANUP` | 设为 `1` 后正式版启动时清理授权归档和旧恢复点，要求启用 OAuth 加密 |
 | `MAILAPI_AUTH_ARTIFACT_KEEP_HISTORY`、`MAILAPI_AUTH_ARTIFACT_MAX_AGE_DAYS` | 正式版授权归档与恢复点保留数量和天数，默认 `5` 和 `30` |
@@ -84,6 +88,25 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 公网反代需保留站点 `Host`，覆盖客户端传入的 `X-Forwarded-Proto` 和 `X-Forwarded-For`，
 分别传入 `https` 与代理确认的客户端地址。源站网络层应只对反代开放服务端口，反代访问日志应省略
 OAuth 回调的查询参数。应用登录请求上限为 8 KiB，一般请求体上限为 1 MiB。
+
+### 新版工作台的正式切换准备
+
+`.env.workspace.example` 只提供可选开关，不能覆盖服务器原有 `.env`。
+正式入口继续使用 `python code-receive.py`，保留 `MAILAPI_MODE=production`、正式数据目录、
+凭据密钥、管理员 TOTP、外部监听和可信反代设置。启用工作台不会读取 `TEST_*` 数据或初始化测试管理员，
+也不会启用测试性能监测脚本。
+
+同步应先记录正式提交和进程、备份匹配的数据与密钥，再在隔离副本安装工作台依赖并演练登录、权限、附件与导出。
+确认后只同步代码，最后在正式配置增加 `MAILAPI_WORKSPACE_ENABLED=1` 并重启正式入口。
+此文档和示例文件不代表已经完成服务器部署。
+
+财务、通知和本站 API 关联继续使用名为 `test_features.sqlite3` 的数据库，但位置取当前运行模式的数据目录；
+正式首次启用时在正式目录创建空库及私有附件目录。不要用测试库、账户或附件目录覆盖正式数据。
+如需迁入测试中的真实报销，必须另行确认范围、账户对应关系和历史附件，不能直接复制整库。
+正式备份从启用后也必须包含此库和 `finance_files/`。
+
+API 转发还需独立的正式 NewAPI 服务、数据库及真实渠道；复制网页代码不会自动部署网关。
+NewAPI 的数据库、配置和管理凭据需要独立备份。测试预览使用的模拟上游、演示 Key 和额度不能用于正式配置。
 
 ### 测试版 `.env.test`
 

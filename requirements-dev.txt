@@ -1,6 +1,1 @@
--r requirements.txt
-httpx
-openpyxl==3.1.5
-pypdfium2==5.15.2
-rapidocr==3.10.0
-onnxruntime==1.32.0
+-r requirements-workspace.txt
