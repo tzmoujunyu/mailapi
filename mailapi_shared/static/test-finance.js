@@ -172,8 +172,8 @@ const financeController = (() => {
     render();
   }
   function renderNotices() {
-    const latest=announcements[0];
-    $('announcements').innerHTML=`${latest ? `<span class="fin-tag ${latest.pinned?'fin-pin':''}" data-ui-text>${t(latest.pinned?'置顶公告':'财务公告')}</span><button class="fin-notice-title" type="button" data-read-notice="${html(latest.id)}" data-i18n-skip>${html(latest.title)}</button>` : `<span class="fin-notice-title fin-secondary" data-ui-text>${t('暂无公告。')}</span>`}<button class="fin-link" type="button" id="fin-notice-history">${t('历史公告')} →</button>`;
+    const latest=announcements.slice(0,3);
+    $('announcements').innerHTML=`<div class="fin-notice-list">${latest.length ? latest.map(item=>`<div class="fin-notice-item"><span class="fin-tag ${item.pinned?'fin-pin':''}" data-ui-text>${t(item.pinned?'置顶公告':'财务公告')}</span><button class="fin-notice-title" type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button></div>`).join('') : `<span class="fin-notice-title fin-secondary" data-ui-text>${t('暂无公告。')}</span>`}</div><button class="fin-link" type="button" id="fin-notice-history">${t('历史公告')} →</button>`;
     const query=$('fin-search').value.trim().toLocaleLowerCase();
     $('admin-announcements').innerHTML=announcements.filter(item=>tab!=='notices'||(item.title+' '+item.body).toLocaleLowerCase().includes(query)).map(item=>`<article class="announcement-admin-item"><div><h3><span data-i18n-skip>${html(item.title)}</span> ${item.pinned?`<span class="fin-tag fin-pin" data-ui-text>${t('置顶')}</span>`:''}</h3><small>${html(date(item.updated_at))}</small></div><div class="actions"><button class="fin-link" type="button" data-read-notice="${html(item.id)}">${t('阅览')}</button><button class="fin-link" type="button" data-edit-notice="${html(item.id)}">${t('编辑')}</button><button class="fin-link" type="button" data-pin-notice="${html(item.id)}">${t(item.pinned?'取消置顶':'置顶')}</button><button class="fin-link" type="button" data-delete-notice="${html(item.id)}">${t('删除')}</button></div></article>`).join('') || `<p class="fin-secondary" data-ui-text>${t('暂无公告。')}</p>`;
   }

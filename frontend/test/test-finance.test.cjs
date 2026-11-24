@@ -7,13 +7,13 @@ const assets = path.resolve(__dirname, '../../mailapi_shared/static');
 const read = name => fs.readFileSync(path.join(assets,name),'utf8');
 const tick = () => new Promise(resolve=>setImmediate(resolve));
 const application = (extra={}) => ({id:'app-1', username:'alice', user_note:'Agent', project:'模型订阅', amount:'12.50', amount_cents:1250, version:1, groups:['A','B'], expense_group_id:'a', expense_group_name:'A', status:'pending', created_at:new Date().toISOString(), files:[{kind:'invoice',original_name:'Invoice.pdf'}], ...extra});
-async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[]}={}) {
+async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[], announcements=[{id:'notice',title:'公告<1>',body:'请补齐材料',pinned:true}]}={}) {
   const dom=new JSDOM(read('test-features.html'),{url:'http://localhost/test-features#view-finance',runScripts:'outside-only'});
   t.after(()=>dom.window.close());const w=dom.window;
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
   w.confirm=()=>true;
   const requests=[];
-  const fixtures={'/api/finance/applications':{items:mine},'/api/finance/announcements':{items:[{id:'notice',title:'公告<1>',body:'请补齐材料',pinned:true}]},'/api/finance/groups':{items:groups},'/api/admin/finance/applications':{items:all},'/api/admin/finance/history':{items:history}};
+  const fixtures={'/api/finance/applications':{items:mine},'/api/finance/announcements':{items:announcements},'/api/finance/groups':{items:groups},'/api/admin/finance/applications':{items:all},'/api/admin/finance/history':{items:history}};
   w.fetch=async(url,options={})=>{requests.push([url,options]);return {ok:true,json:async()=>fixtures[url] || {items:[]}};};
   w.eval(read('test-finance.js')+`\nwindow.financeFixtureController=financeController;`);
   w.financeFixtureController.start(admin);await w.financeFixtureController.load();
@@ -162,6 +162,29 @@ test('announcements open in dialogs and user-provided titles and filenames rende
   assert.equal(el('finance-rows').querySelector('img'),null);
   w.document.querySelector('[data-close-dialog="fin-detail-dialog"]').click();assert.equal(el('fin-detail-dialog').open,false);
   el('fin-notice-history').click();assert.ok(el('fin-detail-content').querySelector('[data-read-notice]'));
+});
+
+test('only the first three finance notices appear at the top while all remain readable in history and management',async t=>{
+  const announcements=Array.from({length:5},(_,i)=>({id:'notice-'+i,title:'公告'+i,body:'内容'+i,pinned:i<2}));
+  const {w,el}=await setup(t,{admin:true,announcements});
+  const visible=[...el('announcements').querySelectorAll('[data-read-notice]')];
+  assert.deepEqual(visible.map(button=>button.dataset.readNotice),['notice-0','notice-1','notice-2']);
+  assert.equal(el('admin-announcements').querySelectorAll('[data-read-notice]').length,5);
+  visible[2].click();assert.ok(el('fin-detail-content').textContent.includes('内容2'));
+  w.document.querySelector('[data-close-dialog="fin-detail-dialog"]').click();el('fin-notice-history').click();
+  const history=el('fin-detail-content').querySelectorAll('[data-read-notice]');
+  assert.equal(history.length,5);history[4].click();
+  assert.ok(el('fin-detail-content').textContent.includes('内容4'));
+});
+
+test('finance notices do not add empty rows when fewer than three are published',async t=>{
+  for(const count of [0,1,3]){
+    const announcements=Array.from({length:count},(_,i)=>({id:'notice-'+i,title:'公告'+i,body:'内容',pinned:false}));
+    const {el}=await setup(t,{announcements});
+    assert.equal(el('announcements').querySelectorAll('[data-read-notice]').length,count);
+    assert.ok(el('fin-notice-history'));
+    if(!count){assert.match(el('announcements').textContent,/暂无公告/);el('fin-notice-history').click();assert.match(el('fin-detail-content').textContent,/暂无公告/);}
+  }
 });
 
 test('report export uses all current filters, own scope and the active report type',async t=>{
