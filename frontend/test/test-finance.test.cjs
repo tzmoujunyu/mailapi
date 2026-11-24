@@ -161,7 +161,7 @@ test('announcements open in dialogs and user-provided titles and filenames rende
   assert.ok(el('fin-detail-content').textContent.includes('公告<1>'));assert.equal(el('fin-detail-content').querySelector('img'),null);
   assert.equal(el('finance-rows').querySelector('img'),null);
   w.document.querySelector('[data-close-dialog="fin-detail-dialog"]').click();assert.equal(el('fin-detail-dialog').open,false);
-  el('fin-notice-history').click();assert.ok(el('fin-detail-content').querySelector('[data-read-notice]'));
+  el('fin-notice-history').click();assert.ok(el('fin-notice-history-dialog').open);assert.ok(el('fin-notice-history-list').querySelector('[data-read-notice]'));
 });
 
 test('only the first three finance notices appear at the top while all remain readable in history and management',async t=>{
@@ -172,7 +172,7 @@ test('only the first three finance notices appear at the top while all remain re
   assert.equal(el('admin-announcements').querySelectorAll('[data-read-notice]').length,5);
   visible[2].click();assert.ok(el('fin-detail-content').textContent.includes('内容2'));
   w.document.querySelector('[data-close-dialog="fin-detail-dialog"]').click();el('fin-notice-history').click();
-  const history=el('fin-detail-content').querySelectorAll('[data-read-notice]');
+  const history=el('fin-notice-history-list').querySelectorAll('[data-read-notice]');
   assert.equal(history.length,5);history[4].click();
   assert.ok(el('fin-detail-content').textContent.includes('内容4'));
 });
@@ -183,8 +183,52 @@ test('finance notices do not add empty rows when fewer than three are published'
     const {el}=await setup(t,{announcements});
     assert.equal(el('announcements').querySelectorAll('[data-read-notice]').length,count);
     assert.ok(el('fin-notice-history'));
-    if(!count){assert.match(el('announcements').textContent,/暂无公告/);el('fin-notice-history').click();assert.match(el('fin-detail-content').textContent,/暂无公告/);}
+    if(!count){assert.match(el('announcements').textContent,/暂无公告/);el('fin-notice-history').click();assert.match(el('fin-notice-history-list').textContent,/暂无公告/);assert.equal(el('fin-notice-prev').disabled,true);assert.equal(el('fin-notice-next').disabled,true);}
   }
+});
+
+test('past announcements paginate all records and retain the selected page after reading a notice',async t=>{
+  const announcements=Array.from({length:26},(_,i)=>({id:'notice-'+i,title:'公告'+i,body:'内容'+i,pinned:i<2}));
+  const {w,el,requests}=await setup(t,{announcements});el('fin-notice-history').click();
+  const buttons=()=>[...el('fin-notice-history-list').querySelectorAll('[data-read-notice]')];
+  assert.equal(buttons().length,10);assert.equal(buttons()[0].dataset.readNotice,'notice-0');
+  assert.equal(el('fin-notice-history-count').textContent,'26 条公告');assert.equal(el('fin-notice-history-page').textContent,'1 / 3');
+  assert.equal(el('fin-notice-prev').disabled,true);el('fin-notice-next').click();
+  assert.equal(buttons()[0].dataset.readNotice,'notice-10');el('fin-notice-next').click();
+  assert.equal(buttons().length,6);assert.equal(el('fin-notice-next').disabled,true);assert.equal(el('fin-notice-history-page').textContent,'3 / 3');
+  el('fin-notice-prev').click();buttons()[0].click();
+  assert.ok(el('fin-detail-dialog').open);assert.ok(el('fin-detail-content').textContent.includes('内容10'));
+  el('fin-detail-content').querySelector('[data-close-dialog="fin-detail-dialog"]').click();
+  assert.equal(el('fin-detail-dialog').open,false);assert.ok(el('fin-notice-history-dialog').open);
+  assert.equal(el('fin-notice-history-page').textContent,'2 / 3');assert.equal(buttons()[0].dataset.readNotice,'notice-10');
+  announcements.splice(8);await w.financeFixtureController.load();
+  assert.equal(el('fin-notice-history-page').textContent,'1 / 1');assert.equal(buttons().length,8);
+  assert.ok(!requests.some(([url])=>url.includes('/admin/')));
+});
+
+test('past notice search matches titles and content, resets pagination, and preserves the query on return',async t=>{
+  const announcements=Array.from({length:26},(_,i)=>({id:'notice-'+i,title:i===1?'研讨会补贴':'公告'+i,body:i%2?'住宿说明':'Travel PAYMENT <img src=x onerror=alert(1)>',pinned:false}));
+  const {w,el}=await setup(t,{announcements});el('fin-notice-history').click();
+  const search=value=>{el('fin-notice-search').value=value;el('fin-notice-search').dispatchEvent(new w.Event('input'));};
+  search('  travel  ');assert.equal(el('fin-notice-history-count').textContent,'13 条公告');
+  assert.equal(el('fin-notice-history-list').querySelector('img'),null);el('fin-notice-next').click();
+  assert.equal(el('fin-notice-history-list').querySelectorAll('[data-read-notice]').length,3);
+  el('fin-notice-history-list').querySelector('[data-read-notice]').click();
+  assert.equal(el('fin-detail-content').querySelector('img'),null);
+  el('fin-detail-content').querySelector('[data-close-dialog="fin-detail-dialog"]').click();
+  assert.equal(el('fin-notice-search').value,'  travel  ');assert.equal(el('fin-notice-history-page').textContent,'2 / 2');
+  search('研讨会');assert.equal(el('fin-notice-history-count').textContent,'1 条公告');
+  assert.equal(el('fin-notice-history-list').querySelector('[data-read-notice]').dataset.readNotice,'notice-1');
+  assert.equal(el('fin-notice-history-page').textContent,'1 / 1');assert.equal(el('fin-notice-prev').disabled,true);assert.equal(el('fin-notice-next').disabled,true);
+  search('没有这个词');assert.match(el('fin-notice-history-list').textContent,/没有匹配的公告/);
+  assert.equal(el('fin-notice-history-count').textContent,'0 条公告');
+  search('');assert.equal(el('fin-notice-history-count').textContent,'26 条公告');assert.equal(el('fin-notice-history-page').textContent,'1 / 3');
+  w.document.querySelector('[data-close-dialog="fin-notice-history-dialog"]').click();
+  assert.equal(el('fin-notice-history-dialog').open,false);
+  el('fin-notice-history').click();assert.equal(el('fin-notice-search').value,'');
+  el('fin-notice-history-list').querySelector('[data-read-notice]').click();
+  w.history.replaceState(null,'','#view-api2api');w.dispatchEvent(new w.HashChangeEvent('hashchange'));
+  assert.equal(el('fin-detail-dialog').open,false);assert.equal(el('fin-notice-history-dialog').open,false);
 });
 
 test('report export uses all current filters, own scope and the active report type',async t=>{
