@@ -16,7 +16,7 @@ const financeController = (() => {
   const groupKey = item => item.expense_group_id || `legacy:${item.expense_group_name || '未分组'}`;
   let admin = false, tab = 'mine', mine = [], all = [], history = [], announcements = [], groups = [], review = null, page = 1;
   let selected = new Set(), loading = null;
-  let noticePage = 1;
+  let noticePage = 1, adminNoticePage = 1;
   let reportAbort = null;
   let detailAbort = null, detailSequence = 0, detailItem = null, detailEvent = null;
   const request = async (url, options={}) => {
@@ -164,6 +164,7 @@ const financeController = (() => {
     for (const name of ['mine','review','stats','history','notices']) $('fin-panel-'+name).hidden = tab!==name;
     for (const button of $('finance-tabs').querySelectorAll('button')) button.setAttribute('aria-pressed',String(button.dataset.finTab===tab));
     $('finance-filter-card').hidden=tab==='notices';
+    $('fin-search').closest('label').hidden=tab==='notices';
     const destination=tab==='notices' ? $('fin-filter-parking') : $('fin-panel-'+tab).querySelector('.fin-filter-slot');
     destination.append($('finance-filter-card'));
     $('fin-refresh').hidden=tab!=='review';
@@ -172,19 +173,32 @@ const financeController = (() => {
     if (reset) { $('fin-more-filters').open=false;$('fin-search').value='';$('fin-status').value=tab==='review'?'pending':'all';$('fin-period').value=tab==='stats'?'month':'all';$('fin-min').value=$('fin-max').value=$('fin-group').value=$('fin-user').value=$('fin-reviewer').value='';period(); }
     render();
   }
+  function noticeSummary(item) {
+    return `<button class="fin-link fin-notice-history-title" type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button><div class="fin-notice-history-meta">${item.pinned?`<span class="fin-tag fin-pin">${t('置顶')}</span>`:''}<time class="fin-secondary" data-i18n-skip>${html(date(item.updated_at))}</time></div><p class="fin-secondary" data-i18n-skip>${html(item.body.replace(/\s+/g,' ').slice(0,120))}</p>`;
+  }
   function renderNotices() {
     const latest=announcements.slice(0,3);
     $('announcements').innerHTML=`<div class="fin-notice-list">${latest.length ? latest.map(item=>`<div class="fin-notice-item"><span class="fin-tag ${item.pinned?'fin-pin':''}" data-ui-text>${t(item.pinned?'置顶公告':'财务公告')}</span><button class="fin-notice-title" type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button></div>`).join('') : `<span class="fin-notice-title fin-secondary" data-ui-text>${t('暂无公告。')}</span>`}</div><button class="fin-link" type="button" id="fin-notice-history">${t('历史公告')} →</button>`;
-    const query=$('fin-search').value.trim().toLocaleLowerCase();
-    $('admin-announcements').innerHTML=announcements.filter(item=>tab!=='notices'||(item.title+' '+item.body).toLocaleLowerCase().includes(query)).map(item=>`<article class="announcement-admin-item"><div><h3><span data-i18n-skip>${html(item.title)}</span> ${item.pinned?`<span class="fin-tag fin-pin" data-ui-text>${t('置顶')}</span>`:''}</h3><small>${html(date(item.updated_at))}</small></div><div class="actions"><button class="fin-link" type="button" data-read-notice="${html(item.id)}">${t('阅览')}</button><button class="fin-link" type="button" data-edit-notice="${html(item.id)}">${t('编辑')}</button><button class="fin-link" type="button" data-pin-notice="${html(item.id)}">${t(item.pinned?'取消置顶':'置顶')}</button><button class="fin-link" type="button" data-delete-notice="${html(item.id)}">${t('删除')}</button></div></article>`).join('') || `<p class="fin-secondary" data-ui-text>${t('暂无公告。')}</p>`;
+    renderAdminNotices();
     if($('fin-notice-history-dialog').open)renderNoticeHistory();
+  }
+  function renderAdminNotices() {
+    const query=$('fin-admin-notice-search').value.trim().toLocaleLowerCase();
+    const matches=announcements.filter(item=>(item.title+' '+item.body).toLocaleLowerCase().includes(query));
+    const pages=Math.max(1,Math.ceil(matches.length/10));adminNoticePage=Math.max(1,Math.min(adminNoticePage,pages));
+    const list=$('admin-announcements');
+    list.innerHTML=matches.slice((adminNoticePage-1)*10,adminNoticePage*10).map(item=>`<article class="fin-notice-history-item announcement-admin-item"><div>${noticeSummary(item)}</div><div class="actions"><button class="fin-link" type="button" data-edit-notice="${html(item.id)}">${t('编辑')}</button><button class="fin-link" type="button" data-pin-notice="${html(item.id)}">${t(item.pinned?'取消置顶':'置顶')}</button><button class="fin-link" type="button" data-delete-notice="${html(item.id)}">${t('删除')}</button></div></article>`).join('')||`<p class="fin-secondary">${t(query?'没有匹配的公告，请尝试其他关键词':'暂无公告。')}</p>`;
+    list.scrollTop=0;
+    $('fin-admin-notice-count').textContent=`${matches.length} ${t('条公告')}`;
+    $('fin-admin-notice-page').textContent=`${adminNoticePage} / ${pages}`;
+    $('fin-admin-notice-prev').disabled=adminNoticePage===1;$('fin-admin-notice-next').disabled=adminNoticePage===pages;
   }
   function renderNoticeHistory() {
     const query=$('fin-notice-search').value.trim().toLocaleLowerCase();
     const matches=announcements.filter(item=>(item.title+' '+item.body).toLocaleLowerCase().includes(query));
     const pages=Math.max(1,Math.ceil(matches.length/10));noticePage=Math.max(1,Math.min(noticePage,pages));
     const list=$('fin-notice-history-list');
-    list.innerHTML=matches.slice((noticePage-1)*10,noticePage*10).map(item=>`<article class="fin-notice-history-item"><button class="fin-link" type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button><div class="fin-notice-history-meta">${item.pinned?`<span class="fin-tag fin-pin">${t('置顶')}</span>`:''}<time class="fin-secondary" data-i18n-skip>${html(date(item.updated_at))}</time></div><p class="fin-secondary" data-i18n-skip>${html(item.body.replace(/\s+/g,' ').slice(0,120))}</p></article>`).join('')||`<p class="fin-secondary">${t(query?'没有匹配的公告，请尝试其他关键词':'暂无公告。')}</p>`;
+    list.innerHTML=matches.slice((noticePage-1)*10,noticePage*10).map(item=>`<article class="fin-notice-history-item">${noticeSummary(item)}</article>`).join('')||`<p class="fin-secondary">${t(query?'没有匹配的公告，请尝试其他关键词':'暂无公告。')}</p>`;
     list.scrollTop=0;
     $('fin-notice-history-count').textContent=`${matches.length} ${t('条公告')}`;
     $('fin-notice-history-page').textContent=`${noticePage} / ${pages}`;
@@ -283,6 +297,7 @@ const financeController = (() => {
     $('fin-detail-title').textContent=t('财务公告');$('fin-detail-content').innerHTML=`<h3 data-i18n-skip>${html(item.title)}</h3><small class="muted">${html(date(item.updated_at))}</small><p class="fin-prewrap" data-i18n-skip>${html(item.body)}</p>${$('fin-notice-history-dialog').open?`<div class="actions"><button type="button" data-close-dialog="fin-detail-dialog">${t('返回历史公告')}</button></div>`:''}`;show('fin-detail-dialog');
   }
   $('fin-notice-search').addEventListener('input',()=>{noticePage=1;renderNoticeHistory();});
+  $('fin-admin-notice-search').addEventListener('input',()=>{adminNoticePage=1;renderAdminNotices();});
   $('finance-open-form').addEventListener('click',()=>openApplication());
   $('fin-new-notice').addEventListener('click',()=>openNoticeForm());
   for(const kind of ['invoice','payment']) $(kind==='invoice'?'finance-invoice':'finance-payment').addEventListener('change',event=>{
@@ -316,6 +331,7 @@ const financeController = (() => {
       if(button.dataset.readNotice)noticeDetail(button.dataset.readNotice);
       if(button.id==='fin-notice-history')openNoticeHistory();
       if(button.dataset.noticePage){noticePage+=Number(button.dataset.noticePage);renderNoticeHistory();}
+      if(button.dataset.adminNoticePage){adminNoticePage+=Number(button.dataset.adminNoticePage);renderAdminNotices();}
       if(button.dataset.editNotice)openNoticeForm(announcements.find(item=>item.id===button.dataset.editNotice));
       if(button.dataset.pinNotice){const item=announcements.find(item=>item.id===button.dataset.pinNotice);await request(`/api/admin/finance/announcements/${item.id}`,json('PUT',{title:item.title,body:item.body,pinned:!item.pinned}));await load();}
       if(button.dataset.deleteNotice && confirm(t('删除这条公告？'))){await request(`/api/admin/finance/announcements/${button.dataset.deleteNotice}`,{method:'DELETE'});await load();}

@@ -231,6 +231,56 @@ test('past notice search matches titles and content, resets pagination, and pres
   assert.equal(el('fin-detail-dialog').open,false);assert.equal(el('fin-notice-history-dialog').open,false);
 });
 
+test('announcement management searches and paginates independently of past announcements and application filters',async t=>{
+  const announcements=Array.from({length:26},(_,i)=>({id:'notice-'+i,title:i===25?'研讨会补贴':'公告'+i,body:i<13?'Travel PAYMENT <img src=x onerror=alert(1)>':'其他正文',pinned:i<2}));
+  const {w,el}=await setup(t,{admin:true,announcements});w.document.querySelector('[data-fin-tab="notices"]').click();
+  const rows=()=>[...el('admin-announcements').querySelectorAll('[data-read-notice]')];
+  const search=value=>{el('fin-admin-notice-search').value=value;el('fin-admin-notice-search').dispatchEvent(new w.Event('input'));};
+  assert.equal(el('fin-search').closest('label').hidden,true);assert.equal(rows().length,10);
+  assert.equal(el('fin-admin-notice-count').textContent,'26 条公告');assert.equal(el('fin-admin-notice-prev').disabled,true);
+  el('fin-admin-notice-next').click();assert.equal(rows()[0].dataset.readNotice,'notice-10');
+  el('fin-admin-notice-next').click();assert.equal(rows().length,6);assert.equal(el('fin-admin-notice-next').disabled,true);
+  el('fin-notice-history').click();assert.equal(el('fin-notice-history-page').textContent,'1 / 3');
+  el('fin-notice-next').click();assert.equal(el('fin-admin-notice-page').textContent,'3 / 3');
+  w.document.querySelector('[data-close-dialog="fin-notice-history-dialog"]').click();
+  search('  tRAvEL  ');assert.equal(el('fin-admin-notice-count').textContent,'13 条公告');assert.equal(el('fin-admin-notice-page').textContent,'1 / 2');
+  assert.equal(el('admin-announcements').querySelector('img'),null);el('fin-admin-notice-next').click();assert.equal(rows().length,3);
+  rows()[0].click();assert.ok(el('fin-detail-dialog').open);assert.equal(el('fin-detail-content').querySelector('img'),null);
+  w.document.querySelector('[data-close-dialog="fin-detail-dialog"]').click();assert.equal(el('fin-admin-notice-page').textContent,'2 / 2');
+  search('研讨会');assert.equal(rows()[0].dataset.readNotice,'notice-25');assert.equal(el('fin-admin-notice-count').textContent,'1 条公告');
+  search('没有这个词');assert.match(el('admin-announcements').textContent,/没有匹配的公告/);assert.equal(el('fin-admin-notice-next').disabled,true);
+  assert.equal(el('announcements').querySelectorAll('[data-read-notice]').length,3);
+  search('');assert.equal(el('fin-admin-notice-count').textContent,'26 条公告');
+  w.document.querySelector('[data-fin-tab="review"]').click();assert.equal(el('fin-search').closest('label').hidden,false);
+});
+
+test('editing and pinning retain management search and page while deleting the final item clamps pagination',async t=>{
+  const announcements=Array.from({length:12},(_,i)=>({id:'notice-'+i,title:'公告'+i,body:i<11?'Travel materials':'Other materials',pinned:false}));
+  const {w,el,requests}=await setup(t,{admin:true,announcements});
+  const original=w.fetch;w.fetch=async(url,options={})=>{
+    if(url.startsWith('/api/admin/finance/announcements/')&&['PUT','DELETE'].includes(options.method)){
+      requests.push([url,options]);const index=announcements.findIndex(item=>item.id===url.split('/').at(-1));
+      if(options.method==='DELETE')announcements.splice(index,1);else Object.assign(announcements[index],JSON.parse(options.body));
+      return {ok:true,json:async()=>({})};
+    }
+    return original(url,options);
+  };
+  w.document.querySelector('[data-fin-tab="notices"]').click();el('fin-admin-notice-search').value='travel';el('fin-admin-notice-search').dispatchEvent(new w.Event('input'));el('fin-admin-notice-next').click();
+  el('admin-announcements').querySelector('[data-edit-notice]').click();assert.equal(el('announcement-title').value,'公告10');
+  el('announcement-title').value='已修改公告';el('announcement-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();await tick();
+  assert.equal(el('fin-announcement-dialog').open,false);assert.equal(el('fin-admin-notice-page').textContent,'2 / 2');assert.equal(el('fin-admin-notice-search').value,'travel');
+  assert.equal(el('admin-announcements').querySelector('[data-read-notice]').textContent,'已修改公告');
+  el('admin-announcements').querySelector('[data-pin-notice]').click();await tick();await tick();
+  assert.equal(announcements[10].pinned,true);assert.equal(el('fin-admin-notice-page').textContent,'2 / 2');
+  assert.equal(el('admin-announcements').querySelector('[data-pin-notice]').textContent,'取消置顶');
+  w.confirm=()=>false;el('admin-announcements').querySelector('[data-delete-notice]').click();await tick();
+  assert.ok(!requests.some(([,opts])=>opts.method==='DELETE'));
+  w.confirm=()=>true;el('admin-announcements').querySelector('[data-delete-notice]').click();await tick();await tick();
+  assert.equal(el('fin-admin-notice-search').value,'travel');assert.equal(el('fin-admin-notice-count').textContent,'10 条公告');
+  assert.equal(el('fin-admin-notice-page').textContent,'1 / 1');assert.equal(el('fin-admin-notice-prev').disabled,true);assert.equal(el('fin-admin-notice-next').disabled,true);
+  assert.equal(requests.find(([,opts])=>opts.method==='DELETE')[0],'/api/admin/finance/announcements/notice-10');
+});
+
 test('report export uses all current filters, own scope and the active report type',async t=>{
   const {w,el,requests}=await setup(t,{admin:true,mine:Array.from({length:30},(_,i)=>application({id:'app-'+i}))});
   w.URL.createObjectURL=()=> 'blob:finance-report';w.URL.revokeObjectURL=()=>{};let filename='';w.HTMLAnchorElement.prototype.click=function(){filename=this.download;};
