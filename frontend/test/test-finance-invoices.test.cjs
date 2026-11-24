@@ -47,6 +47,43 @@ test('clearing a file during recognition releases the submit control and discard
   assert.equal(el('fin-inv-number').value,'');
 });
 
+test('recognize again refills cleared fields but preserves edits made during the new request',async t=>{
+  let resolve;const {w,el,calls}=setup(t,()=>new Promise(done=>{resolve=done;}));
+  w.FinanceInvoices.fill(null);el('finance-dialog').showModal();
+  Object.defineProperty(el('finance-invoice'),'files',{configurable:true,value:[new w.File(['invoice'],'invoice.pdf')]});
+  el('finance-invoice').dispatchEvent(new w.Event('change'));await tick();
+  resolve({recognition:{fields,method:'pdf_text',message:'请核对识别信息'}});await tick();await tick();
+  for(const key of ['number','date','total']){el('fin-inv-'+key).value='';el('fin-inv-'+key).dispatchEvent(new w.Event('input'));}
+  el('fin-inv-confirm').checked=true;el('fin-inv-recognize').click();await tick();
+  assert.equal(el('fin-inv-confirm').checked,false);
+  el('fin-inv-check-code').value='123456';el('fin-inv-check-code').dispatchEvent(new w.Event('input'));
+  resolve({recognition:{fields,method:'pdf_text',message:'请核对识别信息'}});await tick();await tick();
+  assert.equal(el('fin-inv-number').value,fields.number);assert.equal(el('fin-inv-date').value,fields.date);
+  assert.equal(el('fin-inv-total').value,fields.total);assert.equal(el('fin-inv-check-code').value,'123456');
+  assert.equal(el('fin-inv-status').textContent,'');assert.equal(calls.length,2);
+});
+
+test('payment requirement follows the invoice total and retains an existing nonempty attachment',async t=>{
+  const {w,el}=setup(t,()=>({recognition:{fields:{...fields,total:'1000.00'},method:'ocr',message:'请核对识别信息'}}));
+  w.FinanceInvoices.fill(item);el('finance-dialog').showModal();
+  for(const [total,required] of [['999.99',false],['1000.00',true],['1000.01',true]]){
+    el('fin-inv-total').value=total;el('fin-inv-total').dispatchEvent(new w.Event('input'));
+    assert.equal(el('finance-payment').required,required);el('fin-inv-confirm').checked=true;
+    if(required)assert.throws(()=>w.FinanceInvoices.getFields(),/必须上传支付记录/);
+    else assert.equal(w.FinanceInvoices.getFields().total,total);
+  }
+  Object.defineProperty(el('finance-payment'),'files',{configurable:true,value:[new w.File(['receipt'],'receipt.png')]});
+  assert.equal(w.FinanceInvoices.getFields().total,'1000.01');
+  Object.defineProperty(el('finance-payment'),'files',{configurable:true,value:[]});
+  w.FinanceInvoices.fill({...item,invoice:{fields:{...fields,total:'1000.00'}},files:[{kind:'payment',size:7}]});
+  assert.equal(el('finance-payment').required,false);el('fin-inv-confirm').checked=true;
+  assert.equal(w.FinanceInvoices.getFields().total,'1000.00');
+  w.FinanceInvoices.fill(item);el('fin-inv-recognize').click();await tick();await tick();
+  assert.equal(el('finance-payment').required,true);
+  assert.equal(el('finance-amount'),null);assert.equal(el('fin-project-hint'),null);
+  assert.equal(el('fin-payment-hint').textContent,'1000元以上必选');
+});
+
 test('ordinary users can inspect checks while only admins can record a separate tax result',async t=>{
   const {w,el,calls}=setup(t);w.FinanceInvoices.start(false);
   el('finance-rows').innerHTML=w.FinanceInvoices.summary(item);el('finance-rows').querySelector('button').click();await tick();

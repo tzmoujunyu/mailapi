@@ -59,6 +59,69 @@ class FinanceInvoiceHttpTests(unittest.TestCase):
         return self.client.post('/api/finance/invoices/analyze',headers={'x-test-user':user},
             files={'invoice':('测试发票.pdf',io.BytesIO(content),content_type)})
 
+    def test_invoice_total_is_the_only_amount_and_payment_is_required_at_1000(self):
+        for index, total in enumerate(('999.99', '1000.00', '1000.01')):
+            fields = {**FIELDS, 'total': total, 'number': f'202611220000000000{index+10:02d}'}
+            data = {'project': '票面金额', 'invoice_fields': json.dumps(fields), 'amount': '1.00'}
+            upload = {'invoice': ('发票.pdf', f'invoice-{index}'.encode(), 'application/pdf')}
+            before = set(self.store.files.iterdir())
+            response = self.client.post('/api/finance/applications', headers={'x-test-user': 'alice-id'}, data=data, files=upload)
+            if total == '999.99':
+                self.assertEqual(response.status_code, 201, response.text)
+            else:
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn('必须上传支付记录', response.json()['detail'])
+                self.assertEqual(set(self.store.files.iterdir()), before)
+                data.pop('amount')
+                upload['payment_record'] = ('支付记录.png', b'payment-image', 'image/png')
+                response = self.client.post('/api/finance/applications', headers={'x-test-user': 'alice-id'}, data=data, files=upload)
+                self.assertEqual(response.status_code, 201, response.text)
+            item = response.json()['item']
+            self.assertEqual(item['amount'], total)
+            self.assertEqual(item['amount_cents'], int(total.replace('.', '')))
+
+    def test_payment_requirement_on_edit_and_resubmission_preserves_history_and_files(self):
+        item = self.create().json()['item']
+        url = f"/api/finance/applications/{item['id']}"
+        fields = {**FIELDS, 'total': '1000.00'}
+        data = {'project': '补充支付记录', 'version': '1', 'invoice_fields': json.dumps(fields)}
+        before = set(self.store.files.iterdir())
+        response = self.client.put(url, headers={'x-test-user': 'alice-id'}, data=data)
+        self.assertEqual(response.status_code, 400, response.text)
+        unchanged = self.store.finance_application(item['id'])
+        self.assertEqual(unchanged['amount'], FIELDS['total'])
+        self.assertEqual(unchanged['version'], 1)
+        self.assertEqual(len(self.store.finance_history(item['id'])), 1)
+        self.assertEqual(set(self.store.files.iterdir()), before)
+        files = {'payment_record': ('支付记录.png', b'payment-image', 'image/png')}
+        response = self.client.put(url, headers={'x-test-user': 'alice-id'}, data=data, files=files)
+        self.assertEqual(response.status_code, 200, response.text)
+        payment = next(file for file in response.json()['item']['files'] if file['kind'] == 'payment')
+        self.client.post(f"/api/admin/finance/applications/{item['id']}/review", json={'status':'rejected','note':'补充说明','version':2})
+        data['version'] = '2'
+        response = self.client.put(url, headers={'x-test-user': 'alice-id'}, data=data)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['item']['status'], 'pending')
+        self.assertEqual(next(file for file in response.json()['item']['files'] if file['kind'] == 'payment')['id'], payment['id'])
+        history = self.store.finance_history(item['id'])
+        self.assertEqual(history[-1]['snapshot']['amount'], FIELDS['total'])
+        stored = self.store.finance_application(item['id'])
+        (self.store.files / next(file for file in stored['files'] if file['kind'] == 'payment')['stored_name']).unlink()
+        data['version'] = '3'
+        response = self.client.put(url, headers={'x-test-user': 'alice-id'}, data=data)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.store.finance_application(item['id'])['version'], 3)
+
+    def test_empty_payment_upload_does_not_satisfy_the_requirement_or_leave_orphans(self):
+        data = {'project': '空支付记录', 'invoice_fields': json.dumps({**FIELDS, 'total': '1000.00'})}
+        response = self.client.post('/api/finance/applications', data=data, files={
+            'invoice': ('发票.pdf', b'invoice', 'application/pdf'),
+            'payment_record': ('支付记录.png', b'', 'image/png')})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn('不能为空', response.json()['detail'])
+        self.assertEqual(list(self.store.files.iterdir()), [])
+        self.assertEqual(self.store.list_finance_applications('admin-id'), [])
+
     def test_submission_reuses_the_uploaded_file_recognition_but_keeps_manual_corrections(self):
         response=self.analyze()
         self.assertEqual(response.status_code,200,response.text)

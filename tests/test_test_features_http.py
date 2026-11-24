@@ -233,7 +233,8 @@ class FinanceFeatureHttpTests(unittest.TestCase):
 
     def test_invalid_amount_and_missing_archive_file_do_not_fail_silently(self):
         for amount in ("NaN", "Infinity", "0", "1000000.01"):
-            response = self.client.post("/api/finance/applications", data={"project": "项目", "amount": amount}, files=self.upload())
+            fields = {**json.loads(self.invoice_fields()), 'total': amount}
+            response = self.client.post("/api/finance/applications", data={"project": "项目", "invoice_fields": json.dumps(fields)}, files=self.upload())
             self.assertEqual(response.status_code, 400)
         item = self.create_application().json()["item"]
         self.client.post(f"/api/admin/finance/applications/{item['id']}/review", json={"status": "approved"})

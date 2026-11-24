@@ -200,7 +200,7 @@ const financeController = (() => {
   function openApplication(item=null) {
     $('finance-form').reset();error('fin-form-status');
     $('finance-edit-id').value=item?.id || '';$('finance-version').value=item?.version || '';
-    $('finance-project').value=item?.project || '';$('finance-amount').value=item?.amount || '';
+    $('finance-project').value=item?.project || '';
     $('finance-invoice').required=!item;
     $('fin-invoice-label').textContent=t(item?'发票（不选则保留原文件）':'发票（必选）');
     $('finance-dialog-title').textContent=t(item ? item.status==='rejected'?'修改并重提':'编辑报销申请':'提交报销申请');
@@ -336,7 +336,7 @@ const financeController = (() => {
   $('finance-form').addEventListener('submit',event=>{event.preventDefault();submit('finance-submit','fin-form-status',async()=>{
     if([...$('finance-project').value.trim()].length>20)throw new Error(t('报销项目最多 20 个字符。'));
     const form=new FormData(),id=$('finance-edit-id').value;
-    for(const [key,field] of [['project','finance-project'],['amount','finance-amount'],['expense_group_id','fin-expense-group']])form.set(key,$(field).value);
+    for(const [key,field] of [['project','finance-project'],['expense_group_id','fin-expense-group']])form.set(key,$(field).value);
     if(id)form.set('version',$('finance-version').value);
     if(window.FinanceInvoices)form.set('invoice_fields',JSON.stringify(window.FinanceInvoices.getFields()));
     for(const [key,field] of [['invoice','finance-invoice'],['payment_record','finance-payment']]){const file=$(field).files[0];if(file){if(file.size>10*1024*1024)throw new Error(t('单个报销文件不能超过 10 MB'));form.set(key,file);}}

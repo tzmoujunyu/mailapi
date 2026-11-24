@@ -170,6 +170,8 @@ body.test-ui-features #view-finance { padding-top:0; }
 #view-finance .fin-dialog .form-hint { color:var(--fin-muted); font-size:12px; line-height:1.5; }
 #view-finance .fin-dialog .status { min-height:0; font-size:12px; color:var(--fin-bad); overflow-wrap:anywhere; }
 #view-finance .fin-dialog :is(.status, .form-hint):empty { display:none; }
+#view-finance :is(#fin-inv-status, #fin-inv-warning):empty { display:none; }
+#view-finance .fin-payment-label { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; }
 #view-finance .fin-upload-control { position:relative; display:flex; align-items:center; justify-content:center; gap:5px; padding:7px 11px; min-height:35px; border:1px solid var(--fin-line); border-radius:9px; color:var(--fin-text); background:var(--fin-panel); }
 #view-finance .fin-upload-control:hover { background:var(--fin-soft); }
 #view-finance .fin-upload-control:focus-within { outline:2px solid var(--fin-accent); outline-offset:1px; }

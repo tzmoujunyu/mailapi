@@ -29,11 +29,14 @@ test('ordinary users select one expense group and resubmit a rejected version wi
   assert.ok(el('finance-dialog').open);assert.equal(el('fin-expense-label').hidden,false);
   assert.equal(el('fin-expense-group').required,true);assert.equal(el('finance-invoice').required,false);
   assert.equal(el('finance-submit').textContent,'修改并重提');
+  const fields={number:'20261122000000000001',code:'',date:'2026-11-22',total:'1000.00',check_code:''};
+  w.FinanceInvoices={getFields:()=>fields};
   el('fin-expense-group').value='b';el('finance-project').value='新订阅';
   el('finance-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await tick();
   const [url,options]=requests.find(([,opts])=>opts.method==='PUT');
   assert.equal(url,'/api/finance/applications/app-1');
   assert.equal(options.body.get('expense_group_id'),'b');assert.equal(options.body.get('version'),'1');
+  assert.equal(options.body.get('amount'),null);assert.deepEqual(JSON.parse(options.body.get('invoice_fields')),fields);
   assert.equal(options.body.get('invoice'),null);assert.equal(el('finance-dialog').open,false);
 });
 test('admin review defaults to all-time pending; own applications stay private and stats use expense attribution once',async t=>{

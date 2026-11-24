@@ -1011,6 +1011,8 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 content = await upload.read(MAX_FINANCE_FILE_BYTES + 1)
                 if len(content) > MAX_FINANCE_FILE_BYTES:
                     raise TestFeatureError("单个报销文件不能超过 10 MB")
+                if kind == 'payment' and not content:
+                    raise TestFeatureError('支付记录文件不能为空')
                 file_id = secrets.token_hex(12)
                 stored = f"{file_id}{suffix}"
                 path = store.files / stored
@@ -1075,6 +1077,19 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             return confirmed_fields(fields), recognition
         except (ValueError,TypeError) as error:
             raise TestFeatureError(str(error) if not isinstance(error,json.JSONDecodeError) else '发票信息格式无效') from None
+
+    def application_amount(fields, saved, existing=None):
+        try:
+            cents = _parse_amount(fields['total'])
+        except TestFeatureError:
+            raise TestFeatureError('价税合计须大于 0 且不超过 1000000.00') from None
+        if cents >= 100_000:
+            payment = next((file for file in saved if file['kind'] == 'payment'), None)
+            payment = payment or next((file for file in (existing or {}).get('files', []) if file['kind'] == 'payment'), None)
+            path = store.files / payment['stored_name'] if payment else None
+            if not path or not path.is_file() or path.stat().st_size == 0:
+                raise TestFeatureError('价税合计满 1000 元，必须上传支付记录')
+        return cents
 
     @router.get("/test-features")
     def test_features_page(request: Request):
@@ -1576,18 +1591,18 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             background=BackgroundTask(path.unlink, missing_ok=True))
 
     @router.post("/api/finance/applications", status_code=201)
-    async def create_finance(request: Request, project: str = Form(...), amount: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None)):
+    async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None)):
         account, groups = user_snapshot(request)
         group_id, group_name = expense_group(request, expense_group_id)
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
-            amount_cents = _parse_amount(amount)
             uploads = [("invoice", invoice)] + ([('payment', payment_record)] if payment_record else [])
             saved = await save_finance_uploads(uploads)
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         try:
             fields, recognition = await prepare_invoice(saved,invoice_fields,account['id'])
+            amount_cents = application_amount(fields, saved)
             item = store.create_finance_application(user_id=account["id"], username=account["username"],
                                                     user_note=account.get("note", ""), groups=groups,
                                                     project=project, amount_cents=amount_cents, files=saved,
@@ -1599,11 +1614,10 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return {"item": public_application(request, item)}
 
     @router.put("/api/finance/applications/{app_id}")
-    async def update_finance(app_id: str, request: Request, project: str = Form(...), amount: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None), invoice_fields: Optional[str] = Form(None)):
+    async def update_finance(app_id: str, request: Request, project: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None), invoice_fields: Optional[str] = Form(None)):
         user = current_user(request)
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
-            amount_cents = _parse_amount(amount)
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         existing = store.finance_application(app_id)
@@ -1623,6 +1637,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             raise HTTPException(error.status_code, str(error)) from error
         try:
             fields, recognition = await prepare_invoice(saved,invoice_fields,user['id'],existing)
+            amount_cents = application_amount(fields, saved, existing)
             updated = store.update_finance_application(app_id, user["id"], project, amount_cents, {item["kind"]: item for item in saved},
                                                        expense_group=group, expected_version=version if version is not None else existing["version"],invoice_fields=fields,recognition=recognition)
         except Exception:
