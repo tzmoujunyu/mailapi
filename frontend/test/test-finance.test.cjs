@@ -57,8 +57,8 @@ test('proxy submission searches payers, uses their groups and sends an explicit 
   w.FinanceInvoices={getFields:()=>({number:'20261122000000000001',code:'',date:'2026-11-22',total:'123.45',check_code:''})};
   Object.defineProperty(el('finance-invoice'),'files',{value:[new w.File(['invoice'],'invoice.pdf',{type:'application/pdf'})]});
   el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
-  const [url,options]=requests.find(([url,o])=>url==='/api/finance/applications'&&o.method==='POST');
-  assert.equal(url,'/api/finance/applications');assert.equal(options.body.get('payer_user_id'),'bob');
+  const [url,options]=requests.find(([url,o])=>url==='/api/admin/finance/applications'&&o.method==='POST');
+  assert.equal(url,'/api/admin/finance/applications');assert.equal(options.body.get('payer_user_id'),'bob');
   assert.equal(options.body.get('expense_group_id'),'c');assert.equal(el('finance-dialog').open,false);
 });
 test('late payer lists do not change a closed or personal application and failed lists cannot silently submit as self',async t=>{
@@ -75,6 +75,17 @@ test('late payer lists do not change a closed or personal application and failed
   assert.match(el('fin-payer-status').textContent,/加载失败/);assert.equal(el('fin-payer-user').disabled,true);
   el('finance-project').value='不能误提交';el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
   assert.ok(!requests.some(([,o])=>o.method==='POST'));
+});
+test('an unavailable delegated endpoint keeps the chosen payer and never falls back to submitting as the administrator',async t=>{
+  const {w,el,requests}=await setup(t,{admin:true,payers:[{id:'alice',username:'alice',note:'',groups:[]}]});
+  const original=w.fetch;
+  w.fetch=async(url,options={})=>{if(url==='/api/admin/finance/applications'&&options.method==='POST'){requests.push([url,options]);return {ok:false,json:async()=>({detail:'代提交接口暂不可用'})};}return original(url,options);};
+  el('finance-open-form').click();el('fin-apply-other').click();await tick();
+  el('fin-payer-user').value='alice';el('fin-payer-user').dispatchEvent(new w.Event('change'));
+  el('finance-project').value='保留付款人';el('finance-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();
+  assert.equal(el('finance-dialog').open,true);assert.equal(el('fin-payer-user').value,'alice');
+  assert.match(el('fin-form-status').textContent,/暂不可用/);
+  assert.ok(!requests.some(([url,o])=>url==='/api/finance/applications'&&o.method==='POST'));
 });
 test('delegated applications show escaped actor names beside the payer and remain visible in the owner list',async t=>{
   const item=application({submitted_on_behalf:true,submitted_by_name:'<img src=x onerror=alert(1)>'});

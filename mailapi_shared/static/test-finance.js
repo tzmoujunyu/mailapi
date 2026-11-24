@@ -438,7 +438,7 @@ const financeController = (() => {
     if(id)form.set('version',$('finance-version').value);
     if(window.FinanceInvoices)form.set('invoice_fields',JSON.stringify(window.FinanceInvoices.getFields()));
     for(const [key,field] of [['invoice','finance-invoice'],['payment_record','finance-payment']]){const file=$(field).files[0];if(file){if(file.size>10*1024*1024)throw new Error(t('单个报销文件不能超过 10 MB'));form.set(key,file);}}
-    await request('/api/finance/applications'+(id?`/${encodeURIComponent(id)}`:''),{method:id?'PUT':'POST',body:form});hide('finance-dialog');await load();error('finance-status',id?'申请已更新。':'申请已提交。');
+    await request((proxyActive?'/api/admin/finance/applications':'/api/finance/applications')+(id?`/${encodeURIComponent(id)}`:''),{method:id?'PUT':'POST',body:form});hide('finance-dialog');await load();error('finance-status',id?'申请已更新。':'申请已提交。');
   });});
   $('fin-review-form').addEventListener('submit',event=>{event.preventDefault();submit('fin-review-submit','fin-review-error',async()=>{
     const reviewing=review,status=reviewing.eventId ? $('fin-re-review-result').value : reviewing.status;

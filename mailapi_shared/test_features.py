@@ -1602,9 +1602,14 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                      'Content-Disposition':_content_disposition(title+'.'+format),'Content-Length':str(path.stat().st_size)},
             background=BackgroundTask(path.unlink, missing_ok=True))
 
+    @router.post('/api/admin/finance/applications', status_code=201)
     @router.post("/api/finance/applications", status_code=201)
     async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None), payer_user_id: Optional[str] = Form(None)):
         actor = current_user(request)
+        if request.url.path == '/api/admin/finance/applications':
+            require_admin(request)
+            if not payer_user_id:
+                raise HTTPException(400, '请先选择付款人')
         if payer_user_id and payer_user_id != actor['id']:
             require_admin(request)
             account = request.app.state.site_accounts.get_user(payer_user_id, include_note=True)

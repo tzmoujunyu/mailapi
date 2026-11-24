@@ -130,9 +130,16 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         self.assertEqual(alice['groups'],[{'id':'group-id','name':'Agent'}])
         self.assertNotIn('private-',response.text)
 
+    def test_dedicated_delegate_endpoint_always_requires_an_admin_and_an_explicit_payer(self):
+        url='/api/admin/finance/applications'
+        for actor,payload,status in [('alice-id',{'payer_user_id':'alice-id'},403),('admin-id',{},400)]:
+            response=self.client.post(url,headers={'x-test-user':actor},data={'project':'不可误记','invoice_fields':self.invoice_fields(),**payload},files=self.upload())
+            self.assertEqual(response.status_code,status,response.text)
+        self.assertEqual(self.store.list_finance_applications(),[])
+
     def test_admin_submission_belongs_to_payer_and_keeps_actual_creator_through_resubmission(self):
         self.site.groups['group-id']['member_ids'] = ['alice-id']
-        response = self.client.post('/api/finance/applications',
+        response = self.client.post('/api/admin/finance/applications',
             data={'payer_user_id':'alice-id','project':'代提交订阅','invoice_fields':self.invoice_fields()},files=self.upload())
         self.assertEqual(response.status_code,201,response.text)
         item = response.json()['item'];app_id = item['id']
