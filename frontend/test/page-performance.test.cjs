@@ -212,6 +212,9 @@ test('real console switches panels, keeps filtered rows on polling and initializ
   t.after(() => editor?.destroy());
   bundle.dispatchEvent(new w.Event('load'));
   await settle();
+  w.eval(source('shared-content-editor.js'));
+  w.document.querySelector('script[src="/static/shared-content-editor.js"]').dispatchEvent(new w.Event('load'));
+  await settle();
   w.eval(source('codex-tip-editor.js'));
   w.document.querySelector('script[src="/static/codex-tip-editor.js"]').dispatchEvent(new w.Event('load'));
   await settle();

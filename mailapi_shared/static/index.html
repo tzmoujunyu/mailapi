@@ -382,7 +382,16 @@
         ].join('');
         return `<tr class="detail-row"><td colspan="4"><div class="detail-panel">${loginLines ? `<div class="login-detail">${loginLines}</div>` : ''}${emailLine}</div></td></tr>`;
       }
-      function rowHtml(row) {
+      function resourceAccountAttributes(row, index) {
+        const usable = row.codexItems.filter(item => item.usage_status === 'available' && !item.reauth_required && !item.error);
+        const remaining = usable.map(item => item.usage?.used_percent).filter(Number.isFinite).map(value => Math.max(0, Math.min(100, 100 - value)));
+        const automatic = row.codexItems.map(item => item.subscription).find(item => item?.source === 'id_token' && item.available === true && Number.isFinite(item.expires_at));
+        const expiry = subscriptionExpiry(automatic?.expires_at, row.credentials.subscription_expires_on || row.credentials.subscription_ends_on);
+        const flags = [usable.length ? 'available' : '', row.codexItems.some(item => item.reauth_required) ? 'reauth' : '', row.codexItems.some(item => item.status_reason === 'usage_limit_exhausted') ? 'exhausted' : ''].filter(Boolean).join(' ');
+        const search = [row.credentials.login, row.credentials.email, ...row.mails.flatMap(item => [item.email, item.name, item.provider]), ...row.codexItems.flatMap(item => [item.email, item.label, item.workspace_id])].filter(Boolean).join(' ');
+        return `data-resource-order="${index}" data-resource-remaining="${remaining.length ? Math.min(...remaining) : ''}" data-resource-expiry="${expiry ? expiry.end.getTime() : ''}" data-resource-flags="${flags}" data-resource-search="${escapeAttr(search)}"`;
+      }
+      function rowHtml(row, index) {
         const emailStatuses = row.mails.map(mail => ({ text: mail.enabled === false ? '已停用' : (mail.status || '未知'), cls: mail.enabled === false ? 'status-warn' : (/失败|异常|错误|重新授权/.test(mail.status || '') ? 'status-bad' : (/监测中|监听中/.test(mail.status || '') ? 'status-good' : 'status-warn')), detail: row.mails.length > 1 ? mail.email : '' }));
         const expanded = expandedKey === row.key;
         const hasDetails = row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length;
@@ -390,7 +399,7 @@
         const details = hasDetails ? `<button class="small-btn" aria-expanded="${expanded}" data-expand-key="${escapeAttr(row.key)}">${expanded ? '收起' : '登陆'}</button>` : '<span class="muted" data-ui-text>仅账号名</span>';
         const loginActions = `<div class="resource-secret">${details}${edit}</div>`;
         const statuses = row.codexItems.map(item => statusLine(codexStatus(item), 'Codex')).join('') + emailStatuses.map(status => statusLine(status, '邮箱')).join('');
-        return `<tr><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => codexQuotaCell(item, row.key)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>`;
+        return `<tr ${resourceAccountAttributes(row, index)}><td>${accountCell(row)}</td><td>${row.codexItems.length ? row.codexItems.map(item => codexQuotaCell(item, row.key)).join('<hr>') : quotaCell(null)}</td><td>${loginActions}</td><td><div class="status-block">${statuses || '<span class="muted">—</span>'}</div></td></tr>`;
       }
       async function loadHistory(name) {
         if (rowsNode.querySelector('[data-copy-type]:disabled')) return;
@@ -421,10 +430,12 @@
         const copied = document.execCommand('copy'); input.remove();
         if (!copied) throw new Error('浏览器拒绝访问剪贴板');
       }
-      function codingPlanRow(item) {
+      function codingPlanRow(item, index) {
         const masked = item.api_key_masked || item.api_key || '未设置';
         const provider = codingPlanProviders[item.provider];
-        return `<tr><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${renderCodingPlanDocs(item, escapeHtml)}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td><div class="plan-copy-line"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></div></td><td>${renderCodingPlanBaseUrls(item, escapeHtml, 'small-btn')}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatDateTime)}</td></tr>`;
+        const values = (item.quota?.windows || []).map(window => window.remaining_percent).filter(Number.isFinite);
+        const remaining = values.length ? Math.max(0, Math.min(100, ...values)) : '';
+        return `<tr data-resource-order="${index}" data-resource-remaining="${remaining}" data-resource-flags="${remaining === 0 ? 'exhausted' : ''}"><td><div class="resource-name">${escapeHtml(item.name || '-')}</div>${provider ? `<div class="muted">${escapeHtml(provider)}</div>` : ''}${renderCodingPlanDocs(item, escapeHtml)}${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td><div class="plan-copy-line"><span>${escapeHtml(masked)}</span><button class="small-btn" data-resource-copy="coding-plan" data-id="${escapeAttr(item.id || '')}">复制</button></div></td><td>${renderCodingPlanBaseUrls(item, escapeHtml, 'small-btn')}</td><td>${renderCodingPlanQuota(item, escapeHtml, formatDateTime)}</td></tr>`;
       }
       function relayAccountRow(item) {
         const masked = item.password_masked || item.password || '未设置';
@@ -439,7 +450,7 @@
         return `<tr><td><div class="resource-name">${name}</div>${item.note ? `<div class="muted">${escapeHtml(item.note)}</div>` : ''}</td><td>${escapeHtml(item.account || '-')}</td><td><div class="resource-secret">${methods.join('') || '<span class="muted">未设置登录方式</span>'}</div></td><td>${escapeHtml(item.note || '-')}</td></tr>`;
       }
       function renderResources() {
-        window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map(item => ({ key: item.id, html: codingPlanRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted" data-ui-text>暂无 Coding Plan。</td></tr>' }]);
+        window.PagePerformance.renderRows(codingPlanRows, codingPlans.length ? codingPlans.map((item, index) => ({ key: item.id, html: codingPlanRow(item, index) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted" data-ui-text>暂无 Coding Plan。</td></tr>' }]);
         window.PagePerformance.renderRows(relayAccountRows, relayAccounts.length ? relayAccounts.map(item => ({ key: item.id, html: relayAccountRow(item) })) : [{ key: 'empty', html: '<tr><td colspan="4" class="muted" data-ui-text>暂无中转站账号。</td></tr>' }]);
       }
       async function copyResourceSecret(button) {
@@ -488,7 +499,7 @@
         finally { setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500); }
       }
       function render() {
-        const rows = accountRows.flatMap(row => [{ key: row.key, html: rowHtml(row) },
+        const rows = accountRows.flatMap((row, index) => [{ key: row.key, html: rowHtml(row, index) },
           ...(expandedKey === row.key && (row.credentials.has_gpt_password || row.credentials.has_totp_secret || row.mails.length)
             ? [{ key: `${row.key}:details`, html: detailRow(row) }] : [])]);
         window.PagePerformance.renderRows(rowsNode, rows.length ? rows : [{ key: 'empty', html: '<tr><td colspan="4" class="muted" data-ui-text>暂无账号。</td></tr>' }]);

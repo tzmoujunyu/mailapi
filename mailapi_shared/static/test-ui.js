@@ -130,42 +130,105 @@
       new MutationObserver(update).observe(list, { childList: true });
       update();
     }
-    const section = root.querySelector('#chatgpt-accounts');
-    const tools = document.createElement('div');
-    tools.className = 'resource-search-tools';
-    tools.innerHTML = `<label class="resource-search-field"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" aria-label="搜索 GPT 账号" placeholder="搜索账号、套餐或状态…" autocomplete="off"></label><button type="button" class="small-btn" hidden>清除</button><span class="resource-search-count" role="status" aria-live="polite"></span>`;
-    section.querySelector('.page-head').append(tools);
-    const input = tools.querySelector('input'), clear = tools.querySelector('button'), status = tools.querySelector('[role="status"]');
-    const rows = section.querySelector('#rows');
-    const empty = document.createElement('p');
-    empty.className = 'resource-search-empty muted';
-    empty.textContent = '没有匹配的账号，请调整关键词。'; empty.hidden = true;
-    section.querySelector('.table-wrap').after(empty);
     const normalize = value => value.normalize('NFKC').toLocaleLowerCase();
-    function filter() {
-      const terms = normalize(input.value).trim().split(/\s+/).filter(Boolean);
-      let total = 0, shown = 0, parentVisible = false;
-      for (const row of rows.children) {
-        if (row.querySelector('.account-email')) {
-          total++;
-          parentVisible = terms.every(term => normalize(row.textContent).includes(term));
-          if (parentVisible) shown++;
-          row.hidden = !parentVisible;
-        } else row.hidden = row.classList.contains('detail-row') ? !parentVisible : terms.length > 0;
+    const number = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+    const stateOptions = {
+      all: '全部状态', available: '可用', expiring: '7 天内到期', expired: '已到期',
+      'low-quota': '低额度（≤10%）', exhausted: '额度耗尽', reauth: '需重新授权',
+    };
+    const tables = [
+      {id: 'chatgpt-accounts', prefix: 'resource', preference: 'gpt', rows: '#rows', item: '.account-email', title: '搜索 GPT 账号', placeholder: '搜索 GPT 账号、邮箱或套餐…', states: Object.keys(stateOptions), sorts: ['original', 'quota', 'expiry']},
+      {id: 'coding-plans', prefix: 'coding-plan', preference: 'coding', rows: '#coding-plan-rows', item: '.resource-name', title: '搜索 Coding Plan', placeholder: '搜索 Coding Plan 名称、平台或备注…', states: ['all', 'low-quota', 'exhausted'], sorts: ['original', 'quota']},
+      {id: 'relay-accounts', prefix: 'relay', rows: '#relay-account-rows', item: '.resource-name', title: '搜索中转站账号', placeholder: '搜索中转站名称、账号或备注…', states: [], sorts: []},
+    ];
+    const preferenceControls = [];
+    let preferencesTouched = false;
+    for (const table of tables) {
+      const section = root.querySelector(`#${table.id}`), rows = section?.querySelector(table.rows);
+      if (!rows) continue;
+      const tools = document.createElement('div');
+      tools.className = 'resource-search-tools';
+      const sorts = {original: '原始顺序', quota: '剩余额度从多到少', expiry: '到期时间从近到远'};
+      tools.innerHTML = `<label class="resource-search-field"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input id="${table.prefix}-search-input" type="search" aria-label="${table.title}" placeholder="${table.placeholder}" autocomplete="off"></label>
+        ${table.states.length ? `<label class="resource-filter-field"><span>状态</span><select id="${table.prefix}-status-filter">${table.states.map(value => `<option value="${value}">${stateOptions[value]}</option>`).join('')}</select></label>` : ''}
+        ${table.sorts.length ? `<label class="resource-filter-field"><span>排序</span><select id="${table.prefix}-sort-order">${table.sorts.map(value => `<option value="${value}">${sorts[value]}</option>`).join('')}</select></label>` : ''}
+        <button id="${table.prefix}-filter-reset" type="button" class="small-btn" hidden>重置筛选</button><span class="resource-search-count" role="status" aria-live="polite"></span>`;
+      section.querySelector('.page-head, .resource-head').append(tools);
+      const input = tools.querySelector('input'), clear = tools.querySelector('button'), status = tools.querySelector('[role="status"]');
+      const state = tools.querySelector(`[id$="-status-filter"]`), sort = tools.querySelector(`[id$="-sort-order"]`);
+      const empty = document.createElement('p');
+      empty.className = 'resource-search-empty muted';
+      empty.textContent = '没有匹配的资源，请调整关键词或筛选条件。'; empty.hidden = true;
+      section.querySelector('.table-wrap').after(empty);
+      const originalOrder = new WeakMap();
+      let nextOrder = 0, timer;
+      function filter() {
+        const terms = normalize(input.value).trim().split(/\s+/).filter(Boolean), selected = state?.value || 'all';
+        const filtered = terms.length > 0 || selected !== 'all';
+        const groups = [], otherRows = [];
+        let shown = 0;
+        for (const row of rows.children) {
+          if (row.querySelector(table.item)) {
+            if (!originalOrder.has(row)) originalOrder.set(row, nextOrder++);
+            const remaining = number(row.dataset.resourceRemaining), expires = number(row.dataset.resourceExpiry);
+            const flags = (row.dataset.resourceFlags || '').split(' '), now = Date.now();
+            const matches = selected === 'all' || (selected === 'expiring' ? expires !== null && expires > now && expires <= now + 7 * 86400000
+              : selected === 'expired' ? expires !== null && expires <= now
+              : selected === 'low-quota' ? remaining !== null && remaining > 0 && remaining <= 10 : flags.includes(selected));
+            const visible = matches && terms.every(term => normalize(`${row.textContent} ${row.dataset.resourceSearch || ''}`).includes(term));
+            row.hidden = !visible;
+            if (visible) shown++;
+            groups.push({nodes: [row], remaining, expires, order: number(row.dataset.resourceOrder) ?? originalOrder.get(row)});
+          } else if (row.classList.contains('detail-row') && groups.length) {
+            const group = groups[groups.length - 1];
+            row.hidden = group.nodes[0].hidden; group.nodes.push(row);
+          } else { row.hidden = filtered; otherRows.push(row); }
+        }
+        groups.sort((a, b) => {
+          const field = sort?.value === 'quota' ? 'remaining' : sort?.value === 'expiry' ? 'expires' : null;
+          if (!field) return a.order - b.order;
+          if (a[field] === null || b[field] === null) return a[field] === b[field] ? a.order - b.order : a[field] === null ? 1 : -1;
+          return (sort.value === 'quota' ? b[field] - a[field] : a[field] - b[field]) || a.order - b.order;
+        });
+        // Move existing account/detail pairs without observing our own reorder.
+        observer.disconnect();
+        const focused = rows.contains(document.activeElement) ? document.activeElement : null;
+        let cursor = rows.firstElementChild;
+        for (const node of [...groups.flatMap(group => group.nodes), ...otherRows]) {
+          if (node !== cursor) rows.insertBefore(node, cursor);
+          cursor = node.nextElementSibling;
+        }
+        if (focused && document.activeElement !== focused) focused.focus({preventScroll: true});
+        observer.observe(rows, {childList: true});
+        status.textContent = `${shown} / ${groups.length} ${window.SiteLanguage?.t('账号') || '账号'}`;
+        clear.hidden = !filtered && (!sort || sort.value === 'original'); empty.hidden = !filtered || shown > 0;
       }
-      status.textContent = `${shown} / ${total} ${window.SiteLanguage?.t('账号') || '账号'}`;
-      clear.hidden = !input.value; empty.hidden = !terms.length || shown > 0;
+      const observer = new MutationObserver(filter);
+      const schedule = () => { clearTimeout(timer); timer = setTimeout(filter, 150); };
+      input.addEventListener('input', event => { preferencesTouched = true; if (!event.isComposing) schedule(); });
+      input.addEventListener('compositionend', schedule);
+      const savePreference = () => {
+        preferencesTouched = true;
+        if (table.preference) window.ViewPreferences?.save('resources', {[`${table.preference}Status`]: state.value, [`${table.preference}Sort`]: sort.value});
+      };
+      state?.addEventListener('change', () => { filter(); savePreference(); });
+      sort?.addEventListener('change', () => { filter(); savePreference(); });
+      const reset = () => { clearTimeout(timer); input.value = ''; if (state) state.value = 'all'; if (sort) sort.value = 'original'; filter(); savePreference(); input.focus(); };
+      clear.addEventListener('click', reset);
+      input.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); reset(); } });
+      document.addEventListener('site:language', filter);
+      filter();
+      if (table.preference) preferenceControls.push({table, state, sort, filter});
     }
-    let timer;
-    const schedule = () => { clearTimeout(timer); timer = setTimeout(filter, 150); };
-    input.addEventListener('input', event => { if (!event.isComposing) schedule(); });
-    input.addEventListener('compositionend', schedule);
-    const reset = () => { clearTimeout(timer); input.value = ''; filter(); input.focus(); };
-    clear.addEventListener('click', reset);
-    input.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); reset(); } });
-    new MutationObserver(filter).observe(rows, { childList: true });
-    document.addEventListener('site:language', filter);
-    filter();
+    window.ViewPreferences?.read('resources').then(settings => {
+      if (preferencesTouched || !container.isConnected) return;
+      for (const {table, state, sort, filter} of preferenceControls) {
+        const savedState = settings?.[`${table.preference}Status`], savedSort = settings?.[`${table.preference}Sort`];
+        if (table.states.includes(savedState)) state.value = savedState;
+        if (table.sorts.includes(savedSort)) sort.value = savedSort;
+        filter();
+      }
+    }).catch(() => {});
   }
   window.TestUI = {enhanceResources};
   if (!document.querySelector('[data-test-view]') && document.body.classList.contains('test-ui-home')) enhanceResources(document);

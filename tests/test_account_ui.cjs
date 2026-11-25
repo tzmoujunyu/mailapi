@@ -89,6 +89,35 @@ test('subscription display warns at five days and expires without assuming renew
   assert.match(vm.runInContext('renderAccountSubscription({},escapeHtml)', app.context), /未设置/);
 });
 
+test('resource metadata uses confirmed workspace availability and preserves unknown quota and expiry', async () => {
+  const app = page('static/index.html'); await flush();
+  app.context.resourceFixture = {
+    credentials: {login: 'user@example.com', subscription_expires_on: '2030-01-01'},
+    mails: [{email: 'alternate@example.com', provider: 'gmail'}],
+    codexItems: [
+      {usage_status: 'available', usage: {used_percent: 20}, subscription: {source: 'id_token', available: true, expires_at: 1893542400}},
+      {usage_status: 'available', usage: {used_percent: 90}},
+      {usage_status: 'available', reauth_required: true, usage: {used_percent: 99}},
+      {usage_status: 'unavailable', status_reason: 'usage_limit_exhausted', usage: {used_percent: 100}},
+    ],
+  };
+  const attributes = vm.runInContext('resourceAccountAttributes(resourceFixture, 4)', app.context);
+  assert.match(attributes, /data-resource-order="4"/);
+  assert.match(attributes, /data-resource-remaining="10"/);
+  assert.match(attributes, /data-resource-flags="available reauth exhausted"/);
+  assert.match(attributes, /data-resource-expiry="1893542400000"/);
+  assert.match(attributes, /alternate@example.com gmail/);
+  app.context.resourceFixture = {credentials: {}, mails: [], codexItems: [{usage_status: 'unknown', usage: {used_percent: 2}}]};
+  const unknown = vm.runInContext('resourceAccountAttributes(resourceFixture, 0)', app.context);
+  assert.match(unknown, /data-resource-remaining=""/);
+  assert.match(unknown, /data-resource-expiry=""/);
+  assert.match(unknown, /data-resource-flags=""/);
+  app.context.planFixture = {quota: {windows: [{remaining_percent: 80}, {remaining_percent: 0}, {}]}};
+  const plan = vm.runInContext('codingPlanRow(planFixture, 2)', app.context);
+  assert.match(plan, /data-resource-order="2" data-resource-remaining="0" data-resource-flags="exhausted"/);
+  assert.doesNotMatch(plan, /data-resource-expiry=/);
+});
+
 test('homepage lists Codex tip titles and opens plain-text details from directory 02', async () => {
   const root = process.env.MAILAPI_UI_ROOT || 'static';
   const source = fs.readFileSync(`${root}/index.html`, 'utf8');
@@ -402,7 +431,7 @@ test('console lazy-loads the editor and allows retry after a failed download', a
   await app.click('add-codex-tip');
   assert.equal(app.nodes.get('codex-tip-save').disabled, false);
   assert.equal(app.nodes.get('codex-tip-edit-dialog').open, true);
-  assert.deepEqual(scripts, ['/static/vendor/tiptap/tiptap.js', '/static/vendor/tiptap/tiptap.js', '/static/codex-tip-editor.js']);
+  assert.deepEqual(scripts, ['/static/vendor/tiptap/tiptap.js', '/static/vendor/tiptap/tiptap.js', '/static/shared-content-editor.js', '/static/codex-tip-editor.js']);
   const html = fs.readFileSync(`${process.env.MAILAPI_UI_ROOT || 'static'}/admin.html`, 'utf8');
   assert.doesNotMatch(html, /<script src="\/static\/(vendor\/tiptap\/tiptap|codex-tip-editor)\.js"/);
 });
