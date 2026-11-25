@@ -1,4 +1,8 @@
 window.MILVLG_EN = {
+  "搜索 GPT 账号": "Search GPT accounts",
+  "搜索账号、套餐或状态…": "Search account, plan or status…",
+  "没有匹配的账号，请调整关键词。": "No matching accounts. Try different keywords.",
+  "日期详情": "Date details",
   "展开编辑器": "Expand editor",
   "还原窗口": "Restore window",
   "关闭编辑器": "Close editor",

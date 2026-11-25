@@ -31,7 +31,7 @@ function renderAccountSubscription(item, escapeHtml, now = new Date()) {
   }
   const metadata = `<div class="subscription-meta">授权上次核对：${escapeHtml(checkedText + note)}</div>`;
   const expiry = subscriptionExpiry(automatic?.expires_at, manualEnd, now);
-  if (!expiry) return `<div class="subscription-time muted"><div data-ui-text>订阅到期：未设置</div>${metadata}</div>`;
+  if (!expiry) return `<div class="subscription-time muted"><div data-ui-text>订阅到期：未设置</div><details class="subscription-details"><summary>日期详情</summary>${metadata}</details></div>`;
   let displayDate = expiry.date;
   let source, title, label;
   if (automatic) {
@@ -45,5 +45,5 @@ function renderAccountSubscription(item, escapeHtml, now = new Date()) {
     label = direct ? '订阅到期' : '订阅开通';
     title = `${source}计算到期：${manualEnd}`;
   }
-  return `<div class="subscription-time${expiry.due ? ' subscription-due' : ''}" title="${escapeHtml(title)}"><div>${label}：${escapeHtml(displayDate)} (${expiry.remaining}) <span class="subscription-source">${escapeHtml(source)}</span></div>${metadata}</div>`;
+  return `<div class="subscription-time"><div class="subscription-expiry${expiry.due ? ' subscription-due' : ''}" title="${escapeHtml(title)}">${label}：${escapeHtml(displayDate)} (${expiry.remaining})</div><details class="subscription-details"><summary>日期详情</summary><div class="subscription-source">${escapeHtml(source)}</div>${metadata}</details></div>`;
 }

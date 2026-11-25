@@ -186,38 +186,34 @@ body.test-ui-page.home-page .small-btn {
   font-weight: 700;
 }
 
-body.test-ui-page.home-page .test-ui-home-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
-}
-
-.test-ui-summary-card {
-  text-decoration: none;
-  min-height: 92px;
-  padding: 18px 20px;
-  border: 1px solid var(--test-line);
-  border-radius: var(--test-radius);
-  background: var(--test-card);
-  box-shadow: var(--test-shadow);
-}
-
-.test-ui-summary-label {
-  color: var(--test-muted);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .03em;
-  text-transform: uppercase;
-}
-
-.test-ui-summary-value {
-  display: block;
-  margin-top: 12px;
-  color: var(--test-ink);
-  font-size: 28px;
-  font-weight: 800;
-  letter-spacing: -.04em;
+.home-directory .resource-count { display: inline-flex; justify-content: center; min-width: 22px; padding: 1px 6px; margin-left: 5px; border-radius: 6px; background: var(--test-purple-soft); color: var(--test-purple); font-size: 11px; font-variant-numeric: tabular-nums; }
+.resource-search-tools { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 10px; max-width: 100%; }
+.resource-search-field { display: flex; align-items: center; gap: 9px; width: min(320px, 100%); padding: 10px 12px; border: 1px solid var(--test-line); border-radius: 11px; background: var(--test-card); }
+.resource-search-field svg { width: 18px; height: 18px; flex-shrink: 0; color: var(--test-muted); }
+.resource-search-field input { width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--test-ink); font: inherit; font-size: 13px; }
+.resource-search-field:focus-within { border-color: var(--test-purple); box-shadow: 0 0 0 3px var(--test-purple-soft); }
+.resource-search-count { color: var(--test-muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.resource-search-empty { padding: 28px 12px; margin: 0; text-align: center; }
+.test-ui-home :is(.resource-search-tools, #rows) [hidden], .resource-search-empty[hidden] { display: none !important; }
+body.test-ui-home .page-head { flex-wrap: wrap; gap: 16px; }
+.test-ui-admin .message:empty { display: none; }
+.test-ui-admin .console-disclosure { margin-top: 5px; font-size: 12px; }
+.test-ui-admin .console-disclosure > summary { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 30px; padding: 4px 6px; border-radius: 6px; cursor: pointer; color: var(--test-muted); list-style: none; }
+.test-ui-admin .console-disclosure > summary::-webkit-details-marker { display: none; }
+.test-ui-admin .console-disclosure > summary::after { content: ''; width: 5px; height: 5px; margin: 0 3px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform .15s ease; }
+.test-ui-admin .console-disclosure[open] > summary::after { transform: rotate(225deg); }
+.test-ui-admin .console-disclosure > summary:hover, .test-ui-admin .console-disclosure[open] > summary { background: var(--test-purple-soft); color: var(--test-purple); }
+.test-ui-admin .console-disclosure > summary:focus-visible { outline: 2px solid var(--test-purple); outline-offset: 2px; }
+.test-ui-admin .console-credential { margin-top: 0; }
+.test-ui-admin .console-credential > summary { width: 100%; padding-left: 0; }
+.test-ui-admin .console-credential > summary small { margin-left: auto; white-space: nowrap; font-size: 11px; font-weight: 500; }
+.test-ui-admin .console-credential > .actions { padding: 5px 0 8px; }
+.test-ui-admin .console-more-content { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 10px; margin-top: 5px; border: 1px solid var(--test-line); border-radius: 10px; background: var(--theme-surface-muted, #f8fafc); }
+.test-ui-admin .console-more-content .actions > .muted { flex-basis: 100%; }
+.test-ui-admin .console-danger-actions { padding-top: 10px; border-top: 1px solid var(--test-line); width: 100%; }
+@media (max-width: 800px) {
+  .resource-search-tools { width: 100%; justify-content: flex-start; }
+  .resource-search-field { flex: 1; min-width: 180px; }
 }
 
 body.test-ui-page.home-page .resource-section {
@@ -438,12 +434,6 @@ body.test-ui-features .btn.primary { border-color: var(--test-purple); backgroun
 body.test-ui-access .access-page-header a { display: none; }
 body.test-ui-admin .topbar .actions > a:not(.btn-primary) { display: none; }
 
-@media (max-width: 920px) {
-  body.test-ui-page.home-page .test-ui-home-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 680px) {
   body.test-ui-page .home-directory {
     position: sticky;
@@ -477,23 +467,10 @@ body.test-ui-admin .topbar .actions > a:not(.btn-primary) { display: none; }
     padding: 16px;
     border-radius: 18px;
   }
-  body.test-ui-page.home-page .test-ui-home-summary {
-    grid-template-columns: 1fr 1fr;
-    gap: 9px;
-  }
-  .test-ui-summary-card {
-    min-height: 96px;
-    padding: 14px;
-    border-radius: 17px;
-  }
-  .test-ui-summary-value {
-    font-size: 23px;
-  }
   .test-ui-logo { margin-left: 5px; }
   .dock-expanded .test-ui-brand-name { display: none; }
 }
 
-.test-ui-summary-card:hover { border-color: var(--test-purple); }
 .test-ui-page .management-search { border-radius: 14px; }
 .test-ui-page .management-tabs { box-shadow: var(--test-shadow); }
 .test-ui-admin .actions .btn,
@@ -676,7 +653,7 @@ body.test-ui-home .resource-table td, body.test-ui-home .resource-table tr:hover
   .workspace-search { flex: 1; width: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .test-ui-page, .test-ui-sidebar, .tree-chevron, .tree-body-wrapper, .tree-item, .btn-mini-action, .workspace-footer-link { transition: none; }
+  .test-ui-page, .test-ui-sidebar, .tree-chevron, .tree-body-wrapper, .tree-item, .btn-mini-action, .workspace-footer-link, .test-ui-admin .console-disclosure > summary::after { transition: none; }
   .test-ui-features .workspace-view.active, .test-ui-account-panel { animation: none; }
 }
 

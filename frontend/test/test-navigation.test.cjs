@@ -291,7 +291,8 @@ test('the account preview link uses the new shell and isolates each selected use
   assert.equal(w.document.querySelector('.test-ui-header'), header);
   assert.equal(alice.dataset.testPreviewUser, 'alice');
   assert.equal(w.document.querySelector('[aria-current="page"]').getAttribute('href'), '/');
-  assert.ok(alice.querySelector('.test-ui-home-summary'));
+  assert.equal(alice.querySelectorAll('.home-directory .resource-count').length, 4);
+  assert.ok(alice.querySelector('.resource-search-tools'));
   assert.equal(contexts.get('home').window.__USER_PREVIEW__, true);
   assert.ok(calls.includes('/api/accounts?preview=1&user_id=alice'));
   assert.ok(calls.includes('/api/coding-plans?preview=1&user_id=alice'));

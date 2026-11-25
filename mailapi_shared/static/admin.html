@@ -1391,7 +1391,7 @@
         const present = item[`has_${field}`];
         const name = escapeAttr(item[`${field}_account`]);
         const email = escapeAttr(item.email || item.label || '');
-        return `<div class="actions"><span>${label}：${present ? '已添加' : '未配置'}</span><button class="btn" data-${type}-action="edit" data-name="${name}" data-email="${email}">${present ? '修改' : '添加'}</button>${present ? `<button class="btn btn-danger" data-${type}-action="delete" data-name="${name}" data-email="${email}">删除</button>` : ''}</div>`;
+        return `<details class="console-disclosure console-credential"><summary><span>${label}</span><small class="${present ? 'good' : 'muted'}">${present ? '已添加' : '未配置'}</small></summary><div class="actions"><button class="btn" data-${type}-action="edit" data-name="${name}" data-email="${email}">${present ? '修改' : '添加'}</button>${present ? `<button class="btn btn-danger" data-${type}-action="delete" data-name="${name}" data-email="${email}">删除</button>` : ''}</div></details>`;
       }
 
       function accountRow(item) {
@@ -1403,20 +1403,20 @@
         }).join('');
         const mailStatuses = item.mail.map(mail => `<div class="${mail.enabled === false ? 'warn' : (/失败|异常|错误|重新授权/.test(mail.status) ? 'bad' : (/监测中|监听中/.test(mail.status) ? 'good' : 'warn'))}">${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')} <span class="plan" data-ui-text>邮箱</span></div>`).join('');
         const codexActions = item.codex.map(account => `<div class="actions"><span class="muted">Codex${item.codex.length > 1 ? ' · ' + escapeHtml(account.workspace_id || account.id) : ''}</span>
-          <button class="btn" data-codex-action="refresh" data-id="${escapeAttr(account.id)}">刷新额度</button>
           <button class="btn" type="button" data-codex-auth="admin-reauth" data-id="${escapeAttr(account.id)}">重新授权</button>
           <button class="btn btn-danger" data-codex-action="delete" data-id="${escapeAttr(account.id)}">移除 Codex</button></div>`).join('');
-        const mailboxActions = `<div class="actions"><span>监听邮箱：${item.mail.length ? item.mail.length + ' 个' : '未配置'}</span>
-          <button class="btn" type="button" data-listen-account="${escapeAttr(item.key)}">${item.mail.length ? '修改' : '添加'}</button></div>`;
+        const refreshActions = item.codex.map(account => `<button class="btn" data-codex-action="refresh" data-id="${escapeAttr(account.id)}" ${item.codex.length > 1 ? `title="${escapeAttr(account.workspace_id || account.id)}"` : ''}>刷新额度</button>`).join('');
+        const mailboxActions = `<details class="console-disclosure console-credential"><summary><span>监听邮箱</span><small class="${item.mail.length ? 'good' : 'muted'}">${item.mail.length ? item.mail.length + ' 个' : '未配置'}</small></summary><div class="actions">
+          <button class="btn" type="button" data-listen-account="${escapeAttr(item.key)}">${item.mail.length ? '修改' : '添加'}</button></div></details>`;
         return `<tr><td><div class="account-line"><span class="email">${escapeHtml(item.login || item.email)}</span><span class="plan">${primary ? escapeHtml(codexPlan(primary)) : '无Codex'}</span></div><div class="muted">${primary ? 'Codex 已关联' : 'GPT 登录账号'}</div>${renderAccountSubscription(item, escapeHtml)}</td>
           <td>${item.codex.length ? item.codex.map(account => quotaCell(account.usage)).join('<hr>') : '<span class="muted">未提供</span>'}</td>
           <td>${credentialActions(item, 'password', 'GPT密码', 'gpt_password')}${credentialActions(item, 'totp', '身份验证器(2FA)', 'totp_secret')}${mailboxActions}</td>
           <td><div class="${listed ? 'good' : 'warn'}">${listed ? '已上架' : '已下架（仅管理员可用）'}</div>${codexStatuses || '<div class="muted">未关联 <span class="plan">Codex</span></div>'}${mailStatuses || '<div class="muted">无邮箱验证 <span class="plan" data-ui-text>邮箱</span></div>'}</td>
-          <td><div class="actions"><button class="btn" data-edit-gpt="${escapeAttr(item.key)}">编辑账号</button><button class="btn" data-gpt-changes="${escapeAttr(item.key)}">修改记录</button><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>${codexActions}<button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除 GPT 账号</button></td></tr>`;
+          <td><div class="actions"><button class="btn" data-edit-gpt="${escapeAttr(item.key)}">编辑账号</button>${refreshActions}</div><details class="console-disclosure console-more"><summary>更多操作</summary><div class="console-more-content"><div class="actions"><button class="btn" data-gpt-changes="${escapeAttr(item.key)}">修改记录</button><button class="btn" data-listing-account="${escapeAttr(item.key)}" data-listed="${!listed}">${listed ? '下架账号' : '上架账号'}</button></div>${codexActions}<div class="console-danger-actions"><button class="btn btn-danger" data-delete-account="${escapeAttr(item.key)}" data-email="${escapeAttr(item.email)}">删除 GPT 账号</button></div></div></details></td></tr>`;
       }
 
       async function loadAccounts(force = true) {
-        if (accountsLoading || (!force && accountRows.querySelector('button:disabled'))) return;
+        if (accountsLoading || (!force && accountRows.querySelector('button:disabled, .console-disclosure[open]'))) return;
         accountsLoading = true;
         try {
           const data = await api('/api/accounts');
@@ -1476,14 +1476,15 @@
           <td>${escapeHtml(mail.enabled === false ? '已停用' : mail.status || '未知')}</td><td><span class="${mail.listed ? 'good' : 'muted'}">${mail.listed ? '已上架' : '未上架'}</span></td><td><div class="actions">
           <button class="btn" data-mail-note data-name="${name}">接码说明</button>
           <button class="btn" data-mail-listing data-name="${name}" data-listed="${!mail.listed}">${mail.listed ? '下架接码' : '上架接码'}</button>
+          </div><details class="console-disclosure console-more"><summary>更多操作</summary><div class="console-more-content">
           ${['gmail', 'outlook'].includes(mail.provider) ? `<form action="/api/admin/${mail.provider}/auth/start?account_name=${encodeURIComponent(mail.name)}" method="post" target="_blank" rel="noopener"><button class="btn">重新授权</button></form>` : ''}
           <button class="btn" data-mail-action="${mail.enabled === false ? 'enable' : 'disable'}" data-name="${name}">${mail.enabled === false ? '启用监听' : '停用监听'}</button>
-          <button class="btn btn-danger" data-mail-action="delete" data-name="${name}">移除邮箱</button>
-          </div></td></tr>`;
+          <div class="console-danger-actions"><button class="btn btn-danger" data-mail-action="delete" data-name="${name}">移除邮箱</button></div>
+          </div></details></td></tr>`;
       }
 
       async function loadMailboxes(force = true) {
-        if (mailboxesLoading || (!force && mailboxRows.querySelector('button:disabled'))) return;
+        if (mailboxesLoading || (!force && mailboxRows.querySelector('button:disabled, .console-disclosure[open]'))) return;
         mailboxesLoading = true;
         try {
           const data = await api('/api/admin/mail/accounts');

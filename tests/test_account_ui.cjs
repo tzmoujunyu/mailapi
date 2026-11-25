@@ -367,6 +367,22 @@ test('console refreshes the selected panel quickly and keeps full search data on
   assert.equal(app.calls.length, 4);
 });
 
+test('console polling leaves expanded action controls intact while explicit refresh still works', async () => {
+  const app = page('static/admin.html'); await flush();
+  for (const id of ['account-rows', 'mailbox-rows']) {
+    app.nodes.get(id).querySelector = selector => selector.includes('.console-disclosure[open]') ? {} : null;
+  }
+  app.calls.length = 0;
+  await vm.runInContext('Promise.all([loadAccounts(false), loadMailboxes(false)])', app.context);
+  assert.equal(app.calls.length, 0);
+  await vm.runInContext('Promise.all([loadAccounts(), loadMailboxes()])', app.context);
+  assert.deepEqual(app.calls.map(([url]) => url), ['/api/accounts', '/api/admin/mail/accounts']);
+  for (const id of ['account-rows', 'mailbox-rows']) app.nodes.get(id).querySelector = () => null;
+  app.calls.length = 0;
+  await vm.runInContext('Promise.all([loadAccounts(false), loadMailboxes(false)])', app.context);
+  assert.equal(app.calls.length, 2);
+});
+
 test('console lazy-loads the editor and allows retry after a failed download', async () => {
   const app = page('static/admin.html'); await flush();
   const editor = app.context.window.CodexTipEditor;

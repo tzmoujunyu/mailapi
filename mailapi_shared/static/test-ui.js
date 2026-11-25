@@ -112,31 +112,69 @@
 
   function enhanceResources(root) {
     const container = root.querySelector('.container');
-    if (!container || !root.querySelector('#chatgpt-accounts') || container.querySelector('.test-ui-home-summary')) return;
+    if (!container || !root.querySelector('#chatgpt-accounts') || container.querySelector('.resource-search-tools')) return;
     const sections = [
-      ['chatgpt-accounts', 'GPT 账号', '#rows', '.account-email'],
-      ['codex-tips', 'Codex 使用提示', '#codex-tip-list', '.codex-tip-item'],
-      ['coding-plans', 'Coding Plan', '#coding-plan-rows', '.resource-name'],
-      ['relay-accounts', '中转站', '#relay-account-rows', '.resource-name'],
+      ['chatgpt-accounts', '#rows', '.account-email'],
+      ['codex-tips', '#codex-tip-list', '.codex-tip-item'],
+      ['coding-plans', '#coding-plan-rows', '.resource-name'],
+      ['relay-accounts', '#relay-account-rows', '.resource-name'],
     ];
-    const summary = document.createElement('nav');
-    summary.className = 'test-ui-home-summary';
-    summary.setAttribute('aria-label', '资源数量与分类');
-    for (const [id, label, listSelector, itemSelector] of sections) {
+    for (const [id, listSelector, itemSelector] of sections) {
       const list = root.querySelector(listSelector);
-      const link = document.createElement('a');
-      link.href = '#' + id;
-      link.className = 'test-ui-summary-card';
-      link.innerHTML = `<span class="test-ui-summary-label">${label}</span><strong class="test-ui-summary-value">—</strong>`;
-      const update = () => { link.lastElementChild.textContent = list.querySelectorAll(itemSelector).length; };
+      const link = root.querySelector(`.home-directory a[href="#${id}"]`);
+      if (!list || !link) continue;
+      const count = document.createElement('span');
+      count.className = 'resource-count';
+      link.append(count);
+      const update = () => { count.textContent = list.querySelectorAll(itemSelector).length; };
       new MutationObserver(update).observe(list, { childList: true });
       update();
-      summary.append(link);
     }
-    container.prepend(summary);
+    const section = root.querySelector('#chatgpt-accounts');
+    const tools = document.createElement('div');
+    tools.className = 'resource-search-tools';
+    tools.innerHTML = `<label class="resource-search-field"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" aria-label="搜索 GPT 账号" placeholder="搜索账号、套餐或状态…" autocomplete="off"></label><button type="button" class="small-btn" hidden>清除</button><span class="resource-search-count" role="status" aria-live="polite"></span>`;
+    section.querySelector('.page-head').append(tools);
+    const input = tools.querySelector('input'), clear = tools.querySelector('button'), status = tools.querySelector('[role="status"]');
+    const rows = section.querySelector('#rows');
+    const empty = document.createElement('p');
+    empty.className = 'resource-search-empty muted';
+    empty.textContent = '没有匹配的账号，请调整关键词。'; empty.hidden = true;
+    section.querySelector('.table-wrap').after(empty);
+    const normalize = value => value.normalize('NFKC').toLocaleLowerCase();
+    function filter() {
+      const terms = normalize(input.value).trim().split(/\s+/).filter(Boolean);
+      let total = 0, shown = 0, parentVisible = false;
+      for (const row of rows.children) {
+        if (row.querySelector('.account-email')) {
+          total++;
+          parentVisible = terms.every(term => normalize(row.textContent).includes(term));
+          if (parentVisible) shown++;
+          row.hidden = !parentVisible;
+        } else row.hidden = row.classList.contains('detail-row') ? !parentVisible : terms.length > 0;
+      }
+      status.textContent = `${shown} / ${total} ${window.SiteLanguage?.t('账号') || '账号'}`;
+      clear.hidden = !input.value; empty.hidden = !terms.length || shown > 0;
+    }
+    let timer;
+    const schedule = () => { clearTimeout(timer); timer = setTimeout(filter, 150); };
+    input.addEventListener('input', event => { if (!event.isComposing) schedule(); });
+    input.addEventListener('compositionend', schedule);
+    const reset = () => { clearTimeout(timer); input.value = ''; filter(); input.focus(); };
+    clear.addEventListener('click', reset);
+    input.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); reset(); } });
+    new MutationObserver(filter).observe(rows, { childList: true });
+    document.addEventListener('site:language', filter);
+    filter();
   }
   window.TestUI = {enhanceResources};
   if (!document.querySelector('[data-test-view]') && document.body.classList.contains('test-ui-home')) enhanceResources(document);
+  document.addEventListener('keydown', event => {
+    const details = event.target.closest?.('.console-disclosure[open], .subscription-details[open]');
+    if (event.key === 'Escape' && details) {
+      event.preventDefault(); event.stopPropagation(); details.open = false; details.querySelector('summary').focus();
+    }
+  });
 })();
 
 // Delegate hints so controls added by the persistent router need no remount.
