@@ -1,7 +1,8 @@
 # Isolated backup rehearsal
 
-These examples are not installed or enabled. Only `environment: test` is accepted.
-Use fixture data first; never point these examples at production or restart a service.
+These examples are not installed or enabled. They use `environment: test`.
+Use fixture data first. Production requires the explicit safeguards described below;
+never relabel a fixture configuration as a production configuration.
 
 ## Explicit sources and keys
 
@@ -70,12 +71,16 @@ can retry after a failure. The two systemd files are examples only; do not insta
 or enable them for production in this change.
 
 The application adapter `operational_backup_status.configure(app)` optionally runs
-the same scheduler tick in a worker thread every 60 seconds. Both `MAILAPI_MODE=test`
-and an explicit `MAILAPI_BACKUP_CONFIG` path are required. Production and unconfigured
-applications have no backup task. On shutdown, an in-flight snapshot finishes its
+the same scheduler tick in a worker thread every 60 seconds. An explicit
+`MAILAPI_MODE` and matching `MAILAPI_BACKUP_CONFIG` path are required. Production
+also requires `MAILAPI_BACKUP_ENABLED=1`, configuration `environment: production`,
+`production_enabled: true` and `fixture_only: false`. Unconfigured applications
+have no backup task. On shutdown, an in-flight snapshot finishes its
 cleanup before the task exits. Use either this adapter or the external timer; the
 job lock also prevents simultaneous archive writes. For this round, configure only
-the separate fixture directory, never the running preview's actual source data.
+the separate fixture directory. For production, use a separately reviewed source
+inventory with the actual NewAPI database, runtime, client configuration and keys.
+Create and verify an encrypted pre-deployment backup before enabling the schedule.
 
 The adapter installs safe `backup_status_provider` and `backup_notice_provider`
 callbacks for the administrator UI. Status corruption/configuration failures use a
@@ -97,3 +102,18 @@ is configured here; copy encrypted archives separately for host-loss protection.
 stable after writes; the newest 100 events are retained. Failure summaries contain
 no source paths, invoice values, usernames or key material. The application must
 enforce administrator permissions when displaying these notifications.
+
+## Explicit production activation
+
+Production uses a separate private configuration with `environment: production`,
+`production_enabled: true` and `fixture_only: false`; the application must also set
+`MAILAPI_BACKUP_ENABLED=1`. A test process rejects production configuration and a
+production process rejects fixture/test configuration. Missing or invalid
+configuration reports an administrator-visible failure without blocking startup.
+Keep the production backup key separate from application recovery keys. Use the
+actual independent NewAPI SQLite path, never a test gateway database. Register the
+runtime, matching application key, website configuration and gateway service
+configuration. Preserve a matching source-code archive for recovery. First create
+and verify a backup, then configure the application scheduler; do not enable the
+example external timer at the same time. Recovery checks always use a new isolated
+child directory and never switch running services or overwrite source data.

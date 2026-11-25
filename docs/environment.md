@@ -77,6 +77,8 @@ ss -ltnp | grep -E ':(8000|8001)\b'
 | `MAILAPI_TRUSTED_PROXY_IPS` | 反代连接源站时使用的确切 IP，逗号分隔 |
 | `MAILAPI_DATA_DIR` | 正式运行数据目录，默认 `runtime` |
 | `MAILAPI_WORKSPACE_ENABLED` | 正式模式显式设为 `1` 后启用新版工作台、财务和 API；默认不启用 |
+| `MAILAPI_BACKUP_ENABLED` | 正式环境设为 `1`，并指定匹配的正式备份配置后才启用定期备份 |
+| `MAILAPI_BACKUP_CONFIG` | 私有备份配置绝对路径；正式配置须声明 `environment: production`、`production_enabled: true`，不得使用测试样例 |
 | `MAILAPI_EXTERNAL_WATCHERS` | 外部邮箱和 Codex 监听，默认开启 |
 | `MAILAPI_AUTH_ARTIFACT_CLEANUP` | 设为 `1` 后正式版启动时清理授权归档和旧恢复点，要求启用 OAuth 加密 |
 | `MAILAPI_AUTH_ARTIFACT_KEEP_HISTORY`、`MAILAPI_AUTH_ARTIFACT_MAX_AGE_DAYS` | 正式版授权归档与恢复点保留数量和天数，默认 `5` 和 `30` |

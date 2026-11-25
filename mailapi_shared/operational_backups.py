@@ -1,4 +1,4 @@
-"""Opt-in test backup jobs. No application routes or production scheduling."""
+"""Explicitly configured encrypted backups and isolated restore checks."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
@@ -15,6 +15,15 @@ from . import operational_backup_io as io
 UTC = timezone.utc
 BEIJING = ZoneInfo('Asia/Shanghai')
 DB_NAMES = ('site_accounts.sqlite3', 'resources.sqlite3', 'test_features.sqlite3')
+
+
+def validate_environment(config):
+    environment = config.get('environment')
+    if environment not in {'test', 'production'}:
+        raise ValueError('An explicit backup environment is required')
+    if environment == 'production' and (config.get('production_enabled') is not True or config.get('fixture_only') is True):
+        raise ValueError('Production backups require explicit approval and real data')
+    return environment
 
 
 def _path(value):
@@ -56,7 +65,8 @@ def record_initialization_failure(config, action):
     """Report a missing key/source on later runs, only to an already owned root."""
     try:
         directory = _path(config['backup_root'])
-        if config.get('environment') != 'test' or directory.stat().st_mode & 0o077:
+        validate_environment(config)
+        if directory.stat().st_mode & 0o077:
             return False
         if json.loads((directory / 'owner.json').read_text()) != {'format': 1, 'namespace': config['namespace']}:
             return False
@@ -70,8 +80,7 @@ def record_initialization_failure(config, action):
 
 class BackupManager:
     def __init__(self, config, *, restore_only=False):
-        if config.get('environment') != 'test':
-            raise ValueError('Only explicitly configured test environments are supported')
+        validate_environment(config)
         self.namespace = config['namespace']
         self.restore_only = restore_only
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', self.namespace):

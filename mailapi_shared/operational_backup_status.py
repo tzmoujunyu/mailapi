@@ -1,4 +1,4 @@
-"""Explicit test-only backup scheduler and safe administrator status providers."""
+"""Opt-in backup scheduler and safe administrator status providers."""
 import asyncio
 from datetime import datetime
 import json
@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import threading
 
-from .operational_backups import BackupManager, _path, read_status, record_initialization_failure
+from .operational_backups import BackupManager, _path, read_status, record_initialization_failure, validate_environment
 
 
 def _timestamp(value):
@@ -19,8 +19,9 @@ def _timestamp(value):
 
 
 class BackupScheduler:
-    def __init__(self, config_path):
+    def __init__(self, config_path, environment='test'):
         self.config_path = Path(config_path)
+        self.environment = environment
         self.lock = threading.Lock()
         self.failed = False
         self.stop_event = None
@@ -29,8 +30,8 @@ class BackupScheduler:
     def _config(self):
         path = _path(self.config_path)
         config = json.loads(path.read_text())
-        if config.get('environment') != 'test':
-            raise ValueError('Only test backup configuration is accepted')
+        if validate_environment(config) != self.environment:
+            raise ValueError('Backup configuration must match the application environment')
         return config
 
     def tick(self):
@@ -114,14 +115,17 @@ class BackupScheduler:
 
 
 def configure(app, env=None, config_path=None):
-    """Install only for test mode plus an explicit config path; never enable production."""
+    """Production requires its own matching configuration and explicit enable switch."""
     env = os.environ if env is None else env
     app.state.backup_status_provider = lambda: {'configured': False, 'fixture_only': False}
     app.state.backup_notice_provider = lambda: []
     path = config_path or env.get('MAILAPI_BACKUP_CONFIG')
-    if env.get('MAILAPI_MODE') != 'test' or not path:
+    mode = env.get('MAILAPI_MODE')
+    if not path or mode not in {'test', 'production'}:
         return None
-    scheduler = BackupScheduler(path)
+    if mode == 'production' and env.get('MAILAPI_BACKUP_ENABLED') != '1':
+        return None
+    scheduler = BackupScheduler(path, mode)
     app.state.backup_scheduler = scheduler
     app.state.backup_status_provider = scheduler.status
     app.state.backup_notice_provider = scheduler.notices

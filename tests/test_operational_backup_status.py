@@ -123,6 +123,25 @@ class BackupStatusTests(unittest.TestCase):
                                             'last_backup_at': None, 'last_drill_at': None})
         self.assertFalse(Path(self.config['backup_root']).exists())
 
+    def test_production_requires_explicit_opt_in_and_matching_nonfixture_configuration(self):
+        env = {'MAILAPI_MODE': 'production', 'MAILAPI_BACKUP_CONFIG': str(self.path), 'MAILAPI_BACKUP_ENABLED': '1'}
+        scheduler = configure(self.app, env)
+        self.assertFalse(scheduler.status()['available'])
+        config = self.config | {'environment': 'production', 'fixture_only': False}
+        self.path.write_text(json.dumps(config))
+        self.assertFalse(scheduler.status()['available'])
+        config['production_enabled'] = True
+        self.path.write_text(json.dumps(config))
+        self.assertEqual(set(scheduler.tick()), {'backup', 'integrity'})
+        self.assertTrue(scheduler.status()['available'])
+        self.assertFalse(scheduler.status()['fixture_only'])
+        with self.assertRaises(ValueError):
+            BackupManager(config | {'fixture_only': True})
+        with self.assertRaises(ValueError):
+            BackupManager(config | {'production_enabled': 'true'})
+        test_scheduler = configure(FastAPI(), {'MAILAPI_MODE': 'test'}, config_path=self.path)
+        self.assertFalse(test_scheduler.status()['available'])
+
 
 class BackupLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_does_not_block_loop_and_shutdown_waits_for_cleanup(self):

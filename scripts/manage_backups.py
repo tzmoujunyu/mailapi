@@ -1,4 +1,4 @@
-"""Run explicitly configured test backup jobs; never installs a scheduler."""
+"""Run explicitly configured backup jobs; never installs a scheduler."""
 import argparse
 import json
 import os
@@ -34,7 +34,7 @@ def main():
     except Exception:
         if manager is None and config and args.action != 'status':
             record_initialization_failure(config, 'integrity' if args.action in {'restore', 'verify'} else 'backup')
-        print(json.dumps({'success': False, 'summary': '备份任务未完成，请检查隔离测试配置或管理员备份状态'}, ensure_ascii=False))
+        print(json.dumps({'success': False, 'summary': '备份任务未完成，请检查备份配置或管理员备份状态'}, ensure_ascii=False))
         return 1
 
 
