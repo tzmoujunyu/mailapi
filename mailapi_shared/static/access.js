@@ -80,6 +80,9 @@ function renderGroupOverview(groupMembers, resourceNames) {
       }
       const cellContents = matches.map(group => {
         const members = groupMembers(group);
+        const memberNames = members.map(user => user.note || user.username);
+        const memberSummary = memberNames.slice(0, 3).map(name => `<span class="tag" title="${escapeHtml(name)}">${escapeHtml(name)}</span>`).join('');
+        const memberOverflow = members.length > 3 ? `<span class="matrix-more" title="查看全部 ${members.length} 位成员">+${members.length - 3}</span>` : '';
         const accounts = group.resource_keys.map(key => resourceByKey.get(key)).filter(item => item?.kind === 'gpt');
         let nearest;
         for (const account of accounts) {
@@ -88,12 +91,12 @@ function renderGroupOverview(groupMembers, resourceNames) {
         }
         const account = nearest?.account || accounts[0];
         const expiryTag = nearest ? ` <span class="expiry-tag${nearest.expiry.due ? ' expiry-due' : ''}">(${nearest.expiry.remaining})</span>` : '';
-        const summary = account ? `${escapeHtml(account.name)}${expiryTag}` : '<span class="muted" data-ui-text>暂无 GPT 账号</span>';
-        const searchText = [group.name, number ? `组${number}` : '未编号', ...members.map(user => user.username), ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
+        const summary = account ? `<span class="matrix-account-name" title="${escapeHtml(account.name)}">${escapeHtml(account.name)}</span>${expiryTag}` : '<span class="muted" data-ui-text>暂无 GPT 账号</span>';
+        const searchText = [group.name, number ? `组${number}` : '未编号', ...members.flatMap(user => [user.username, user.note || '']), ...group.resource_keys.map(key => resourceNames.get(key) || '')].join(' ');
         return `<div class="matrix-cell" data-edit-group="${escapeHtml(group.id)}" data-search-text="${escapeHtml(searchText)}">
         <button type="button" class="matrix-edit" data-edit-group="${escapeHtml(group.id)}"
           title="编辑 ${escapeHtml(group.name)}" aria-label="编辑小组、成员与资源 · ${escapeHtml(group.name)}">
-          <span class="matrix-members">${members.length ? tags(members.map(user => user.note || user.username)) : '<span class="muted" data-ui-text>暂无成员</span>'}</span>
+          <span class="matrix-members">${members.length ? memberSummary + memberOverflow : '<span class="muted" data-ui-text>暂无成员</span>'}</span>
           <span class="matrix-account">${summary}</span>
         </button>
         <button type="button" class="matrix-delete" data-delete-group="${escapeHtml(group.id)}"
@@ -107,10 +110,11 @@ function renderGroupOverview(groupMembers, resourceNames) {
       const edit = matches.length === 1 ? `data-edit-group="${escapeHtml(matches[0].id)}"` : '';
       return `<td class="matrix-data" ${edit}>${cellContents}</td>`;
     }).join('');
-    return `<tr><th class="matrix-category" scope="row">${escapeHtml(name)}</th>${contents}
+    return `<tr><th class="matrix-category" scope="row" title="${escapeHtml(name)}">${escapeHtml(name)}</th>${contents}
       <td class="matrix-edge">${addGroupButton(name, nextGroupNumber(new Set(cells.keys())), `向 ${name} 添加小组`)}</td></tr>`;
   }).join('');
-  byId('group-overview').innerHTML = `<thead><tr><th class="matrix-corner" scope="col">类别 / 小组</th>${headings}
+  byId('group-overview').style.setProperty('--matrix-columns', columns.length);
+  byId('group-overview').innerHTML = `<colgroup><col class="matrix-category-column">${columns.map(() => '<col class="matrix-group-column">').join('')}<col class="matrix-add-column"></colgroup><thead><tr><th class="matrix-corner" scope="col">类别 / 小组</th>${headings}
     <th class="matrix-edge" scope="col">${addGroupButton('', nextGroupNumber(numbers), '新增小组列')}</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="${columns.length + 2}" class="matrix-empty muted">暂无分组，点击下方 ＋ 创建第一个类别和小组。</td></tr>`}</tbody>
     <tfoot><tr><td class="matrix-new-category" colspan="${columns.length + 2}">

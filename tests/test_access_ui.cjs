@@ -45,7 +45,7 @@ async function page() {
       return selector === 'input:checked' ? this.inputs.filter(input => input.checked) : this.inputs;
     },
     querySelector() { return { disabled: false }; },
-    classList: { toggle() {} }, reset() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; },
+    classList: { toggle() {} }, style: { setProperty() {} }, reset() {}, focus() {}, showModal() { this.open = true; }, close() { this.open = false; },
     addEventListener(type, callback) { this.listeners[type] = callback; },
   });
   const document = { getElementById(id) { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
@@ -80,19 +80,19 @@ test('overview shows the first complete GPT account when expiry is unavailable',
   const html = app.nodes.get('group-overview').innerHTML;
   const summaries = [...html.matchAll(/<span class="matrix-account">([^\n]*)<\/span>/g)].map(match => match[1]);
   assert.equal(summaries.length, 3);
-  assert.equal(summaries[0], 'complete.account.name@example.com');
-  assert.equal(summaries[1], 'complete.account.name@example.com');
+  assert.match(summaries[0], /class="matrix-account-name" title="complete.account.name@example.com">complete.account.name@example.com<\/span>/);
+  assert.match(summaries[1], /class="matrix-account-name" title="complete.account.name@example.com">complete.account.name@example.com<\/span>/);
   assert.match(summaries[2], /暂无 GPT 账号/);
   assert.match(html, /data-search-text="[^"]*second@example\.com/);
 });
 
 test('account notes replace member usernames in the overview and accompany names in management', async () => {
   const app = await page();
-  assert.match(app.nodes.get('group-overview').innerHTML, /class="tag">alice<\/span>/);
+  assert.match(app.nodes.get('group-overview').innerHTML, /class="tag" title="alice">alice<\/span>/);
   vm.runInContext('users[1].note = "研发 <成员>"; render(); openUser(users[1]);', app.context);
   const overview = app.nodes.get('group-overview').innerHTML;
-  assert.match(overview, /class="tag">研发 &lt;成员&gt;<\/span>/);
-  assert.doesNotMatch(overview, /class="tag">alice<\/span>/);
+  assert.match(overview, /class="tag" title="研发 &lt;成员&gt;">研发 &lt;成员&gt;<\/span>/);
+  assert.doesNotMatch(overview, /class="tag" title="alice">alice<\/span>/);
   assert.match(overview, /data-search-text="[^"]*alice/);
   assert.match(app.nodes.get('users').innerHTML, /<td>alice（研发 &lt;成员&gt;）<\/td>/);
   assert.equal(app.nodes.get('user-note').value, '研发 <成员>');
@@ -124,15 +124,34 @@ test('overview uses the earliest known GPT expiry and editor warns at five days 
     render(); openGroup(groups[0]);
   `, app.context);
   const overview = app.nodes.get('group-overview').innerHTML;
-  assert.match(overview, /class="matrix-account">second@example\.com <span class="expiry-tag expiry-due">\(5 Day left\)<\/span><\/span>/);
-  assert.match(overview, /class="matrix-account">complete\.account\.name@example\.com <span class="expiry-tag">\(6 Day left\)<\/span><\/span>/);
+  assert.match(overview, /class="matrix-account-name"[^>]*>second@example\.com<\/span> <span class="expiry-tag expiry-due">\(5 Day left\)<\/span><\/span>/);
+  assert.match(overview, /class="matrix-account-name"[^>]*>complete\.account\.name@example\.com<\/span> <span class="expiry-tag">\(6 Day left\)<\/span><\/span>/);
   assert.doesNotMatch(overview, /matrix-expiry|订阅到期|26\.11\.14|等多个账号/);
   const options = app.nodes.get('resource-options').innerHTML;
   assert.match(options, /class="expiry-tag"[^>]*>\(6 Day left\)/);
   assert.match(options, /class="expiry-tag expiry-due"[^>]*>\(5 Day left\)/);
   assert.match(options, /class="expiry-tag expiry-due"[^>]*>\(已到期\)/);
   vm.runInContext('groups[0].resource_keys.push("gpt:unused"); render()', app.context);
-  assert.match(app.nodes.get('group-overview').innerHTML, /class="matrix-account">&lt;img [^\n]* <span class="expiry-tag expiry-due">\(已到期\)/);
+  assert.match(app.nodes.get('group-overview').innerHTML, /class="matrix-account-name"[^>]*>&lt;img [^\n]* <span class="expiry-tag expiry-due">\(已到期\)/);
+});
+
+test('compact member summary keeps hidden members searchable and opens the full group editor', async () => {
+  const app = await page();
+  vm.runInContext(`
+    users.push(...['bob', 'carol', 'dave', 'eve'].map(username => ({id:username,username,role:'user',note:username==='eve'?'隐藏备注':''})));
+    groups[0].member_ids.push('bob', 'carol', 'dave', 'eve');
+    render();
+  `, app.context);
+  const overview = app.nodes.get('group-overview');
+  const members = /<span class="matrix-members">([\s\S]*?)<\/span>\s*<span class="matrix-account">/.exec(overview.innerHTML)[1];
+  assert.equal((members.match(/class="tag"/g) || []).length, 3);
+  assert.match(members, /class="matrix-more" title="查看全部 5 位成员">\+2<\/span>/);
+  assert.doesNotMatch(members, /<button|隐藏备注|dave/);
+  assert.match(overview.innerHTML, /data-search-text="[^"]*eve 隐藏备注/);
+  overview.listeners.click({currentTarget:{id:'group-overview'}, target:{closest: selector => selector === '[data-edit-group]' ? {dataset:{editGroup:'agent-1'}} : null}});
+  assert.equal(app.nodes.get('group-dialog').open, true);
+  assert.equal(app.nodes.get('member-options').inputs.filter(input => input.checked).length, 5);
+  assert.match(app.nodes.get('member-options').innerHTML, /value="eve" checked/);
 });
 
 test('group resource sections retain selections and count saved group assignments', async () => {
