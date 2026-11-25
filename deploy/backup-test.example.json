@@ -1,0 +1,17 @@
+{
+  "environment": "test",
+  "fixture_only": true,
+  "namespace": "mailapi-fixture",
+  "data_root": "/srv/mailapi-backup-fixture/data",
+  "newapi_sqlite": "/srv/mailapi-backup-fixture/newapi/newapi.db",
+  "recovery_keys": {
+    "credential-key.json": "/srv/mailapi-backup-fixture/keys/credential-key.json",
+    "oauth-recovery.key": "/srv/mailapi-backup-fixture/keys/oauth-recovery.key"
+  },
+  "extra_paths": {
+    "codex-tips": "/srv/mailapi-backup-fixture/codex-tips"
+  },
+  "encryption_key_file": "/srv/mailapi-backup-decryption/backup.key",
+  "backup_root": "/srv/mailapi-backup-output",
+  "restore_root": "/srv/mailapi-backup-restore"
+}

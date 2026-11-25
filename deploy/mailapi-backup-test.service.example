@@ -1,0 +1,11 @@
+[Unit]
+Description=MailAPI isolated test backup scheduler tick (example only)
+
+[Service]
+Type=oneshot
+User=mailapi-test
+UMask=0077
+WorkingDirectory=/srv/mailapi
+ExecStart=/srv/mailapi/.venv/bin/python scripts/manage_backups.py --config /srv/mailapi-backup-test.json run-due
+NoNewPrivileges=yes
+PrivateTmp=yes

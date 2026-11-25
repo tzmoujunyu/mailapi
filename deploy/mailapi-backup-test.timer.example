@@ -1,0 +1,12 @@
+[Unit]
+Description=MailAPI isolated test backup schedule (example only)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Shanghai
+OnCalendar=Sun *-*-* 03:30:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=mailapi-backup-test.service
+
+[Install]
+WantedBy=timers.target
