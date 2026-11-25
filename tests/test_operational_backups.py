@@ -90,6 +90,29 @@ class OperationalBackupTests(unittest.TestCase):
         self.manager.restore(self.manager.restore_root / 'check')
         self.assertEqual((self.manager.restore_root / 'check/data/finance_files/invoice.pdf').read_bytes(), b'updated invoice')
 
+    def test_temporary_file_removed_during_inventory_retries_without_false_type_error(self):
+        temporary = self.data / '.authorization-refresh.tmp'
+        temporary.write_bytes(b'in-progress')
+        original = Path.lstat
+        removed = []
+        def stat_path(path, *args, **kwargs):
+            if path == temporary and not removed:
+                removed.append(True)
+                path.unlink()
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'lstat', stat_path):
+            self.manager.create(self.now)
+        self.assertEqual(removed, [True])
+        destination = self.manager.restore_root / 'without-temporary'
+        self.manager.restore(destination)
+        self.assertFalse((destination / 'data/.authorization-refresh.tmp').exists())
+        self.assertEqual((destination / 'data/finance_files/invoice.pdf').read_bytes(), self.invoice.read_bytes())
+
+    def test_actual_nonregular_source_is_still_rejected(self):
+        os.mkfifo(self.data / 'unexpected-pipe')
+        with self.assertRaisesRegex(ValueError, 'non-regular'):
+            self.manager.create(self.now)
+
     def test_database_changes_retry_and_capture_latest_values(self):
         original = io.digest
         mutations = []

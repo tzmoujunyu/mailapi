@@ -174,13 +174,9 @@ class BackupManager:
         now = now or datetime.now(UTC)
         with self._lock():
             try:
-                # Reject hard links to the backup key as well as path overlap.
-                files, unused = io.inventory(self.sources)
-                if any(path.samefile(self.key_file) for path in files.values()):
-                    raise ValueError('Backup encryption key must not enter the archive')
                 with tempfile.TemporaryDirectory(prefix='.snapshot-', dir=self.directory) as temporary:
                     stage = Path(temporary)
-                    manifest = io.snapshot(self.sources, self.databases, stage / 'files')
+                    manifest = io.snapshot(self.sources, self.databases, stage / 'files', excluded_file=self.key_file)
                     io.encrypt_archive(stage / 'files', stage / 'encrypted', self.key)
                     # Only publish archives that can authenticate, restore and pass integrity checks.
                     io.decrypt_archive(stage / 'encrypted', stage / 'verify.tar', self.key)

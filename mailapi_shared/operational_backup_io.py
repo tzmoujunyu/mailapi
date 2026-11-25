@@ -6,6 +6,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
+import stat
 import tarfile
 import time
 
@@ -42,11 +43,12 @@ def inventory(sources):
     for prefix, source in sources.items():
         paths = sorted(source.rglob('*')) if source.is_dir() else [source]
         for path in paths:
-            if path.is_symlink():
+            mode = path.lstat().st_mode  # A vanished temporary file must trigger a whole-snapshot retry.
+            if stat.S_ISLNK(mode):
                 raise ValueError('Symbolic links are not supported')
-            if path.is_dir():
+            if stat.S_ISDIR(mode):
                 continue
-            if not path.is_file():
+            if not stat.S_ISREG(mode):
                 raise ValueError('Source contains a non-regular file')
             name = prefix + '/' + path.relative_to(source).as_posix() if source.is_dir() else prefix
             safe_name(name)
@@ -68,13 +70,15 @@ def database_integrity(path):
             raise ValueError('SQLite integrity verification failed')
 
 
-def snapshot(sources, required_databases, destination, *, attempts=3):
+def snapshot(sources, required_databases, destination, *, attempts=3, excluded_file=None):
     for attempt in range(attempts):
         if destination.exists():
             shutil.rmtree(destination)
         destination.mkdir(mode=0o700)
         try:
             files, databases = inventory(sources)
+            if excluded_file and any(path.samefile(excluded_file) for path in files.values()):
+                raise ValueError('Backup encryption key must not enter the archive')
             if not set(required_databases).issubset(databases):
                 raise ValueError('A required SQLite database is missing or invalid')
             with ExitStack() as stack:
