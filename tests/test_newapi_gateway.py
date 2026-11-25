@@ -658,6 +658,29 @@ class GatewayHttpTests(unittest.TestCase):
             collector.feed(payload[start:start+13])
         self.assertEqual(collector.usage,(3,4,7))
 
+    def test_broken_non_stream_response_releases_upstream_and_records_one_failure(self):
+        key = self.create()
+        class BrokenResponse(httpx.AsyncByteStream):
+            closed = False
+            async def __aiter__(self):
+                yield b'{"choices":['
+                raise httpx.ReadError('fixture disconnect')
+            async def aclose(self):
+                self.closed = True
+        broken = BrokenResponse()
+        async def upstream(request):
+            return httpx.Response(200, headers={'Content-Type':'application/json'}, stream=broken)
+        relay = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        with patch('mailapi_shared.test_features.httpx.AsyncClient', return_value=relay):
+            response = self.client.post('/api2api/v1/chat/completions', json={'model':'gpt-4o-mini'},
+                                        headers={'Authorization':'Bearer '+key['api_key']})
+        self.assertEqual(response.status_code, 502)
+        self.assertTrue(broken.closed, 'An interrupted response must release its upstream connection')
+        usage = self.client.get('/api/api2api/usage').json()
+        self.assertEqual(usage['requests'], 1)
+        self.assertEqual(usage['items'][0]['error'], 'ReadError')
+        self.assertEqual(usage['items'][0]['status_code'], 502)
+
     def test_broken_stream_is_recorded_as_interrupted_even_after_http_200(self):
         key = self.create()
         class BrokenStream(httpx.AsyncByteStream):

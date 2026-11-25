@@ -1514,8 +1514,11 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                                                status_code=upstream.status_code, request_ms=int((time.perf_counter() - started) * 1000),
                                                error=stream_error or ("" if upstream.status_code < 400 else "upstream_error"))
                 return StreamingResponse(stream_body(), status_code=upstream.status_code, headers=response_headers)
-            content = await upstream.aread()
-            await upstream.aclose()
+            try:
+                content = await upstream.aread()
+            finally:
+                with anyio.CancelScope(shield=True):
+                    await upstream.aclose()
             try:
                 response_payload = json.loads(content)
             except (UnicodeDecodeError, json.JSONDecodeError):
