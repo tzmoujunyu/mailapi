@@ -89,19 +89,19 @@ def image_file(directory, filename):
     return path
 
 
-def image_info(directory, url):
-    if not isinstance(url, str) or not url.startswith(IMAGE_PREFIX):
+def image_info(directory, url, prefix=IMAGE_PREFIX):
+    if not isinstance(url, str) or not url.startswith(prefix):
         raise SiteAccountError("请上传图片后再保存")
-    name = url.removeprefix(IMAGE_PREFIX)
+    name = url.removeprefix(prefix)
     if ".preview." in name:
         raise SiteAccountError("请选择完整图片")
     path = image_file(directory, name)
     with Image.open(path) as image:
         return {"url": url, "width": image.width, "height": image.height,
-                "preview": IMAGE_PREFIX + path.stem + ".preview.webp"}
+                "preview": prefix + path.stem + ".preview.webp"}
 
 
-def validate_blocks(blocks, directory):
+def validate_blocks(blocks, directory, prefix=IMAGE_PREFIX):
     if not isinstance(blocks, list) or not 1 <= len(blocks) <= 100:
         raise SiteAccountError("正文须包含 1–100 个内容块")
     result, plain = [], []
@@ -155,7 +155,7 @@ def validate_blocks(blocks, directory):
             content = {"code": data["code"]}
             plain.append(data["code"])
         elif kind == "image" and isinstance(data.get("file"), dict):
-            content = {"file": image_info(directory, data["file"].get("url")), "caption": inline(data.get("caption", ""))}
+            content = {"file": image_info(directory, data["file"].get("url"), prefix), "caption": inline(data.get("caption", ""))}
         else:
             raise SiteAccountError("正文包含不支持的格式")
         result.append({"type": kind, "data": content})
@@ -169,7 +169,7 @@ def validate_blocks(blocks, directory):
     return result, text
 
 
-def save_image(raw, directory):
+def save_image(raw, directory, prefix=IMAGE_PREFIX):
     if not raw or len(raw) > MAX_IMAGE_BYTES:
         raise SiteAccountError("图片不能为空，单张最多 8 MB", 413)
     with IMAGE_LOCK, warnings.catch_warnings():
@@ -212,5 +212,5 @@ def save_image(raw, directory):
             for filename in outputs:
                 (directory / filename).unlink(missing_ok=True)
             raise
-        return {"url": IMAGE_PREFIX + name + ".webp", "preview": IMAGE_PREFIX + name + ".preview.webp",
+        return {"url": prefix + name + ".webp", "preview": prefix + name + ".preview.webp",
                 "width": width, "height": height}

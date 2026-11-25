@@ -23,7 +23,7 @@ test('invoice thumbnails lazy-load the existing zoom viewer with all PDF pages a
   const {w,dialog,host,viewers,loads,calls}=setup(t);await w.FinancePreviews.render(item,{id:'event-1'});
   assert.equal(calls[0][0],'/api/finance/applications/app-1/attachment-preview?kind=invoice&event_id=event-1');
   assert.equal(host.querySelectorAll('img').length,2);assert.equal(loads(),0);
-  host.querySelectorAll('button')[1].click();await tick();await tick();
+  host.querySelectorAll('.fin-invoice-thumbnail')[1].click();await tick();await tick();
   assert.equal(loads(),1);assert.equal(viewers[0].options.index,1);assert.equal(viewers[0].options.dataSource.length,2);
   const layer=w.document.getElementById('fin-invoice-viewer');
   assert.equal(viewers[0].options.appendToEl,layer);assert.equal(dialog.contains(layer),false);assert.equal(layer.open,true);
@@ -33,13 +33,13 @@ test('invoice thumbnails lazy-load the existing zoom viewer with all PDF pages a
   const cancel=new w.Event('cancel',{cancelable:true});layer.dispatchEvent(cancel);
   assert.equal(cancel.defaultPrevented,true);assert.equal(viewers[0].open,false);assert.equal(dialog.open,true);
   assert.equal(layer.open,false);
-  host.querySelector('button').click();await tick();await tick();assert.equal(loads(),1);
+  host.querySelector('.fin-invoice-thumbnail').click();await tick();await tick();assert.equal(loads(),1);
   dialog.close();assert.equal(viewers[1].open,false);
   assert.equal(layer.open,false);
 });
 test('touching the image zooms while touching its background closes only the image layer',async t=>{
   const {w,dialog,host,viewers}=setup(t);await w.FinancePreviews.render(item);
-  host.querySelector('button').click();await tick();await tick();
+  host.querySelector('.fin-invoice-thumbnail').click();await tick();await tick();
   const viewer=viewers[0],image=w.document.createElement('img');image.className='pswp__img';
   viewer.options.tapAction.call(viewer,{x:10,y:10},{target:image});
   assert.equal(viewer.zoomed,true);assert.equal(viewer.open,true);
@@ -49,7 +49,7 @@ test('touching the image zooms while touching its background closes only the ima
 });
 test('a pending viewer cannot open after the application details are closed',async t=>{
   const {w,dialog,host,viewers}=setup(t);let ready;w.PagePerformance.loadScript=()=>new Promise(resolve=>{ready=resolve;});
-  await w.FinancePreviews.render(item);host.querySelector('button').click();await tick();
+  await w.FinancePreviews.render(item);host.querySelector('.fin-invoice-thumbnail').click();await tick();
   dialog.close();ready();await tick();await tick();
   assert.equal(viewers.length,0);assert.equal(w.document.getElementById('fin-invoice-viewer').open,false);
 });
@@ -59,6 +59,7 @@ test('payment thumbnails stay separate from invoices and use the same full-scree
   assert.equal(calls.length,2);assert.match(calls[1][0],/kind=payment&event_id=event-2$/);
   assert.deepEqual([...host.querySelectorAll('h4')].map(el=>el.textContent),['发票预览','支付记录预览']);
   const button=host.querySelector('[aria-label="放大支付记录 · 1 / 1"]');assert.ok(button);
+  host.querySelector('#fin-preview-tab-payment').click();
   button.click();await tick();await tick();
   const viewer=viewers[0],layer=w.document.getElementById('fin-invoice-viewer');
   assert.equal(layer.getAttribute('aria-label'),'支付记录大图');assert.equal(viewer.options.dataSource[0].alt,'支付记录大图');
@@ -67,7 +68,7 @@ test('payment thumbnails stay separate from invoices and use the same full-scree
   const image=w.document.createElement('img');image.className='pswp__img';
   viewer.options.tapAction.call(viewer,{x:10,y:10},{target:image});assert.equal(viewer.zoomed,true);
   viewer.options.tapAction.call(viewer,{x:2,y:2},{target:layer});assert.equal(layer.open,false);assert.equal(dialog.open,true);
-  host.querySelector('button').click();await tick();await tick();assert.equal(loads(),1);
+  host.querySelector('.fin-invoice-thumbnail').click();await tick();await tick();assert.equal(loads(),1);
 });
 test('payment-only previews work and one failed attachment does not hide the other preview',async t=>{
   const {w,host,calls}=setup(t,url=>url.includes('kind=invoice')?{ok:false,json:async()=>({detail:'发票预览加载失败，请下载原文件查看'})}:{ok:true,json:async()=>({pages:[{src:'/payment',thumbnail:'/payment-thumb',width:480,height:200}]})});
@@ -75,6 +76,26 @@ test('payment-only previews work and one failed attachment does not hide the oth
   assert.equal(calls.length,1);assert.match(host.textContent,/支付记录预览/);assert.equal(host.querySelector('img').alt,'支付记录缩略图 · 1');
   host.replaceChildren();await w.FinancePreviews.render({...item,files:[...item.files,{kind:'payment'}]});
   assert.match(host.textContent,/发票预览加载失败/);assert.ok(host.querySelector('[aria-label="放大支付记录 · 1 / 1"]'));
+});
+test('attachment tabs support keyboard switching without reloading previews and reset for another application',async t=>{
+  const {w,host,calls}=setup(t);
+  await w.FinancePreviews.render({...item,files:[...item.files,{kind:'payment'}]});
+  const invoice=host.querySelector('#fin-preview-tab-invoice'),payment=host.querySelector('#fin-preview-tab-payment');
+  assert.equal(invoice.getAttribute('aria-selected'),'true');assert.equal(payment.tabIndex,-1);
+  assert.equal(host.querySelector('#fin-preview-panel-invoice').hidden,false);
+  assert.equal(host.querySelector('#fin-preview-panel-payment').hidden,true);
+  assert.equal(host.querySelector('img').getAttribute('src'),'/preview?page=1');
+  invoice.dispatchEvent(new w.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));
+  assert.equal(w.document.activeElement,payment);assert.equal(payment.getAttribute('aria-selected'),'true');
+  assert.equal(host.querySelector('#fin-preview-panel-invoice').hidden,true);
+  assert.equal(host.querySelector('#fin-preview-panel-payment').hidden,false);
+  payment.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Home',bubbles:true,cancelable:true}));
+  assert.equal(w.document.activeElement,invoice);assert.equal(calls.length,2);
+  await w.FinancePreviews.render({...item,id:'app-2',files:[{kind:'payment'}]});
+  assert.equal(host.querySelectorAll('[role="tab"]').length,1);
+  assert.equal(host.querySelector('#fin-preview-tab-invoice'),null);
+  assert.equal(host.querySelector('#fin-preview-panel-payment').hidden,false);
+  assert.match(calls.at(-1)[0],/applications\/app-2\/attachment-preview\?kind=payment/);
 });
 test('late preview responses never populate a closed dialog and failures leave the original download available',async t=>{
   let resolve;const {w,dialog,host}=setup(t,()=>new Promise(done=>{resolve=done;}));

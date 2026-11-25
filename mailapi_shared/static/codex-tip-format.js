@@ -1,5 +1,5 @@
 (() => {
-  const imagePath = /^\/api\/codex-tip-images\/[0-9a-f]{32}\.webp$/;
+  const imagePath = /^\/api\/(?:codex-tip-images|content-images\/(?:site|finance))\/[0-9a-f]{32}\.webp$/;
   const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
   const listType = style => style === 'ordered' ? 'orderedList' : 'bulletList';
   const listStyle = type => type === 'orderedList' ? 'ordered' : 'unordered';

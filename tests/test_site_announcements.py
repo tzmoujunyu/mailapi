@@ -72,3 +72,49 @@ class SiteAnnouncementTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/site-announcements/read", headers=self.reader,
                                          json={"items": [{"id": item["id"], "revision": 999}]}).status_code, 400)
         self.assertTrue(self.items(self.reader)[0]["unread"])
+
+    def test_rich_content_legacy_preservation_and_conflict(self):
+        blocks = [{"type": "paragraph", "data": {"text": "<b>Hello</b><script>bad()</script>"}}]
+        created = self.client.post("/api/admin/site-announcements", headers=self.admin,
+            json={"title": "Rich", "blocks": blocks})
+        self.assertEqual(created.status_code, 201, created.text)
+        item = self.items(self.admin)[0]
+        self.assertIn("<b>Hello</b>", item["blocks"][0]["data"]["text"])
+        self.assertNotIn("<script>", str(item["blocks"]))
+        self.assertEqual(item["doc_version"], 1)
+        self.client.put("/api/admin/site-announcements/"+item["id"], headers=self.admin,
+            json={"title": item["title"], "body": item["body"], "pinned": True, "revision": 1})
+        self.assertEqual(self.items(self.admin)[0]["blocks"], item["blocks"])
+        finance = self.store.save_announcement(announcement_id=None, title="Rich", body=None,
+            blocks=blocks, pinned=False, actor="admin")
+        self.store.save_announcement(announcement_id=finance["id"], title="Rich", body=finance["body"],
+            pinned=True, actor="admin", revision=1)
+        self.assertEqual(self.store.announcements()[0]["blocks"], finance["blocks"])
+        from mailapi_shared.test_features import TestFeatureError
+        with self.assertRaises(TestFeatureError):
+            self.store.save_announcement(announcement_id=finance["id"], title="Stale", body="x",
+                pinned=False, actor="admin", revision=1)
+
+    def test_scoped_upload_permissions_and_paths(self):
+        import io
+        from PIL import Image
+        raw = io.BytesIO(); Image.new("RGB", (3, 3)).save(raw, "PNG")
+        for scope in ("site", "finance"):
+            url = "/api/announcement-images/"+scope
+            self.assertEqual(self.client.post(url, headers=self.reader,
+                files={"image": ("a.png", raw.getvalue(), "image/png")}).status_code, 403)
+            response = self.client.post(url, headers=self.admin,
+                files={"image": ("a.png", raw.getvalue(), "image/png")})
+            self.assertEqual(response.status_code, 201, response.text)
+            file = response.json()["file"]
+            self.assertEqual(self.client.get(file["url"]).status_code, 401)
+            self.assertEqual(self.client.get(file["url"], headers=self.reader).status_code, 200)
+            other = "finance" if scope == "site" else "site"
+            self.assertEqual(self.client.get(file["url"].replace("/"+scope+"/", "/"+other+"/"), headers=self.reader).status_code, 404)
+        self.assertEqual(self.client.post("/api/announcement-images/site", headers={"x-role":"manager"},
+            files={"image": ("a.png", raw.getvalue(), "image/png")}).status_code, 403)
+        self.assertEqual(self.client.post("/api/announcement-images/finance", headers={"x-role":"manager"},
+            files={"image": ("a.png", raw.getvalue(), "image/png")}).status_code, 201)
+        blocks=[{"type":"image","data":{"file":{"url":"https://example.com/a.png"}}}]
+        self.assertEqual(self.client.post("/api/admin/site-announcements", headers=self.admin,
+            json={"title":"Bad", "blocks":blocks}).status_code,400)

@@ -5096,6 +5096,27 @@ if WORKSPACE_ENABLED:
 
     TEST_FEATURE_STORE = install_test_features(app, STATIC_DIR, DATA_DIR, CREDENTIAL_KEYRING)
 
+    def resource_health_provider():
+        from .resource_health import health_observations
+        plans = CODING_PLAN_STORE.list_public()
+        for plan in plans:
+            auth = CODING_PLAN_STORE.get_coding_plan_auth(plan['id'])
+            if auth and auth[0]:
+                plan['quota'], _ = CODING_PLAN_QUOTAS.status(plan['id'], *auth)
+        return health_observations(account_groups(), plans)
+
+    def operation_resource_allowed(user, key):
+        # Recheck current assignment and publication on every read, not the
+        # permissions that happened to exist when the notice was generated.
+        item = next((row for row in resource_catalog() if row['key'] == key), None)
+        return bool(item and (user['role'] in ADMIN_ROLES or
+                    (item.get('listed', True) and app.state.site_accounts.resource_allowed(user['id'], key))))
+
+    app.state.resource_health_provider = resource_health_provider
+    app.state.operation_resource_allowed = operation_resource_allowed
+    from .operational_backup_status import configure as configure_backup_status
+    configure_backup_status(app)
+
 
 app.include_router(create_account_router(STATIC_DIR, resource_catalog, on_admin_failure=log_admin_login_failure))
 app.add_middleware(UICompressionMiddleware)

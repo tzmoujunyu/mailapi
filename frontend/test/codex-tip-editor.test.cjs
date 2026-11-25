@@ -28,7 +28,7 @@ async function page(t, tip = { body: '第一行 <example>\n第二行' }) {
   w.MailapiTiptap = { ...w.MailapiTiptap, Editor: class extends RealEditor {
     constructor(options) { super(options); state.editor = this; }
   } };
-  for (const script of ['codex-tip-content.js', 'codex-tip-format.js', 'codex-tip-editor.js']) {
+  for (const script of ['codex-tip-content.js', 'codex-tip-format.js', 'shared-content-editor.js', 'codex-tip-editor.js']) {
     w.eval(fs.readFileSync(path.join(root, script), 'utf8'));
   }
   t.after(() => { state.editor?.destroy(); w.close(); });

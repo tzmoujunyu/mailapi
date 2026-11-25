@@ -13,11 +13,25 @@ window.FinancePreviews = (() => {
   async function render(item,event){
     reset();const host=document.getElementById('fin-detail-previews');
     if(!host)return;
+    host.replaceChildren();
     const request=new AbortController(),seq=sequence;abort=request;
-    await Promise.all(['invoice','payment'].filter(kind=>item?.files?.some(file=>file.kind===kind)).map(kind=>{
-      const section=document.createElement('section');host.append(section);
-      return renderAttachment(section,item,event,kind,seq,request);
-    }));
+    const kinds=['invoice','payment'].filter(kind=>item?.files?.some(file=>file.kind===kind));
+    if(!kinds.length){host.textContent=t('未上传附件');return;}
+    const tabs=document.createElement('div');tabs.className='fin-preview-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label',t('申请附件'));host.append(tabs);
+    const panels=[];
+    for(const kind of kinds){
+      const tab=document.createElement('button');tab.type='button';tab.id='fin-preview-tab-'+kind;tab.setAttribute('role','tab');tab.textContent=t(kind==='payment'?'支付记录':'发票');tab.setAttribute('aria-controls','fin-preview-panel-'+kind);tabs.append(tab);
+      const section=document.createElement('section');section.id='fin-preview-panel-'+kind;section.className='fin-preview-panel';section.setAttribute('role','tabpanel');section.setAttribute('aria-labelledby',tab.id);section.tabIndex=0;host.append(section);panels.push({tab,section,kind});
+      tab.addEventListener('click',()=>select(kind));
+      tab.addEventListener('keydown',event=>{
+        if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+        event.preventDefault();const index=kinds.indexOf(kind),next=event.key==='Home'?0:event.key==='End'?kinds.length-1:(index+(event.key==='ArrowRight'?1:-1)+kinds.length)%kinds.length;
+        select(kinds[next]);panels[next].tab.focus();
+      });
+    }
+    function select(kind){for(const panel of panels){const active=panel.kind===kind;panel.section.hidden=!active;panel.tab.setAttribute('aria-selected',String(active));panel.tab.tabIndex=active?0:-1;}}
+    select(kinds[0]);
+    await Promise.all(panels.map(({section,kind})=>renderAttachment(section,item,event,kind,seq,request)));
   }
   async function renderAttachment(host,item,event,kind,seq,request){
     const labels=kind==='payment'?{heading:'支付记录预览',loading:'正在加载支付记录预览…',zoom:'放大支付记录',thumbnail:'支付记录缩略图',full:'支付记录大图',error:'支付记录预览加载失败，请下载原文件查看'}:
@@ -33,7 +47,7 @@ window.FinancePreviews = (() => {
       data.pages.forEach((page,index)=>{
         const button=document.createElement('button');button.type='button';button.className='fin-invoice-thumbnail';
         button.setAttribute('aria-label',`${t(labels.zoom)} · ${index+1} / ${data.pages.length}`);
-        const image=document.createElement('img');image.src=page.thumbnail;image.alt=`${t(labels.thumbnail)} · ${index+1}`;image.loading='lazy';
+        const image=document.createElement('img');image.src=page.src;image.alt=`${t(labels.thumbnail)} · ${index+1}`;image.loading='lazy';image.decoding='async';
         image.addEventListener('error',()=>{if(seq===sequence)status.textContent=t(labels.error);});
         const caption=document.createElement('span');caption.textContent=`${t('点击放大')} · ${index+1} / ${data.pages.length}`;
         button.append(image,caption);grid.append(button);

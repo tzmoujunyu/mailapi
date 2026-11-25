@@ -1,5 +1,5 @@
 (() => {
-  const imagePath = /^\/api\/codex-tip-images\/[0-9a-f]{32}\.webp$/;
+  const imagePath = /^\/api\/(?:codex-tip-images|content-images\/(?:site|finance))\/[0-9a-f]{32}\.webp$/;
   const inlineTags = new Set(['B', 'STRONG', 'I', 'EM', 'CODE', 'BR', 'A']);
 
   function blocks(tip) {

@@ -20,7 +20,7 @@ const financeController = (() => {
   let selected = new Set(), loading = null;
   let noticePage = 1, adminNoticePage = 1;
   let reportAbort = null;
-  let detailAbort = null, detailSequence = 0, detailItem = null, detailEvent = null;
+  let detailAbort = null, detailSequence = 0, detailItem = null, detailEvent = null, detailScroll = 0;
   let accountName = '', proxyActive = false, payers = [], payerAbort = null, payerSequence = 0;
   const request = async (url, options={}) => {
     const response = await fetch(url, {cache:'no-store', ...options});
@@ -31,7 +31,7 @@ const financeController = (() => {
   };
   const json = (method, body) => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   const error = (id, value='') => { $(id).textContent = t(value); };
-  const show = id => { const dialog = $(id); if (!dialog.open) dialog.showModal(); };
+  const show = id => { const dialog = $(id); if (!dialog.open) { if(id==='fin-detail-dialog')detailScroll=window.scrollY;dialog.showModal(); } };
   const hide = id => id==='finance-dialog'&&window.FinanceDrafts ? window.FinanceDrafts.close() : $(id).close();
   document.querySelectorAll('#view-finance .fin-dialog').forEach(dialog => {
     let startedOutside = false;
@@ -160,7 +160,26 @@ const financeController = (() => {
     $('fin-select-all').indeterminate=selected.size>0 && !$('fin-select-all').checked;
     $('finance-batch-download').disabled=!selected.size;
   }
-  function selectTab(value, reset=true) {
+  const preferenceFields=['status','period','from','to','min','max','group','user','reviewer'];
+  let preferenceEpoch=0;
+  function saveFinancePreferences(){
+    preferenceEpoch++;
+    if(tab==='notices')return;
+    window.ViewPreferences?.save('finance-'+tab,Object.fromEntries(preferenceFields.map(key=>[key,$('fin-'+key).value])));
+  }
+  async function restoreFinancePreferences(){
+    const epoch=++preferenceEpoch,scope=tab;if(scope==='notices')return;
+    const saved=await window.ViewPreferences?.read('finance-'+scope);
+    if(loading)await loading.catch(()=>{});
+    if(epoch!==preferenceEpoch||scope!==tab||!saved)return;
+    for(const key of preferenceFields)if(typeof saved[key]==='string'){
+      const field=$('fin-'+key);
+      if(field.tagName!=='SELECT'||[...field.options].some(option=>option.value===saved[key]))field.value=saved[key];
+    }
+    period();
+    page=1;render();
+  }
+  function selectTab(value, reset=true, restore=true) {
     tab=value;page=1;selected.clear();
     $('fin-export-menu').hidden=tab==='notices';$('fin-export-menu').open=false;
     $('fin-export-description').textContent=t(tab==='stats'?'导出当前筛选的分组统计':tab==='history'?'导出当前筛选的全部审批记录':'导出当前筛选的全部申请');
@@ -175,6 +194,7 @@ const financeController = (() => {
     document.querySelectorAll('.fin-admin-filter').forEach(el=>el.classList.toggle('hidden',!admin || tab==='mine'));
     if (reset) { $('fin-more-filters').open=false;$('fin-search').value='';$('fin-status').value=tab==='review'?'pending':'all';$('fin-period').value=tab==='stats'?'month':'all';$('fin-min').value=$('fin-max').value=$('fin-group').value=$('fin-user').value=$('fin-reviewer').value='';period(); }
     render();
+    if(reset && restore)restoreFinancePreferences();
   }
   function noticeSummary(item) {
     return `<button class="fin-link fin-notice-history-title" type="button" data-read-notice="${html(item.id)}" data-i18n-skip>${html(item.title)}</button><div class="fin-notice-history-meta">${item.pinned?`<span class="fin-tag fin-pin">${t('置顶')}</span>`:''}<time class="fin-secondary" data-i18n-skip>${html(date(item.updated_at))}</time></div><p class="fin-secondary" data-i18n-skip>${html(item.body.replace(/\s+/g,' ').slice(0,120))}</p>`;
@@ -309,38 +329,28 @@ const financeController = (() => {
     $('finance-invoice').required=!files.invoice&&!item;
     window.FinanceInvoices?.fill({...item,invoice:{fields:fields.invoice_fields},files:[...(item?.files||[]),...Object.entries(files).map(([kind,file])=>({kind,size:file.size}))]});
   }
-  function resizeNoticeEditor() {
-    const dialog=$('fin-announcement-dialog'),body=$('announcement-body');if(!dialog.open)return;
-    const scrollTop=body.scrollTop;
-    body.style.minHeight='0px';body.style.height='0px';body.style.maxHeight='none';body.style.overflowY='hidden';
-    const viewport=window.visualViewport;
-    const bottom=viewport?viewport.height+viewport.offsetTop:window.innerHeight;
-    const chrome=dialog.scrollHeight-body.offsetHeight;
-    const cssMaximum=Number.parseFloat(getComputedStyle(dialog).maxHeight);
-    const available=Math.min(bottom-dialog.getBoundingClientRect().top-24,Number.isFinite(cssMaximum)?cssMaximum:Infinity);
-    const maximum=Math.max(80,available-chrome-(dialog.offsetHeight-dialog.clientHeight));
-    const minimum=Math.min(140,maximum);
-    body.style.minHeight=minimum+'px';body.style.maxHeight=maximum+'px';
-    body.style.height=Math.min(maximum,Math.max(minimum,body.scrollHeight+2))+'px';body.style.overflowY='auto';body.scrollTop=scrollTop;
+  async function openNoticeForm(item=null) {
+    if(!admin)return;
+    try {
+      window.FinanceAnnouncementEditor ||= window.SharedAnnouncementEditor.create({scope:'finance',container:$('view-finance'),
+        save:(value,editing)=>request('/api/admin/finance/announcements'+(editing?`/${encodeURIComponent(editing.id)}`:''),json(editing?'PUT':'POST',value)),saved:load});
+      await window.FinanceAnnouncementEditor.open(item);
+    }catch(e){error('finance-status',e.message);}
   }
-  function openNoticeForm(item=null) {
-    $('announcement-form').reset();error('announcement-status');
-    $('announcement-id').value=item?.id || '';$('announcement-title').value=item?.title || '';$('announcement-body').value=item?.body || '';$('announcement-pinned').checked=item?.pinned || false;
-    $('announcement-form-title').textContent=t(item?'编辑公告':'新增公告');show('fin-announcement-dialog');resizeNoticeEditor();
-  }
-  function cancelDetail(){detailAbort?.abort();detailAbort=null;detailSequence++;detailItem=detailEvent=null;$('fin-detail-actions').replaceChildren();$('fin-detail-actions').hidden=true;window.FinancePreviews?.reset();}
-  $('fin-detail-dialog').addEventListener('close',()=>{cancelDetail();$('fin-detail-content').replaceChildren();});
+  function cancelDetail(){detailAbort?.abort();detailAbort=null;detailSequence++;detailItem=detailEvent=null;$('fin-detail-dialog').classList.remove('fin-application-detail');$('fin-detail-actions').replaceChildren();$('fin-detail-actions').hidden=true;window.FinancePreviews?.reset();}
+  $('fin-detail-dialog').addEventListener('close',()=>{cancelDetail();$('fin-detail-content').replaceChildren();window.scrollTo({top:detailScroll,behavior:'instant'});});
   function applicationNote(note) {return note?`<div class="fin-application-note"><span class="fin-secondary">${t('申请备注')}</span><p class="fin-prewrap" data-i18n-skip>${html(note)}</p></div>`:'';}
   async function detail(appId) {
     cancelDetail();const abort=new AbortController(),seq=detailSequence;detailAbort=abort;
-    $('fin-detail-title').textContent=t('申请详情与历史');$('fin-detail-content').innerHTML=`<p role="status">${t('加载中…')}</p>`;show('fin-detail-dialog');
+    $('fin-detail-dialog').classList.add('fin-application-detail');$('fin-detail-title').textContent=t('申请详情与历史');$('fin-detail-content').innerHTML=`<p role="status">${t('加载中…')}</p>`;show('fin-detail-dialog');
     try{
       const data=await request(`/api/finance/applications/${encodeURIComponent(appId)}/history`,{signal:abort.signal});
       if(abort.signal.aborted||seq!==detailSequence||!$('fin-detail-dialog').open)return;
       const item=data.item||all.find(item=>item.id===appId)||mine.find(item=>item.id===appId)||data.items[0]?.snapshot;
       const currentEvent=data.items.find(event=>event.version===item?.version);
-      const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${label==='付款人'?payer(item):html(value)}</dd></div>`).join('')}</dl>${applicationNote(item.application_note)}<div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section><section id="fin-detail-previews"></section>`:'';
-      $('fin-detail-content').innerHTML=summary+`<h4>${t('操作历史')}</h4>`+data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}${applicationNote(event.snapshot.application_note)}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');
+      const summary=item?`<section class="fin-detail-summary"><h4 data-i18n-skip>${html(item.project)}</h4><dl>${[['申请编号',item.id],['付款人',identity(item)],['费用归属',item.expense_group_name],['金额',currency(cents(item))],['状态',t(names[item.status])],['提交时间',date(item.created_at)]].map(([label,value])=>`<div><dt>${t(label)}</dt><dd data-i18n-skip>${label==='付款人'?payer(item):html(value)}</dd></div>`).join('')}</dl>${applicationNote(item.application_note)}<div class="actions">${fileLink(item,'invoice',currentEvent)} ${item.files?.some(file=>file.kind==='payment')?fileLink(item,'payment',currentEvent):`<span class="fin-secondary">${t('未上传支付记录')}</span>`}</div></section>`:'';
+      const events=data.items.map(event=>`<article class="fin-event"><strong>${event.supersedes_event_id ? ui('再审核')+' · '+ui(names[event.previous_status])+' → ' : ''}${ui(names[event.action] || event.action)} · v${event.version}</strong><small class="muted"> ${html(date(event.created_at))}</small><p data-i18n-skip>${html(event.actor_name)} · ${html(event.snapshot.project)} · ${html(money(cents(event.snapshot)))} · ${html(event.snapshot.expense_group_name)}</p>${event.note?`<p data-i18n-skip>${html(event.note)}</p>`:''}${applicationNote(event.snapshot.application_note)}<div class="actions">${fileLink(event.snapshot,'invoice',event)} ${fileLink(event.snapshot,'payment',event)}</div></article>`).join('');
+      $('fin-detail-content').innerHTML=`<div class="fin-detail-information">${summary}<section class="fin-detail-history"><h4>${t('操作历史')}</h4>${events}</section></div><section id="fin-detail-previews" aria-label="${t('申请附件')}"></section>`;
       detailItem=item;detailEvent=data.items.find(event=>event.is_current_review&&event.version===item?.version&&event.action===item?.status);
       const actions=$('fin-detail-actions');
       if(admin&&item?.status==='pending')actions.innerHTML=`<button type="button" class="fin-reject" data-detail-review="rejected">${t('驳回')}</button><button type="button" class="primary" data-detail-review="approved">${t('通过')}</button>`;
@@ -366,7 +376,8 @@ const financeController = (() => {
   function noticeDetail(id) {
     const item=announcements.find(value=>value.id===id);if(!item)return;
     cancelDetail();
-    $('fin-detail-title').textContent=t('财务公告');$('fin-detail-content').innerHTML=`<h3 data-i18n-skip>${html(item.title)}</h3><small class="muted">${html(date(item.updated_at))}</small><p class="fin-prewrap" data-i18n-skip>${html(item.body)}</p>${$('fin-notice-history-dialog').open?`<div class="actions"><button type="button" data-close-dialog="fin-detail-dialog">${t('返回历史公告')}</button></div>`:''}`;show('fin-detail-dialog');
+    $('fin-detail-title').textContent=t('财务公告');$('fin-detail-content').innerHTML=`<h3 data-i18n-skip>${html(item.title)}</h3><small class="muted">${html(date(item.updated_at))}</small><div class="fin-prewrap" data-notice-body data-i18n-skip>${html(item.body)}</div>${$('fin-notice-history-dialog').open?`<div class="actions"><button type="button" data-close-dialog="fin-detail-dialog">${t('返回历史公告')}</button></div>`:''}`;show('fin-detail-dialog');
+    window.SharedAnnouncementEditor?.read(item,$('fin-detail-content').querySelector('[data-notice-body]'),$('fin-detail-dialog')).catch(e=>error('finance-status',e.message));
   }
   $('fin-notice-search').addEventListener('input',()=>{noticePage=1;renderNoticeHistory();});
   $('fin-admin-notice-search').addEventListener('input',()=>{adminNoticePage=1;renderAdminNotices();});
@@ -390,9 +401,6 @@ const financeController = (() => {
   $('fin-payer-search').addEventListener('input',renderPayers);
   $('fin-payer-user').addEventListener('change',()=>{applicationGroups(payers.find(user=>user.id===$('fin-payer-user').value)?.groups||[]);});
   $('finance-dialog').addEventListener('close',()=>{payerAbort?.abort();payerSequence++;proxyActive=false;payers=[];$('fin-payer-user').replaceChildren();$('fin-payer-search').value='';});
-  $('announcement-body').addEventListener('input',resizeNoticeEditor);
-  window.addEventListener('resize',resizeNoticeEditor);
-  window.visualViewport?.addEventListener('resize',resizeNoticeEditor);
   $('fin-new-notice').addEventListener('click',()=>openNoticeForm());
   for(const kind of ['invoice','payment']) $(kind==='invoice'?'finance-invoice':'finance-payment').addEventListener('change',event=>{
     const name=event.target.files[0]?.name || '';
@@ -400,11 +408,12 @@ const financeController = (() => {
     $('fin-'+kind+'-name').title=name;
   });
   $('finance-tabs').addEventListener('click',event=>{const button=event.target.closest('[data-fin-tab]');if(button)selectTab(button.dataset.finTab);});
-  $('fin-reset').addEventListener('click',()=>selectTab(tab));
+  $('fin-reset').addEventListener('click',()=>{selectTab(tab,true,false);saveFinancePreferences();});
   $('fin-refresh').addEventListener('click',()=>load().catch(e=>error('finance-status',e.message)));
-  $('fin-period').addEventListener('change',()=>{period();page=1;render();});
-  for(const id of ['fin-search','fin-min','fin-max']) $(id).addEventListener('input',()=>{page=1;render();});
-  for(const id of ['fin-status','fin-from','fin-to','fin-group','fin-user','fin-reviewer','fin-breakdown']) $(id).addEventListener('change',()=>{page=1;render();});
+  $('fin-period').addEventListener('change',()=>{period();page=1;render();saveFinancePreferences();});
+  for(const id of ['fin-search','fin-min','fin-max']) $(id).addEventListener('input',()=>{page=1;render();if(id!=='fin-search')saveFinancePreferences();else preferenceEpoch++;});
+  for(const id of ['fin-from','fin-to'])$(id).addEventListener('input',()=>{preferenceEpoch++;});
+  for(const id of ['fin-status','fin-from','fin-to','fin-group','fin-user','fin-reviewer','fin-breakdown']) $(id).addEventListener('change',()=>{page=1;render();saveFinancePreferences();});
   $('view-finance').addEventListener('click',async event=>{
     const chart=event.target.closest('[data-fin-chart]');
     if(chart){$('fin-'+chart.dataset.finChart+'-details').open=true;return;}
@@ -412,7 +421,7 @@ const financeController = (() => {
     if(!button){const row=event.target.closest('#admin-finance-rows [data-open-finance]');if(row&&!event.target.closest('a,input,select,textarea,label,summary,[role="button"],[contenteditable="true"]'))await detail(row.dataset.openFinance);return;}
     try {
       if(button.dataset.finExport){await exportReport(button.dataset.finExport);return;}
-      if(button.dataset.finPeriod){$('fin-period').value=button.dataset.finPeriod;period();page=1;render();}
+      if(button.dataset.finPeriod){$('fin-period').value=button.dataset.finPeriod;period();page=1;render();saveFinancePreferences();}
       if(button.dataset.closeDialog)hide(button.dataset.closeDialog);
       if(button.dataset.finPage){page+=Number(button.dataset.finPage);render();}
       if(button.dataset.history)await detail(button.dataset.history);
@@ -427,7 +436,7 @@ const financeController = (() => {
       if(button.dataset.noticePage){noticePage+=Number(button.dataset.noticePage);renderNoticeHistory();}
       if(button.dataset.adminNoticePage){adminNoticePage+=Number(button.dataset.adminNoticePage);renderAdminNotices();}
       if(button.dataset.editNotice)openNoticeForm(announcements.find(item=>item.id===button.dataset.editNotice));
-      if(button.dataset.pinNotice){const item=announcements.find(item=>item.id===button.dataset.pinNotice);await request(`/api/admin/finance/announcements/${item.id}`,json('PUT',{title:item.title,body:item.body,pinned:!item.pinned}));await load();}
+      if(button.dataset.pinNotice){const item=announcements.find(item=>item.id===button.dataset.pinNotice);await request(`/api/admin/finance/announcements/${item.id}`,json('PUT',{title:item.title,body:item.body,...(item.blocks?{blocks:item.blocks,doc_version:item.doc_version}:{}),revision:item.revision,pinned:!item.pinned}));await load();}
       if(button.dataset.deleteNotice && confirm(t('删除这条公告？'))){await request(`/api/admin/finance/announcements/${button.dataset.deleteNotice}`,{method:'DELETE'});await load();}
     }catch(e){error('finance-status',e.message);}
   });
@@ -486,9 +495,6 @@ const financeController = (() => {
     if($('fin-detail-dialog').open&&detailItem?.id===reviewing.item.id)await detail(reviewing.item.id);
     if(reviewing.eventId)error('finance-status','再审核已保存，原审批记录已保留。');
   });});
-  $('announcement-form').addEventListener('submit',event=>{event.preventDefault();submit('announcement-submit','announcement-status',async()=>{
-    const id=$('announcement-id').value;await request('/api/admin/finance/announcements'+(id?`/${id}`:''),json(id?'PUT':'POST',{title:$('announcement-title').value,body:$('announcement-body').value,pinned:$('announcement-pinned').checked}));hide('fin-announcement-dialog');await load();
-  });});
   $('fin-history-rows').addEventListener('change',event=>{const id=event.target.dataset.selectEvent;if(id){event.target.checked?selected.add(id):selected.delete(id);render();}});
   $('fin-select-all').addEventListener('change',event=>{selected=new Set(event.target.checked?filtered().filter(item=>item.event.action==='approved' && item.event.is_current_review).map(item=>item.event.id):[]);render();});
   $('finance-batch-download').addEventListener('click',()=>submit('finance-batch-download','finance-status',async()=>{
@@ -497,7 +503,7 @@ const financeController = (() => {
     if(!response.ok){const data=await response.json();throw new Error(data.detail || t('批量下载失败'));}
     const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download='approved-finance.zip';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }));
-  document.addEventListener('site:language',()=>{ownPayerLabel();renderNotices();render();resizeNoticeEditor();});
+  document.addEventListener('site:language',()=>{ownPayerLabel();renderNotices();render();});
   document.addEventListener('finance:changed',()=>load().catch(e=>error('finance-status',e.message)));
   document.addEventListener('finance:open-application',event=>{if(location.hash==='#view-finance'&&typeof event.detail?.id==='string')load().then(()=>detail(event.detail.id)).catch(e=>error('finance-status',e.message));});
   return {load,start(value,username=''){admin=value;accountName=username;ownPayerLabel();applyMenu(false);if(admin)$('finance-open-form').setAttribute('aria-haspopup','menu');else{$('finance-open-form').removeAttribute('aria-haspopup');$('finance-open-form').removeAttribute('aria-expanded');if(proxyActive&&$('finance-dialog').open)hide('finance-dialog');}window.FinanceInvoices?.start(value);$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');window.FinanceDrafts?.start({read:draftFields,restore:restoreDraft});}};

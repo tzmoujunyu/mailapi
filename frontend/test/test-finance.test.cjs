@@ -7,11 +7,18 @@ const assets = path.resolve(__dirname, '../../mailapi_shared/static');
 const read = name => fs.readFileSync(path.join(assets,name),'utf8');
 const tick = () => new Promise(resolve=>setImmediate(resolve));
 const application = (extra={}) => ({id:'app-1', username:'alice', user_note:'Agent', project:'模型订阅', amount:'12.50', amount_cents:1250, version:1, groups:['A','B'], expense_group_id:'a', expense_group_name:'A', status:'pending', created_at:new Date().toISOString(), files:[{kind:'invoice',original_name:'Invoice.pdf'}], ...extra});
-async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[], payers=[], announcements=[{id:'notice',title:'公告<1>',body:'请补齐材料',pinned:true}]}={}) {
+async function setup(t, {admin=false, richEditor=false, preferences, mine=[], all=[], history=[], groups=[], payers=[], announcements=[{id:'notice',title:'公告<1>',body:'请补齐材料',pinned:true}]}={}) {
   const dom=new JSDOM(read('test-features.html'),{url:'http://localhost/test-features#view-finance',runScripts:'outside-only'});
-  t.after(()=>dom.window.close());const w=dom.window;
+  t.after(()=>{dom.window.FinanceAnnouncementEditor?.destroy();dom.window.close();});const w=dom.window;
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
   w.confirm=()=>true;
+  w.scrollTo=()=>{};
+  w.ViewPreferences=preferences;
+  if(richEditor){
+    w.matchMedia=()=>({matches:true});w.scrollTo=()=>{};w.HTMLElement.prototype.scrollIntoView=()=>{};
+    w.Range.prototype.getClientRects=()=>[];w.Range.prototype.getBoundingClientRect=()=>({left:0,top:0,right:0,bottom:0,width:0,height:0});
+    for(const name of ['vendor/tiptap/tiptap.js','codex-tip-content.js','codex-tip-format.js','shared-content-editor.js','shared-content-dialog.js','shared-announcement-editor.js'])w.eval(read(name));
+  }
   const requests=[];
   const fixtures={'/api/finance/applications':{items:mine},'/api/finance/announcements':{items:announcements},'/api/finance/groups':{items:groups},'/api/admin/finance/applications':{items:all},'/api/admin/finance/history':{items:history},'/api/admin/finance/payers':{items:payers}};
   w.fetch=async(url,options={})=>{requests.push([url,options]);return {ok:true,json:async()=>fixtures[url] || {items:[]}};};
@@ -19,6 +26,48 @@ async function setup(t, {admin=false, mine=[], all=[], history=[], groups=[], pa
   w.financeFixtureController.start(admin,'admin');await w.financeFixtureController.load();
   return {w,el:id=>w.document.getElementById(id),requests};
 }
+test('finance preferences restore custom controls and reset persists the tab defaults without search text',async t=>{
+  const writes=[],reads=[];
+  const {w,el}=await setup(t,{admin:true,all:[application()],preferences:{
+    read:async scope=>{reads.push(scope);return {period:'custom',from:'2026-01-01',to:'2026-12-31',status:'all',min:'1.00'};},
+    save:(scope,settings)=>writes.push([scope,settings]),
+  }});
+  await tick();
+  assert.equal(el('fin-period').value,'custom');assert.equal(el('fin-custom-range').hidden,false);
+  assert.equal(el('fin-from').disabled,false);assert.equal(el('fin-from').value,'2026-01-01');
+  el('fin-search').value='private description';el('fin-search').dispatchEvent(new w.Event('input'));
+  assert.equal(writes.length,0);
+  el('fin-reset').click();await tick();
+  assert.equal(el('fin-status').value,'pending');assert.equal(el('fin-period').value,'all');
+  assert.equal(el('fin-from').value,'');assert.equal(el('fin-search').value,'');
+  assert.equal(writes.at(-1)[0],'finance-review');assert.equal(writes.at(-1)[1].status,'pending');
+  assert.ok(!JSON.stringify(writes).includes('private description'));
+  assert.equal(reads.length,1);
+});
+
+test('finance relative periods recalculate today and late preferences cannot replace a search draft',async t=>{
+  const {el}=await setup(t,{admin:true,preferences:{read:async()=>({period:'month',from:'2000-01-01',to:'2000-01-02'}),save:()=>{}}});
+  await tick();
+  const today=new Date(),month=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+  assert.equal(el('fin-from').value,month+'-01');
+  assert.equal(el('fin-to').value,month+'-'+String(today.getDate()).padStart(2,'0'));
+  let resolve;
+  const second=await setup(t,{admin:true,preferences:{read:()=>new Promise(done=>{resolve=done;}),save:()=>{}}});
+  second.el('fin-search').value='editing';second.el('fin-search').dispatchEvent(new second.w.Event('input'));
+  resolve({status:'approved',period:'custom',from:'2020-01-01',to:'2020-01-31'});await tick();
+  assert.equal(second.el('fin-status').value,'pending');assert.equal(second.el('fin-period').value,'all');
+  assert.equal(second.el('fin-search').value,'editing');
+});
+
+test('closing application details returns to the original list position',async t=>{
+  const item=application(),{w,el}=await setup(t,{admin:true,all:[item]});
+  const fetch=w.fetch,scroll=[];w.scrollTo=options=>scroll.push(options);
+  w.fetch=async(url,options)=>url.endsWith('/app-1/history')?{ok:true,json:async()=>({item,items:[]})}:fetch(url,options);
+  w.scrollY=480;el('admin-finance-rows').querySelector('[data-history]').click();await tick();
+  w.scrollY=0;el('fin-detail-dialog').close();
+  assert.equal(scroll.at(-1).top,480);
+});
+
 test('application notes can be edited and cleared and do not leak into a new application',async t=>{
   const item=application({status:'rejected',application_note:'上次备注\n保留换行'});
   const {w,el,requests}=await setup(t,{mine:[item]});
@@ -42,6 +91,10 @@ test('notes only appear in details and version history as escaped plain text',as
     ?(requests.push([url,options]),{ok:true,json:async()=>({item,items:[{id:'event-1',version:1,action:'submitted',actor_name:'alice',created_at:item.created_at,snapshot:application({application_note:'历史备注\n旧用途'})}]})})
     :original(url,options);
   w.document.querySelector('[data-history]').click();await tick();
+  assert.equal(el('fin-detail-dialog').classList.contains('fin-application-detail'),true);
+  assert.ok(el('fin-detail-content').querySelector('.fin-detail-information .fin-detail-summary'));
+  assert.ok(el('fin-detail-content').querySelector('.fin-detail-information .fin-detail-history .fin-event'));
+  assert.equal(el('fin-detail-previews').closest('.fin-detail-information'),null);
   const notes=el('fin-detail-content').querySelectorAll('.fin-application-note .fin-prewrap');
   assert.equal(notes.length,2);assert.equal(notes[0].textContent,note);assert.equal(notes[1].textContent,'历史备注\n旧用途');
   assert.equal(el('fin-detail-content').querySelector('img'),null);
@@ -129,23 +182,17 @@ test('delegated applications show escaped actor names beside the payer and remai
   const user=await setup(t,{mine:[item]});
   assert.match(user.el('finance-rows').querySelector('.fin-delegate').textContent,/代替申请/);
 });
-test('announcement content grows with text, caps near the viewport bottom, and resets for a new announcement',async t=>{
-  const {w,el}=await setup(t,{admin:true});const dialog=el('fin-announcement-dialog'),body=el('announcement-body');
-  Object.defineProperty(w,'innerHeight',{configurable:true,value:900});
-  Object.defineProperty(body,'offsetHeight',{get:()=>Number.parseFloat(body.style.height)||0});
-  Object.defineProperty(dialog,'scrollHeight',{get:()=>280+body.offsetHeight});
-  Object.defineProperty(body,'scrollHeight',{get:()=>body.value.split('\n').length*22+16});
-  dialog.getBoundingClientRect=()=>({top:100});
-  el('fin-new-notice').click();const initial=Number.parseFloat(body.style.height);
-  body.value='公告内容\n'.repeat(12);body.dispatchEvent(new w.Event('input'));
-  assert.ok(Number.parseFloat(body.style.height)>initial);
-  body.value='公告内容\n'.repeat(80);body.scrollTop=37;body.dispatchEvent(new w.Event('input'));
-  assert.equal(Number.parseFloat(body.style.height),496);assert.equal(body.style.overflowY,'auto');assert.equal(body.scrollTop,37);
-  dialog.style.maxHeight='500px';body.dispatchEvent(new w.Event('input'));
-  assert.equal(Number.parseFloat(body.style.height),220);dialog.style.maxHeight='';
-  Object.defineProperty(w,'innerHeight',{configurable:true,value:600});w.dispatchEvent(new w.Event('resize'));
-  assert.equal(Number.parseFloat(body.style.height),196);
-  dialog.close();el('fin-new-notice').click();assert.equal(body.value,'');assert.equal(Number.parseFloat(body.style.height),initial);
+test('finance announcements use the shared expandable editor and protect unsaved changes',async t=>{
+  const {w,el}=await setup(t,{admin:true,richEditor:true});
+  el('fin-new-notice').click();await tick();
+  const dialog=el('finance-notice-edit-dialog');assert.ok(dialog.open);
+  assert.ok(dialog.querySelector('[data-tip-action="image"]'));assert.ok(dialog.querySelector('[data-tip-mode="preview"]'));
+  el('finance-notice-expand').click();assert.ok(dialog.classList.contains('is-expanded'));
+  el('finance-notice-title').value='尚未保存';el('finance-notice-title').dispatchEvent(new w.Event('input',{bubbles:true}));
+  el('finance-notice-cancel').click();await tick();assert.equal(dialog.open,true);assert.equal(el('finance-notice-leave-warning').hidden,false);
+  el('finance-notice-keep-editing').click();await tick();assert.equal(dialog.open,true);
+  el('finance-notice-cancel').click();await tick();el('finance-notice-discard').click();await tick();assert.equal(dialog.open,false);
+  el('fin-new-notice').click();await tick();assert.equal(el('finance-notice-title').value,'');
 });
 test('ordinary users select one expense group and resubmit a rejected version without discarding its files',async t=>{
   const item=application({status:'rejected',review_note:'请补齐材料'});
@@ -257,6 +304,7 @@ test('review footer stays hidden for ordinary users, cancelled applications and 
   assert.equal(admin.el('fin-detail-actions').hidden,true);
   admin.el('fin-detail-dialog').close();admin.w.document.querySelector('[data-read-notice]').click();
   assert.equal(admin.el('fin-detail-actions').hidden,true);
+  assert.equal(admin.el('fin-detail-dialog').classList.contains('fin-application-detail'),false);
 });
 test('history selects only approved records and review requires a reason with the displayed version',async t=>{
   const item=application(), snapshot=application({status:'pending'});
@@ -384,7 +432,7 @@ test('announcement management searches and paginates independently of past annou
 
 test('editing and pinning retain management search and page while deleting the final item clamps pagination',async t=>{
   const announcements=Array.from({length:12},(_,i)=>({id:'notice-'+i,title:'公告'+i,body:i<11?'Travel materials':'Other materials',pinned:false}));
-  const {w,el,requests}=await setup(t,{admin:true,announcements});
+  const {w,el,requests}=await setup(t,{admin:true,richEditor:true,announcements});
   const original=w.fetch;w.fetch=async(url,options={})=>{
     if(url.startsWith('/api/admin/finance/announcements/')&&['PUT','DELETE'].includes(options.method)){
       requests.push([url,options]);const index=announcements.findIndex(item=>item.id===url.split('/').at(-1));
@@ -394,12 +442,13 @@ test('editing and pinning retain management search and page while deleting the f
     return original(url,options);
   };
   w.document.querySelector('[data-fin-tab="notices"]').click();el('fin-admin-notice-search').value='travel';el('fin-admin-notice-search').dispatchEvent(new w.Event('input'));el('fin-admin-notice-next').click();
-  el('admin-announcements').querySelector('[data-edit-notice]').click();assert.equal(el('announcement-title').value,'公告10');
-  el('announcement-title').value='已修改公告';el('announcement-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();await tick();
-  assert.equal(el('fin-announcement-dialog').open,false);assert.equal(el('fin-admin-notice-page').textContent,'2 / 2');assert.equal(el('fin-admin-notice-search').value,'travel');
+  el('admin-announcements').querySelector('[data-edit-notice]').click();await tick();assert.equal(el('finance-notice-title').value,'公告10');
+  el('finance-notice-title').value='已修改公告';el('finance-notice-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await tick();await tick();
+  assert.equal(el('finance-notice-edit-dialog').open,false);assert.equal(el('fin-admin-notice-page').textContent,'2 / 2');assert.equal(el('fin-admin-notice-search').value,'travel');
   assert.equal(el('admin-announcements').querySelector('[data-read-notice]').textContent,'已修改公告');
   el('admin-announcements').querySelector('[data-pin-notice]').click();await tick();await tick();
   assert.equal(announcements[10].pinned,true);assert.equal(el('fin-admin-notice-page').textContent,'2 / 2');
+  assert.deepEqual(JSON.parse(requests.filter(([url,opts])=>url.endsWith('/notice-10')&&opts.method==='PUT').at(-1)[1].body).blocks,announcements[10].blocks);
   assert.equal(el('admin-announcements').querySelector('[data-pin-notice]').textContent,'取消置顶');
   w.confirm=()=>false;el('admin-announcements').querySelector('[data-delete-notice]').click();await tick();
   assert.ok(!requests.some(([,opts])=>opts.method==='DELETE'));

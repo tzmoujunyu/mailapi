@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .accounts import read_payload
+from .announcement_content import public_content, validate_content
+from .site_accounts import SiteAccountError
 
 
 SCHEMA = """
@@ -26,6 +28,8 @@ CREATE TABLE IF NOT EXISTS site_announcement_reads (
 def install_site_announcements(app, store):
     with closing(store._connect()) as db, db:
         db.executescript(SCHEMA)
+        if 'blocks_json' not in {row[1] for row in db.execute('PRAGMA table_info(site_announcements)')}:
+            db.execute('ALTER TABLE site_announcements ADD COLUMN blocks_json TEXT')
     router = APIRouter()
 
     def identity(request, *, admin=False):
@@ -44,7 +48,7 @@ def install_site_announcements(app, store):
                 ON r.announcement_id=a.id AND r.user_id=?
                 ORDER BY a.pinned DESC, a.updated_at DESC, a.id DESC
             """, (user_id,)).fetchall()
-        return [{**{key: row[key] for key in row.keys() if key != "author_id"}, "pinned": bool(row["pinned"]), "unread": bool(row["unread"])} for row in rows]
+        return [{**{key: value for key, value in public_content(row).items() if key != "author_id"}, "pinned": bool(row["pinned"]), "unread": bool(row["unread"])} for row in rows]
 
     @router.get("/api/site-announcements")
     def list_announcements(request: Request):
@@ -54,12 +58,14 @@ def install_site_announcements(app, store):
 
     async def save(request, announcement_id=None):
         user = identity(request, admin=True)
-        payload = await read_payload(request, {"title", "body", "pinned", "revision"})
+        payload = await read_payload(request, {"title", "body", "pinned", "revision", "blocks", "doc_version"})
         title, body, pinned = payload.get("title"), payload.get("body"), payload.get("pinned", False)
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 120:
             raise HTTPException(400, "公告标题须为 1–120 个字符")
-        if not isinstance(body, str) or not 1 <= len(body.strip()) <= 5000:
-            raise HTTPException(400, "公告内容须为 1–5000 个字符")
+        try:
+            body, blocks = validate_content(store, 'site', body, payload.get('blocks'))
+        except SiteAccountError as error:
+            raise HTTPException(error.status_code, str(error)) from error
         if not isinstance(pinned, bool):
             raise HTTPException(400, "置顶设置无效")
         now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
@@ -69,15 +75,16 @@ def install_site_announcements(app, store):
                 if type(revision) is not int or revision < 1:
                     raise HTTPException(400, "公告版本无效")
                 changed = db.execute("""
-                    UPDATE site_announcements SET title=?,body=?,pinned=?,updated_at=?,revision=revision+1
+                    UPDATE site_announcements SET title=?,blocks_json=CASE WHEN ? IS NULL AND body=? THEN blocks_json ELSE ? END,
+                    body=?,pinned=?,updated_at=?,revision=revision+1
                     WHERE id=? AND revision=?
-                """, (title.strip(), body.strip(), int(pinned), now, announcement_id, revision))
+                """, (title.strip(), blocks, body, blocks, body, int(pinned), now, announcement_id, revision))
                 if changed.rowcount != 1:
                     raise HTTPException(409, "公告已被修改或删除，请刷新后重试")
             else:
                 announcement_id = secrets.token_hex(12)
-                db.execute("INSERT INTO site_announcements VALUES (?,?,?,?,?,?,?,?)",
-                           (announcement_id, title.strip(), body.strip(), int(pinned), 1, now, now, user["id"]))
+                db.execute("INSERT INTO site_announcements(id,title,body,pinned,revision,created_at,updated_at,author_id,blocks_json) VALUES (?,?,?,?,?,?,?,?,?)",
+                           (announcement_id, title.strip(), body, int(pinned), 1, now, now, user["id"], blocks))
         return {"ok": True}
 
     @router.post("/api/admin/site-announcements", status_code=201)

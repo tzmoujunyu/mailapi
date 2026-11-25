@@ -13,7 +13,7 @@ PAGES = {
     "access": "access.html", "admin": "admin.html",
 }
 SHARED_SCRIPTS = {"/static/theme.js", "/static/session.js", "/static/performance-monitor.js"}
-SHARED_STYLES = {"/static/theme.css", "/static/session.css"}
+SHARED_STYLES = {"/static/theme.css", "/static/session.css", "/static/codex-tips.css"}
 
 
 def prepare_workspace_page(page, name, *, performance_monitor=True):

@@ -192,3 +192,10 @@ body.test-ui-features:has(#view-finance.active) .main { padding:22px 22px 30px; 
 }
 body.test-ui-features:has(#view-api2api.active) .content,
 body.test-ui-features:has(#view-finance.active) .content { max-width:none; }
+
+.notice-panel-tabs{flex-wrap:wrap}
+.notice-panel-tabs button{font-size:13px;white-space:nowrap;padding-inline:6px}
+.operation-notice-label{display:block;margin-top:6px;line-height:1.5;overflow-wrap:anywhere;color:var(--test-muted);font-size:13px}
+.operation-backup-status{padding:12px;margin:8px 0 12px;border:1px solid var(--border,#e5e7eb);border-radius:10px;font-size:12px}
+.operation-backup-status p{margin:6px 0}
+.operation-backup-status small{color:var(--muted,#64748b)}

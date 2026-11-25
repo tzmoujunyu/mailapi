@@ -1763,6 +1763,7 @@
           if (!window.CodexTipEditor) {
             document.getElementById('codex-tip-body').textContent = '正在加载编辑器…';
             await window.PagePerformance.loadScript('/static/vendor/tiptap/tiptap.js');
+            await window.PagePerformance.loadScript('/static/shared-content-editor.js');
             await window.PagePerformance.loadScript('/static/codex-tip-editor.js');
           }
           await window.CodexTipEditor.open(tip);

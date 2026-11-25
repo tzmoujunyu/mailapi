@@ -146,6 +146,23 @@ test('rapid navigation, failed requests, and revoked permissions cannot replace 
   assert.equal(f.mounts.get('access'), 1);
 });
 
+test('cached views and feature hashes retain separate scroll positions and use global preferences', async t => {
+  const {w, router, contexts}=fixture(t);
+  const preferences={read:async()=>({}),save(){}};w.ViewPreferences=preferences;
+  w.scrollTo=options=>{w.scrollY=options.top;};
+  await router.ready;
+  assert.equal(contexts.get('features').window.ViewPreferences,preferences);
+  w.scrollY=100;await router.navigate('/');assert.equal(w.scrollY,0);
+  w.scrollY=500;await router.navigate('/test-features#view-finance');assert.equal(w.scrollY,0);
+  const dialog=w.document.createElement('dialog');w.document.querySelector('[data-test-view]').append(dialog);dialog.showModal();
+  w.scrollY=900;await router.navigate('/test-features#view-api2api');assert.equal(w.scrollY,0);assert.equal(dialog.open,false);
+  w.scrollY=300;await router.navigate('/test-features#view-finance');assert.equal(w.scrollY,900);
+  w.scrollY=950;await router.navigate('/');assert.equal(w.scrollY,500);
+  await router.navigate('/test-features#view-api2api');assert.equal(w.scrollY,300);
+  await router.navigate('/test-features#view-overview');assert.equal(w.scrollY,100);
+  w.scrollY=250;await router.navigate('/test-features#view-overview');assert.equal(w.scrollY,250);
+});
+
 test('browser back and forward restore content without remounting or rebuilding navigation', async t => {
   const {w, router, mounts} = fixture(t);
   await router.ready;
@@ -207,6 +224,21 @@ test('usage tip edits block page switches and browser history navigation until t
   assert.equal(w.location.pathname, '/admin/access');
 });
 
+test('global website and scoped finance announcements guard navigation before changing a page', async t => {
+  const {w,router,contexts,mounts}=fixture(t);
+  await router.ready;
+  w.SiteAnnouncementEditor={canLeave:async()=>false};
+  await router.navigate('/admin');assert.equal(mounts.has('admin'),false);
+  w.SiteAnnouncementEditor={canLeave:async()=>true};
+  await router.navigate('/test-features#view-finance');
+  contexts.get('features').window.FinanceAnnouncementEditor={canLeave:async()=>false};
+  await router.navigate('/test-features#view-api2api');assert.equal(w.location.hash,'#view-finance');
+  w.history.replaceState(null,'','/admin');await router.navigate('/admin',{push:false});
+  assert.equal(w.location.pathname,'/test-features');assert.equal(w.location.hash,'#view-finance');
+  contexts.get('features').window.FinanceAnnouncementEditor={canLeave:async()=>true};
+  await router.navigate('/admin');assert.equal(w.location.pathname,'/admin');
+});
+
 test('actual resources, accounts, console, API and finance controllers work together in the persistent shell', async t => {
   const {w, router, mounts, calls} = fixture(t, {real: true});
   await router.ready;
@@ -262,6 +294,9 @@ test('the lazy real editor keeps its console scope and is reused after leaving a
   w.MailapiTiptap.Editor = class extends RealEditor {constructor(options) {super(options); editor = this;}};
   t.after(() => editor?.destroy());
   vendor.dispatchEvent(new w.Event('load'));
+  await settle();
+  w.eval(read('shared-content-editor.js'));
+  w.document.querySelector('script[src="/static/shared-content-editor.js"]').dispatchEvent(new w.Event('load'));
   await settle();
   assert.equal(w.document.querySelectorAll('.ProseMirror').length, 1);
   assert.equal(w.document.getElementById('codex-tip-save').disabled, false);

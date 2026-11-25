@@ -21,13 +21,13 @@
   const dialog = document.createElement('dialog');
   dialog.className = 'site-announcement-dialog';
   dialog.setAttribute('aria-labelledby', 'site-announcement-heading');
-  dialog.innerHTML = '<div class="notice-panel-heading"><h2 id="site-announcement-heading">公告详情</h2><button type="button" data-close aria-label="关闭">×</button></div><article class="announcement-detail" hidden><h3 data-title data-i18n-skip></h3><time></time><p data-body data-i18n-skip></p></article><form hidden><label>公告标题<input name="title" maxlength="120" required></label><label>公告内容<textarea name="body" maxlength="5000" rows="10" required></textarea></label><label class="notice-pinned"><input name="pinned" type="checkbox">置顶</label><button type="submit" class="primary">保存公告</button></form><p role="status" class="notice-error"></p>';
+  dialog.innerHTML = '<div class="notice-panel-heading"><h2 id="site-announcement-heading">公告详情</h2><button type="button" data-close aria-label="关闭">×</button></div><article class="announcement-detail"><h3 data-title data-i18n-skip></h3><time></time><div data-body data-i18n-skip></div></article><p role="status" class="notice-error"></p>';
   document.body.append(dialog);
   const status = panel.querySelector('[role="status"]');
   const dialogStatus = dialog.querySelector('[role="status"]');
-  const form = dialog.querySelector('form');
-  let items = [], canManage = false, editing = null, lastLoaded = 0, loading = null;
+  let items = [], canManage = false, lastLoaded = 0, loading = null;
   let financeItems=[],financeUnread=0,financePage=1,financeTotal=0,financeMax=0,financeAbort=null,financeSeq=0;
+  const operations=window.OperationsNoticePanel?.create({panel,onCount:renderCount,onNavigate:()=>setOpen(false)});
   async function api(url, options = {}) {
     const response = await fetch(url, {cache: 'no-store', ...options});
     const data = await response.json();
@@ -84,9 +84,10 @@
     }
   }
   function renderCount(){
-    const announcements=items.filter(item=>item.unread).length,unread=announcements+financeUnread,count=button.querySelector('.notification-count');
+    const announcements=items.filter(item=>item.unread).length,unread=announcements+financeUnread+(operations?.unread||0),count=button.querySelector('.notification-count');
     count.textContent=unread>99?'99+':unread;count.hidden=unread===0;
     for(const tab of panel.querySelectorAll('[data-notice-tab]')){
+      if(tab.dataset.noticeTab==='operations')continue;
       const amount=tab.dataset.noticeTab==='finance'?financeUnread:announcements;
       tab.textContent=translate(tab.dataset.noticeTab==='finance'?'报销通知':'网站公告')+(amount?' · '+amount:'');
     }
@@ -95,6 +96,7 @@
     for(const tab of panel.querySelectorAll('[data-notice-tab]'))tab.setAttribute('aria-pressed',String(tab.dataset.noticeTab===value));
     for(const section of panel.querySelectorAll('[data-notice-section]'))section.hidden=section.dataset.noticeSection!==value;
     if(value==='finance')loadFinance(financePage);
+    if(value==='operations')operations?.load();
   }
   function renderFinance(){
     const list=panel.querySelector('.finance-notice-items');list.replaceChildren();
@@ -162,43 +164,27 @@
     dialog.showModal();
   }
   function openDetail(item) {
-    dialog.querySelector('form').hidden = true;
-    dialog.querySelector('article').hidden = false;
     dialog.querySelector('[data-title]').textContent = item.title;
     dialog.querySelector('[data-body]').textContent = item.body;
     dialog.querySelector('time').textContent = new Date(item.updated_at).toLocaleString(document.documentElement.lang);
     prepareDialog();
+    window.SharedAnnouncementEditor?.read(item, dialog.querySelector('[data-body]'), dialog).catch(error => { dialogStatus.textContent = error.message; });
     markRead([item]).catch(error => { dialogStatus.textContent = error.message; });
   }
-  function openEditor(item = null) {
-    editing = item;
-    form.reset();
-    form.hidden = false;
-    dialog.querySelector('article').hidden = true;
-    form.elements.title.value = item?.title || '';
-    form.elements.body.value = item?.body || '';
-    form.elements.pinned.checked = item?.pinned || false;
-    prepareDialog();
-    form.elements.title.focus();
+  async function openEditor(item = null) {
+    if (!canManage) return;
+    setOpen(false);
+    try {
+      window.SiteAnnouncementEditor ||= window.SharedAnnouncementEditor.create({ scope: 'site',
+        save: (value, editing) => api('/api/admin/site-announcements' + (editing ? '/' + encodeURIComponent(editing.id) : ''), json(editing ? 'PUT' : 'POST', value)), saved: load });
+      await window.SiteAnnouncementEditor.open(item);
+    } catch (error) { status.textContent = error.message; setOpen(true); }
   }
   async function remove(item) {
     if (!confirm(translate('删除这条网站公告？'))) return;
     try { await api('/api/admin/site-announcements/' + encodeURIComponent(item.id), {method: 'DELETE'}); await load(); }
     catch (error) { status.textContent = error.message; }
   }
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    const submit = form.querySelector('[type="submit"]');
-    submit.disabled = true;
-    try {
-      const value = {title: form.elements.title.value, body: form.elements.body.value, pinned: form.elements.pinned.checked};
-      if (editing) value.revision = editing.revision;
-      await api('/api/admin/site-announcements' + (editing ? '/' + encodeURIComponent(editing.id) : ''), json(editing ? 'PUT' : 'POST', value));
-      dialog.close();
-      await load();
-    } catch (error) { dialogStatus.textContent = error.message; }
-    finally { submit.disabled = false; }
-  });
   button.addEventListener('click', () => { setOpen(panel.hidden); if(!panel.hidden){if(financeUnread&&!items.some(item=>item.unread))selectNoticeTab('finance');else loadFinance(financePage);if(Date.now()-lastLoaded>300000)load();} });
   panel.querySelectorAll('[data-notice-tab]').forEach(tab=>tab.addEventListener('click',()=>selectNoticeTab(tab.dataset.noticeTab)));
   panel.querySelector('[data-finance-refresh]').addEventListener('click',()=>loadFinance(1));
@@ -210,7 +196,7 @@
   panel.querySelector('[data-read-all]').addEventListener('click', () => markRead(items.filter(item => item.unread)).catch(error => { status.textContent = error.message; }));
   dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
   dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
-  dialog.addEventListener('close', () => { form.reset(); dialog.querySelector('[data-body]').textContent = ''; button.focus(); });
+  dialog.addEventListener('close', () => { dialog.querySelector('[data-body]').textContent = ''; button.focus(); });
   document.addEventListener('click', event => { if (!panel.contains(event.target) && !button.contains(event.target)) setOpen(false); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && !panel.hidden) { setOpen(false); button.focus(); } });
   document.addEventListener('site:language',()=>{render();renderFinance();});

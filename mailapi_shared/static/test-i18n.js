@@ -10,6 +10,7 @@
     try { language = localStorage.getItem('milvlg.signin.language') === 'en' ? 'en' : language; } catch {}
   }
   const templates = [
+    [/^查看全部 (\d+) 位成员$/, n => `View all ${n} members`],
     [/^确认删除 Coding Plan“(.+)”吗？$/, name => `Delete Coding Plan “${name}”?`],
     [/^确认删除中转站账号“(.+)”吗？$/, name => `Delete relay account “${name}”?`],
     [/^确认删除收件设置“(.+)”吗？$/, name => `Delete mail rule “${name}”?`],

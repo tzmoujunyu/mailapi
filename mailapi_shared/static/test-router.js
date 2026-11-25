@@ -28,7 +28,7 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
   const financeEvents = new Set(['finance:changed', 'finance:notifications-changed', 'finance:open-application']);
 
   function createView(root, page, styles) {
-    const view = {root, page, styles, search: null, active: false, mounted: false, scroll: 0};
+    const view = {root, page, styles, search: null, active: false, mounted: false, scroll: new Map()};
     const documentEvents = [], windowEvents = [], intervals = new Set();
     const subscriptions = new AbortController();
     const localWindow = Object.create(null);
@@ -136,12 +136,15 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
   function activate(view, url, {push = true, restore = false} = {}) {
     const previous = current;
     const sameView = previous === view;
-    if (!sameView && previous) {
-      previous.scroll = window.scrollY;
+    const scrollKey = value => value.pathname + value.search + (value.hash || (value.pathname === '/test-features' ? '#view-overview' : ''));
+    if (previous?.url) previous.scroll.set(scrollKey(new URL(previous.url)), window.scrollY);
+    if (previous && previous.url !== url.href) {
       previous.active = false;
-      // Cached pages retain their form/list state, but never leave a modal in
-      // the top layer while another page is visible.
+      // This also covers finance/API tabs inside the same cached controller.
       previous.root.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+    }
+    if (!sameView && previous) {
+      previous.active = false;
       if (previous.search) previous.root.append(previous.search);
       previous.root.remove();
       enableStyles(previous, false);
@@ -161,10 +164,10 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
     view.url = url.href;
     if (view.mounted) view.resume(sameView, view.entered);
     view.entered = true;
-    window.scrollTo({top: restore ? view.scroll : 0, behavior: 'instant'});
+    window.scrollTo({top: view.scroll.get(scrollKey(url)) ?? 0, behavior: 'instant'});
     const anchor = url.hash && !url.hash.startsWith('#view-')
       ? view.root.querySelector(`[id="${CSS.escape(decodeURIComponent(url.hash.slice(1)))}"]`) : null;
-    if (anchor) anchor.scrollIntoView({block: 'start'});
+    if (anchor && !restore) anchor.scrollIntoView({block: 'start'});
     window.dispatchEvent(new CustomEvent('test:navigation'));
   }
 
@@ -172,6 +175,12 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
     const url = new URL(input, location.href);
     const route = routeFor(url);
     if (!route) return false;
+    if(url.href!==current.url) for (const editor of [window.SiteAnnouncementEditor,current.context.window.FinanceAnnouncementEditor]) {
+      if(editor?.canLeave && !await editor.canLeave()) {
+        if(!push)history.replaceState(null,'',current.url);
+        return true;
+      }
+    }
     if(url.href!==current.url && current.context.window.FinanceDrafts && !await current.context.window.FinanceDrafts.canLeave()) {
       if(!push)history.replaceState(null,'',current.url);
       return true;

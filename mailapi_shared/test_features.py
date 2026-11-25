@@ -212,6 +212,7 @@ class TestFeatureStore:
         with closing(self._connect()) as db, db:
             db.executescript(SCHEMA)
             for table, fields in {
+                'finance_announcements': [('blocks_json', 'TEXT'), ('revision', 'INTEGER NOT NULL DEFAULT 1')],
                 'api2api_config': [('engine', "TEXT NOT NULL DEFAULT 'legacy'"),
                                   ('management_username', "TEXT NOT NULL DEFAULT ''"),
                                   ('management_password', "TEXT NOT NULL DEFAULT ''"),
@@ -829,23 +830,36 @@ class TestFeatureStore:
         where = "" if include_disabled else "WHERE enabled=1"
         with closing(self._connect()) as db:
             rows = db.execute(f"SELECT * FROM finance_announcements {where} ORDER BY pinned DESC, updated_at DESC").fetchall()
-        return [dict(row) | {"pinned": bool(row["pinned"]), "enabled": bool(row["enabled"])} for row in rows]
+        from .announcement_content import public_content
+        return [public_content(row) | {"pinned": bool(row["pinned"]), "enabled": bool(row["enabled"])} for row in rows]
 
-    def save_announcement(self, *, announcement_id: Optional[str], title: Any, body: Any, pinned: Any, actor: str) -> dict[str, Any]:
+    def save_announcement(self, *, announcement_id: Optional[str], title: Any, body: Any, pinned: Any, actor: str,
+                          blocks=None, revision=None) -> dict[str, Any]:
+        from .announcement_content import validate_content
+        from .site_accounts import SiteAccountError
         title = self._text(title, "公告标题", 120, required=True)
-        body = self._text(body, "公告内容", 5000, required=True)
+        try:
+            body, encoded = validate_content(self, 'finance', body, blocks)
+        except SiteAccountError as error:
+            raise TestFeatureError(str(error), error.status_code) from error
         now = _now()
         with self._lock, closing(self._connect()) as db, db:
             if announcement_id:
-                result = db.execute("UPDATE finance_announcements SET title=?,body=?,pinned=?,updated_at=? WHERE id=?",
-                                    (title, body, int(pinned is True), now, announcement_id))
+                if revision is not None and (type(revision) is not int or revision < 1):
+                    raise TestFeatureError('公告版本无效')
+                result = db.execute("""UPDATE finance_announcements SET title=?,
+                    blocks_json=CASE WHEN ? IS NULL AND body=? THEN blocks_json ELSE ? END,
+                    body=?,pinned=?,updated_at=?,revision=revision+1 WHERE id=? AND (? IS NULL OR revision=?)""",
+                    (title, encoded, body, encoded, body, int(pinned is True), now, announcement_id, revision, revision))
                 if result.rowcount != 1:
+                    if revision is not None:
+                        raise TestFeatureError('公告已被修改或删除，请刷新后重试', 409)
                     return None
                 item_id = announcement_id
             else:
                 item_id = secrets.token_hex(12)
-                db.execute("INSERT INTO finance_announcements(id,title,body,pinned,enabled,created_at,updated_at,created_by) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
-                            (item_id, title, body, int(pinned is True), now, now, actor))
+                db.execute("INSERT INTO finance_announcements(id,title,body,pinned,enabled,created_at,updated_at,created_by,blocks_json) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                            (item_id, title, body, int(pinned is True), now, now, actor, encoded))
         return next(item for item in self.announcements(include_disabled=True) if item["id"] == item_id)
 
     def delete_announcement(self, announcement_id: str) -> bool:
@@ -928,6 +942,12 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return JSONResponse({'detail':str(error)},status_code=error.status_code)
     from .site_announcements import install_site_announcements
     install_site_announcements(app, store)
+    from .announcement_content import install_announcement_images
+    install_announcement_images(app, store)
+    from .view_preferences import install_view_preferences
+    install_view_preferences(app, store)
+    from .operations_notices import install_operations_notices
+    install_operations_notices(app, store, gateway)
     from .finance_notifications import install_finance_notifications
     install_finance_notifications(app, store)
     router = APIRouter()
@@ -1785,9 +1805,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     @router.post("/api/admin/finance/announcements", status_code=201)
     async def create_announcement(request: Request):
         admin = require_admin(request)
-        payload = await request.json()
+        payload = await gateway_payload(request)
         try:
-            item = store.save_announcement(announcement_id=None, title=payload.get("title"), body=payload.get("body"), pinned=payload.get("pinned"), actor=admin["username"])
+            item = store.save_announcement(announcement_id=None, title=payload.get("title"), body=payload.get("body"), pinned=payload.get("pinned"), actor=admin["username"], blocks=payload.get("blocks"), revision=payload.get("revision"))
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         return {"item": item}
@@ -1795,9 +1815,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
     @router.put("/api/admin/finance/announcements/{announcement_id}")
     async def update_announcement(announcement_id: str, request: Request):
         admin = require_admin(request)
-        payload = await request.json()
+        payload = await gateway_payload(request)
         try:
-            item = store.save_announcement(announcement_id=announcement_id, title=payload.get("title"), body=payload.get("body"), pinned=payload.get("pinned"), actor=admin["username"])
+            item = store.save_announcement(announcement_id=announcement_id, title=payload.get("title"), body=payload.get("body"), pinned=payload.get("pinned"), actor=admin["username"], blocks=payload.get("blocks"), revision=payload.get("revision"))
         except TestFeatureError as error:
             raise HTTPException(error.status_code, str(error)) from error
         if not item:

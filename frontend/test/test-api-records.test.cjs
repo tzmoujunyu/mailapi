@@ -5,10 +5,13 @@ const path=require('node:path');
 const {JSDOM}=require('jsdom');
 const assets=path.resolve(__dirname,'../../mailapi_shared/static');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function setup(t,handler){
+async function waitFor(predicate){const deadline=Date.now()+2000;while(!predicate()&&Date.now()<deadline)await tick();assert.ok(predicate(),'expected state before deadline');}
+function setup(t,handler,preferences){
   const dom=new JSDOM(fs.readFileSync(path.join(assets,'test-features.html'),'utf8'),{url:'http://localhost/test-features#view-api2api',runScripts:'outside-only'});
   t.after(()=>dom.window.close());
-  const w=dom.window,calls=[],el=id=>w.document.getElementById(id);
+  const w=dom.window,calls=[],scroll=[],el=id=>w.document.getElementById(id);
+  w.scrollTo=options=>scroll.push(options);
+  w.ViewPreferences=preferences;
   w.fetch=async(url,options={})=>{calls.push([url,options]);const data=await handler(url,options);return data?.ok===false?data:{ok:true,json:async()=>data};};
   for(const dialog of w.document.querySelectorAll('dialog')){
     dialog.showModal=()=>dialog.setAttribute('open','');
@@ -16,10 +19,64 @@ function setup(t,handler){
   }
   w.eval(fs.readFileSync(path.join(assets,'test-api-models.js'),'utf8')+'\n'+fs.readFileSync(path.join(assets,'test-api-records.js'),'utf8')+'\nwindow.records=apiRecordsController;');
   const submit=id=>el(id).dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
-  return {w,el,calls,submit};
+  return {w,el,calls,submit,scroll};
 }
 const row=id=>({id,created_at:1600000000,type:2,token_name:'Laptop',group:'default',model_name:'<img src=x onerror=alert(1)>',prompt_tokens:3,completion_tokens:5,quota:10,use_time:2,is_stream:true,request_id:'request-'+id,billing:{frt:100,group_ratio:1}});
 const page=(items,total=items.length)=>({items,total,groups:['default'],stats:{quota:1450,rpm:1,tpm:8},display:{unit:'currency',divisor:500000,symbol:'$'}});
+
+test('API preferences restore page sizes, columns and privacy while relative dates use today',async t=>{
+  const writes=[];
+  const {w,el,calls}=setup(t,()=>page([row(1)]),{
+    read:async scope=>scope==='api-audit'?{size:50}:{size:20,type:'2',columns:['time','model'],range:'week',start:'2000-01-01T00:00:00',end:'2000-01-01T23:59:59',sensitive:false},
+    save:(scope,settings)=>writes.push([scope,settings]),
+  });
+  w.records.start(true);await w.records.activate('logs');
+  const params=new URL(calls.at(-1)[0],'http://localhost').searchParams;
+  const today=new Date(),monday=new Date();monday.setDate(today.getDate()-(today.getDay()+6)%7);monday.setHours(0,0,0,0);
+  assert.equal(Number(params.get('start_timestamp')),monday.getTime()/1000);
+  assert.equal(params.get('page_size'),'20');assert.equal(params.get('type'),'2');
+  assert.equal(el('api-log-column-options').querySelector('[data-log-column="cost"]').checked,false);
+  assert.equal(el('api-usage-rows').querySelector('[data-log-col="cost"]').hidden,true);
+  assert.equal(el('api-log-privacy').getAttribute('aria-pressed'),'true');
+  assert.equal(writes.length,0);
+  el('api-log-search').value='private keyword';el('api-log-reset').click();await tick();
+  assert.equal(el('api-log-search').value,'');assert.equal(el('api-log-status').value,'0');
+  assert.equal(writes.at(-1)[1].range,'today');assert.equal(writes.at(-1)[1].start,'');
+  assert.ok(!JSON.stringify(writes).includes('private keyword'));
+  await w.records.activate('audit');assert.equal(new URL(calls.at(-1)[0],'http://localhost').searchParams.get('page_size'),'50');
+});
+
+test('late API preferences preserve draft inputs and cancelled activation never issues a log request',async t=>{
+  let resolve;
+  const {w,el,calls}=setup(t,()=>page([row(1)]),{read:()=>new Promise(done=>{resolve=done;}),save:()=>{}});
+  w.records.start(false);const pending=w.records.activate('logs');
+  el('api-log-search').value='draft model';el('api-log-search').dispatchEvent(new w.Event('input'));
+  el('api-log-status').value='5';el('api-log-status').dispatchEvent(new w.Event('change'));
+  el('api-log-start').value='2026-10-01T00:00:00';el('api-log-start').dispatchEvent(new w.Event('input'));
+  resolve({type:'2',range:'all',size:20});await pending;
+  assert.equal(el('api-log-status').value,'5');assert.equal(el('api-log-search').value,'draft model');
+  assert.equal(el('api-log-start').value,'2026-10-01T00:00');
+  assert.equal(new URL(calls.at(-1)[0],'http://localhost').searchParams.get('page_size'),'100');
+  let resolveSecond;
+  const second=setup(t,()=>page([]),{read:()=>new Promise(done=>{resolveSecond=done;}),save:()=>{}});
+  second.w.records.start(false);const old=second.w.records.activate('logs');
+  second.w.location.hash='#view-overview';second.w.dispatchEvent(new second.w.Event('hashchange'));
+  resolveSecond({range:'today'});await old;
+  assert.equal(second.calls.length,0);
+});
+
+test('invalid custom API dates are not persisted and closing details restores focus without scrolling',async t=>{
+  const writes=[];
+  const {w,el,scroll}=setup(t,()=>page([row(1)]),{read:async()=>({}),save:(_scope,settings)=>writes.push(settings)});
+  w.records.start(false);await w.records.activate('logs');
+  el('api-log-start').value='2026-12-02T00:00:00';el('api-log-end').value='2026-12-01T00:00:00';
+  el('api-log-start').dispatchEvent(new w.Event('input'));el('api-log-apply-dates').click();
+  assert.equal(writes.length,0);
+  const opener=el('api-usage-rows').querySelector('[data-log-detail]');let focusOptions;
+  opener.focus=options=>{focusOptions=options;};w.scrollY=560;opener.click();w.scrollY=0;el('api-log-detail-dialog').close();
+  assert.equal(focusOptions.preventScroll,true);
+  assert.equal(scroll.at(-1).top,560);
+});
 
 test('usage pages beyond 100 records, applies server filters and opens sanitized details',async t=>{
   const {w,el,calls,submit}=setup(t,url=>{const params=new URL(url,'http://localhost').searchParams;return page(Array.from({length:params.get('page')==='2'?45:100},(_,i)=>row(params.get('page')==='2'?101+i:1+i)),145);});
@@ -43,7 +100,7 @@ test('usage pages beyond 100 records, applies server filters and opens sanitized
 test('a late response cannot replace a newer log search; errors clear stale records',async t=>{
   let first,sequence=0;
   const {w,el,submit}=setup(t,()=>{sequence++;if(sequence===1)return new Promise(resolve=>{first=resolve;});if(sequence===3)return {ok:false,status:502,json:async()=>({detail:'Unavailable'})};return page([row(2)]);});
-  w.records.start(false);const pending=w.records.activate('logs');submit('api-log-form');await tick();
+  w.records.start(false);const pending=w.records.activate('logs');await waitFor(()=>Boolean(first));submit('api-log-form');await tick();
   first(page([row(1)]));await pending;
   assert.match(el('api-usage-rows').innerHTML,/data-log-detail="2"/);
   submit('api-log-form');await tick();
@@ -142,7 +199,7 @@ test('page size resets pagination and a shrinking result set returns to its last
 test('leaving and returning to API cancels pending work even if the old response ignores abort',async t=>{
   let resolveOld,sequence=0;
   const {w,el}=setup(t,()=>++sequence===1?new Promise(resolve=>{resolveOld=resolve;}):page([row(2)]));
-  w.records.start(false);const old=w.records.activate('logs');
+  w.records.start(false);const old=w.records.activate('logs');await waitFor(()=>Boolean(resolveOld));
   w.location.hash='#view-overview';w.dispatchEvent(new w.Event('hashchange'));
   assert.equal(el('api-log-submit').disabled,false);assert.equal(el('api-log-table').getAttribute('aria-busy'),'false');
   w.location.hash='#view-api2api';await w.records.activate('logs');resolveOld(page([row(1)]));await old;

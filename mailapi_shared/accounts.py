@@ -77,6 +77,11 @@ def themed_page(page, request):
                 page = page[:body_end + 1] + sidebar + page[body_end + 1:]
         if page_name == "login":
             page = page.replace('<form id="login-form" method="post" action="/login">', '<form id="login-form" method="post" action="/login"><div class="test-ui-login-brand" aria-hidden="true" style="display:grid;width:50px;height:50px;place-items:center;margin-bottom:22px;border-radius:16px;background:#4f24ea;color:#fff;font-size:28px;font-weight:800;box-shadow:0 10px 24px #4f24ea33;">M</div>', 1)
+        if page_name in {"home", "admin", "access", "features"}:
+            shared_editor = '<script src="/static/view-preferences.js" defer></script><script src="/static/operations-notices.js" defer></script><script src="/static/shared-announcement-editor.js" defer></script>'
+            if '/static/codex-tips.css' not in page:
+                shared_editor += '<link rel="stylesheet" href="/static/codex-tips.css">'
+            page = page.replace('</head>', shared_editor + '</head>', 1)
         router_script = '<script src="/static/test-router.js" type="module"></script>' if page_name in {"home", "admin", "access", "features"} else ""
         page = page.replace(
             "</head>",

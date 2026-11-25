@@ -11,9 +11,38 @@ const apiRecordsController = (() => {
   const columns={time:'时间',key:'令牌',model:'模型',stream:'流',tokens:'Token',cost:'费用',timing:'耗时',details:'详情'};
   const visibleColumns=new Set(Object.keys(columns));
   const logs={page:1,size:100,data:null,params:null,seq:0},audit={page:1,size:20,data:null,params:{},seq:0};
-  let admin=false,active='overview',ownKeys=[],exportAbort=null,advancedOpen=false,sensitiveVisible=true,detailId=null,detailOpener=null;
+  let admin=false,active='overview',ownKeys=[],exportAbort=null,advancedOpen=false,sensitiveVisible=true,detailId=null,detailOpener=null,detailScroll=0;
+  let preferencesReady=null, savedRange='today', preferenceTouched=false, auditPreferenceTouched=false, activationEpoch=0;
   const mobile=window.matchMedia?.('(max-width: 640px)');
   const icon=name=>`<svg aria-hidden="true" viewBox="0 0 24 24"><use href="/static/test-api-icons.svg#${name}"></use></svg>`;
+  function savePreferences(){
+    preferenceTouched=true;
+    window.ViewPreferences?.save('api-logs',{size:logs.size,type:$('api-log-status').value,
+      columns:[...visibleColumns],group:$('api-log-group').value,key_id:$('api-log-key').value,
+      range:savedRange,start:savedRange==='custom'?$('api-log-start').value:'',
+      end:savedRange==='custom'?$('api-log-end').value:'',sensitive:sensitiveVisible});
+  }
+  function restorePreferences(){
+    if(!preferencesReady)preferencesReady=Promise.all([(async()=>{
+      const saved=await window.ViewPreferences?.read('api-logs');
+      if(!saved||preferenceTouched)return;
+      if(saved.size)logs.size=saved.size;
+      if([...$('api-log-status').options].some(option=>option.value===saved.type))$('api-log-status').value=saved.type;
+      if(saved.columns){visibleColumns.clear();saved.columns.forEach(key=>visibleColumns.add(key));
+        document.querySelectorAll('[data-log-column]').forEach(node=>{node.checked=visibleColumns.has(node.dataset.logColumn);});}
+      if(typeof saved.sensitive==='boolean'){sensitiveVisible=saved.sensitive;updatePrivacy();}
+      dates(saved.range&&saved.range!=='custom'?saved.range:'today');
+      if(saved.range==='custom'){savedRange='custom';$('api-log-start').value=saved.start||'';$('api-log-end').value=saved.end||'';document.querySelectorAll('[data-log-range]').forEach(node=>node.setAttribute('aria-pressed','false'));dateLabel();}
+      logs.params={...logParams(),group:saved.group||'',key_id:saved.key_id||''};
+      for(const [id,key] of [['api-log-group','group'],['api-log-key','key_id']]){
+        const select=$(id);if([...select.options].some(option=>option.value===logs.params[key]))select.value=logs.params[key];
+      }
+    })(),(async()=>{
+      if(!admin)return;
+      const saved=await window.ViewPreferences?.read('api-audit');if(!auditPreferenceTouched && saved?.size)audit.size=saved.size;
+    })()]);
+    return preferencesReady;
+  }
   function message(id,value,success=false,tone='error'){$(id).textContent=value;$(id).classList.toggle('success',success);$(id).dataset.tone=success?'success':tone;}
   async function request(url,options={}){
     const response=await fetch(url,{cache:'no-store',...options});
@@ -31,11 +60,12 @@ const apiRecordsController = (() => {
   }
   function query(state){return new URLSearchParams({...state.params,page:state.page,page_size:state.size});}
   function selectOptions(id,entries,placeholder){
-    const select=$(id),selected=select.value;
+    const select=$(id),selected=select.value || (id==='api-log-group'?logs.params?.group:id==='api-log-key'?logs.params?.key_id:'');
     select.innerHTML=`<option value="">${esc(t(placeholder))}</option>`+entries.map(([value,label])=>`<option value="${esc(value)}" data-i18n-skip>${esc(label)}</option>`).join('');
     if(entries.some(([value])=>value===selected))select.value=selected;
   }
   function dates(range){
+    savedRange=range;
     const end=new Date();end.setHours(23,59,59,999);const start=new Date();start.setHours(0,0,0,0);
     if(range==='week')start.setDate(start.getDate()-(start.getDay()+6)%7);
     else if(range==='month')start.setDate(1);
@@ -167,8 +197,10 @@ const apiRecordsController = (() => {
     button.title=t(open?'收起更多筛选':'展开更多筛选');
   }
   function submitLogs(){
+    preferenceTouched=true;
     let params;
     try{params=logParams();}catch(error){message('api-log-date-error',error.message);$('api-log-dates').open=true;if($('api-log-filter-dialog').open)$('api-log-filter-dialog').close();$('api-log-start').focus();return false;}
+    savePreferences();
     logs.params=params;logs.page=1;dateLabel();message('api-log-date-error','');$('api-log-dates').open=false;
     if($('api-log-filter-dialog').open)$('api-log-filter-dialog').close();
     updateLogQueryNote();load('logs');return true;
@@ -176,7 +208,7 @@ const apiRecordsController = (() => {
   function resetLogs(){
     $('api-log-form').reset();dates('today');setAdvanced(false);submitLogs();
   }
-  $('api-log-filter-fields').querySelectorAll('input,select').forEach(node=>{node.setAttribute('form','api-log-form');node.addEventListener('input',updateLogQueryNote);node.addEventListener('change',updateLogQueryNote);});
+  $('api-log-filter-fields').querySelectorAll('input,select').forEach(node=>{node.setAttribute('form','api-log-form');for(const type of ['input','change'])node.addEventListener(type,()=>{preferenceTouched=true;updateLogQueryNote();});});
   $('api-log-open-filters').addEventListener('click',()=>{
     $('api-log-extra').hidden=false;$('api-log-filter-holder').append($('api-log-filter-fields'));
     $('api-log-filter-dialog').showModal();$('api-log-search').focus();
@@ -188,27 +220,27 @@ const apiRecordsController = (() => {
   mobile?.addEventListener('change',()=>{if(!mobile.matches && $('api-log-filter-dialog').open){$('api-log-filter-dialog').close();$('api-log-search').focus();}});
   $('api-log-mobile-search').addEventListener('click',submitLogs);
   $('api-log-mobile-reset').addEventListener('click',resetLogs);
-  $('api-log-privacy').addEventListener('click',()=>{sensitiveVisible=!sensitiveVisible;updatePrivacy();renderLogs();});
+  $('api-log-privacy').addEventListener('click',()=>{sensitiveVisible=!sensitiveVisible;savePreferences();updatePrivacy();renderLogs();});
   function updatePrivacy(){
     const button=$('api-log-privacy'),label=t(sensitiveVisible?'隐藏令牌、分组和请求标识':'显示令牌、分组和请求标识');
     button.title=label;button.setAttribute('aria-label',label);button.setAttribute('aria-pressed',String(!sensitiveVisible));button.querySelector('use').setAttribute('href','/static/test-api-icons.svg#'+(sensitiveVisible?'eye-off':'eye'));
   }
   $('api-log-detail-dialog').addEventListener('close',()=>{
     detailId=null;$('api-log-detail').innerHTML='';$('api-log-detail-type').textContent='';message('api-log-copy-feedback','');
-    if(window.location.hash==='#view-api2api' && detailOpener?.isConnected)detailOpener.focus();detailOpener=null;
+    if(window.location.hash==='#view-api2api' && detailOpener?.isConnected){detailOpener.focus({preventScroll:true});window.scrollTo({top:detailScroll,behavior:'instant'});}detailOpener=null;
   });
-  function activate(kind){active=kind;if(kind==='logs' && !logs.params){dates('today');logs.params=logParams();}const state={logs,audit}[kind];if(kind==='models' || (state && !state.loading))return load(kind);}
+  async function activate(kind){active=kind;const epoch=++activationEpoch;await restorePreferences();if(active!==kind || epoch!==activationEpoch)return;if(kind==='logs' && !logs.params)logs.params=logParams();const state={logs,audit}[kind];if(kind==='models' || (state && !state.loading))return load(kind);}
   $('api-log-form').addEventListener('submit',event=>{event.preventDefault();submitLogs();});
   $('api-log-more').addEventListener('click',()=>setAdvanced(!advancedOpen));setAdvanced(false);
   document.querySelectorAll('[data-log-range]').forEach(button=>button.addEventListener('click',()=>{dates(button.dataset.logRange);submitLogs();}));
-  for(const id of ['api-log-start','api-log-end'])$(id).addEventListener('input',()=>{document.querySelectorAll('[data-log-range]').forEach(node=>node.setAttribute('aria-pressed','false'));message('api-log-date-error','');updateLogQueryNote();});
+  for(const id of ['api-log-start','api-log-end'])$(id).addEventListener('input',()=>{savedRange='custom';preferenceTouched=true;document.querySelectorAll('[data-log-range]').forEach(node=>node.setAttribute('aria-pressed','false'));message('api-log-date-error','');updateLogQueryNote();});
   $('api-log-apply-dates').addEventListener('click',submitLogs);
   $('api-log-reset').addEventListener('click',resetLogs);
   $('api-audit-form').addEventListener('submit',event=>{event.preventDefault();audit.page=1;audit.params={q:$('api-audit-search').value.trim(),action:$('api-audit-action').value,outcome:$('api-audit-outcome').value,start:$('api-audit-start').value?new Date($('api-audit-start').value).toISOString():'',end:$('api-audit-end').value?new Date($('api-audit-end').value).toISOString():''};load('audit');});
   $('api-audit-reset').addEventListener('click',()=>{$('api-audit-form').reset();audit.params={};audit.page=1;load('audit');});
   $('api-log-column-options').innerHTML=Object.entries(columns).map(([key,label])=>`<label><input type="checkbox" data-log-column="${key}" checked ${key==='time'?'disabled':''} /><span ${key==='tokens'?'data-i18n-skip':''}>${esc(key==='tokens'?label:t(label))}</span></label>`).join('');
-  $('api-log-column-options').addEventListener('change',event=>{const key=event.target.dataset.logColumn;if(!key)return;if(event.target.checked)visibleColumns.add(key);else visibleColumns.delete(key);renderLogs();});
-  $('view-api2api').addEventListener('change',event=>{const kind=event.target.dataset.recordSize,state={logs,audit}[kind];if(state){state.size=Number(event.target.value);state.page=1;load(kind);}});
+  $('api-log-column-options').addEventListener('change',event=>{const key=event.target.dataset.logColumn;if(!key)return;if(event.target.checked)visibleColumns.add(key);else visibleColumns.delete(key);savePreferences();renderLogs();});
+  $('view-api2api').addEventListener('change',event=>{const kind=event.target.dataset.recordSize,state={logs,audit}[kind];if(state){state.size=Number(event.target.value);state.page=1;if(kind==='logs')savePreferences();else{auditPreferenceTouched=true;window.ViewPreferences?.save('api-audit',{size:state.size});}load(kind);}});
   $('view-api2api').addEventListener('click',async event=>{
     const button=event.target.closest('button');if(!button || button.disabled)return;
     const kind=button.dataset.recordKind,state={logs,audit}[kind];
@@ -220,7 +252,7 @@ const apiRecordsController = (() => {
     }
     if(button.dataset.logDetail){
       const row=logs.data?.items.find(row=>String(row.id)===button.dataset.logDetail);if(!row)return;
-      detailId=String(row.id);detailOpener=button;renderLogDetail(row);message('api-log-copy-feedback','');$('api-log-detail-dialog').showModal();
+      detailId=String(row.id);detailOpener=button;detailScroll=window.scrollY;renderLogDetail(row);message('api-log-copy-feedback','');$('api-log-detail-dialog').showModal();
     }
     if(button.dataset.logExport){
       if(exportAbort)return;const format=button.dataset.logExport,abort=new AbortController();exportAbort=abort;
@@ -234,6 +266,7 @@ const apiRecordsController = (() => {
   document.addEventListener('click',event=>{document.querySelectorAll('.api-inline-menu[open],.api-date-picker[open]').forEach(node=>{if(!node.contains(event.target))node.open=false;});});
   document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.api-inline-menu[open],.api-date-picker[open]').forEach(node=>{node.open=false;});});
   function cancel(){
+    activationEpoch++;
     for(const state of [logs,audit]){state.abort?.abort();state.seq++;state.loading=false;}
     $('api-log-submit').disabled=false;$('api-audit-submit').disabled=false;setLogBusy(false);
     exportAbort?.abort();exportAbort=null;document.querySelectorAll('[data-log-export]').forEach(node=>{node.disabled=false;});
@@ -243,5 +276,6 @@ const apiRecordsController = (() => {
   }
   window.addEventListener('pagehide',cancel);window.addEventListener('hashchange',()=>{if(window.location.hash!=='#view-api2api')cancel();});
   document.addEventListener('site:language',()=>{dateLabel();updatePrivacy();setAdvanced(advancedOpen);setLogBusy(Boolean(logs.loading));renderLogs();renderAudit();});
-  return {start(value){admin=value;$('api-audit-tab').hidden=!value;if(!value){audit.abort?.abort();audit.seq++;audit.data=null;audit.loading=false;$('api-audit-rows').innerHTML='';$('api-audit-pager').innerHTML='';}},activate,refresh(){if(active==='logs' && !logs.params){dates('today');logs.params=logParams();}if({logs,audit}[active]?.loading)return;return load(active);},setKeys(rows){ownKeys=rows;selectOptions('api-log-key',ownKeys.filter(row=>row.provider==='newapi' && row.available_here!==false).map(row=>[row.id,`${row.name} · ${row.key_prefix}…`]),'全部令牌');}};
+  dates('today');
+  return {start(value){admin=value;$('api-audit-tab').hidden=!value;if(!value){audit.abort?.abort();audit.seq++;audit.data=null;audit.loading=false;$('api-audit-rows').innerHTML='';$('api-audit-pager').innerHTML='';}},activate,async refresh(){await restorePreferences();if(active==='logs' && !logs.params)logs.params=logParams();if({logs,audit}[active]?.loading)return;return load(active);},setKeys(rows){ownKeys=rows;selectOptions('api-log-key',ownKeys.filter(row=>row.provider==='newapi' && row.available_here!==false).map(row=>[row.id,`${row.name} · ${row.key_prefix}…`]),'全部令牌');}};
 })();
