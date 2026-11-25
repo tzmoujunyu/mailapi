@@ -185,6 +185,28 @@ test('draft leave guard keeps the current URL and page until the user agrees to 
   assert.equal(checks, 4);
 });
 
+test('usage tip edits block page switches and browser history navigation until the editor permits leaving', async t => {
+  const {w, router, contexts, mounts} = fixture(t, {initial: 'admin'});
+  await router.ready;
+  const current = w.location.href;
+  let resolve;
+  contexts.get('admin').window.CodexTipEditor = {canLeave: () => new Promise(done => { resolve = done; })};
+  let navigation = router.navigate('/admin/access');
+  await settle();
+  assert.equal(mounts.has('access'), false);
+  resolve(false); await navigation;
+  assert.equal(w.location.href, current);
+  w.history.replaceState(null, '', '/');
+  navigation = router.navigate('/', {push: false});
+  await settle();
+  resolve(false); await navigation;
+  assert.equal(w.location.href, current);
+  navigation = router.navigate('/admin/access');
+  await settle();
+  resolve(true); await navigation;
+  assert.equal(w.location.pathname, '/admin/access');
+});
+
 test('actual resources, accounts, console, API and finance controllers work together in the persistent shell', async t => {
   const {w, router, mounts, calls} = fixture(t, {real: true});
   await router.ready;

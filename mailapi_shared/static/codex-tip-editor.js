@@ -7,8 +7,69 @@
   const linkInput = document.getElementById('codex-tip-link-url');
   const error = document.getElementById('codex-tip-error');
   const uploadStatus = document.getElementById('codex-tip-upload-status');
+  const dialog = document.getElementById('codex-tip-edit-dialog');
+  const form = document.getElementById('codex-tip-form');
+  const title = document.getElementById('codex-tip-title');
+  const preview = document.getElementById('codex-tip-preview');
+  const imageTools = document.getElementById('codex-tip-image-tools');
+  const leaveWarning = document.getElementById('codex-tip-leave-warning');
+  const t = text => window.SiteLanguage?.t(text) || text;
   let editor;
   let uploads = 0;
+  let baseline = '', mode = 'edit', leaveDecision;
+  const fingerprint = () => JSON.stringify([title.value, editor?.getJSON()]);
+  const dirty = () => !!editor && fingerprint() !== baseline;
+
+  function updateStatus() {
+    if (!editor) return;
+    document.getElementById('codex-tip-save-state').textContent = t(dirty() ? '有未保存的修改' : '尚无新修改');
+    const count = [...editor.getText({ blockSeparator: '\n' }).trim()].length;
+    document.getElementById('codex-tip-word-count').textContent = `${count.toLocaleString()} / 8,000`;
+    holder.classList.toggle('is-empty', editor.isEmpty);
+  }
+
+  function setMode(value) {
+    mode = value;
+    const reading = value === 'preview';
+    if (reading) {
+      window.CodexTipContent.render({ title: title.value, blocks: window.CodexTipFormat.fromDocument(editor.getJSON()) }, preview);
+      if (editor.isEmpty) preview.textContent = t('暂无正文，请返回编辑后预览。');
+    }
+    holder.hidden = reading; preview.hidden = !reading; toolbar.hidden = reading;
+    linkPanel.hidden = true;
+    for (const button of form.querySelectorAll('[data-tip-mode]')) button.setAttribute('aria-pressed', String(button.dataset.tipMode === value));
+    updateToolbar();
+  }
+
+  function selectedImage() {
+    const { selection } = editor.state;
+    if (selection.node?.type.name === 'tipImage') return { node: selection.node, at: selection.from };
+    for (let depth = selection.$from.depth; depth > 0; depth--) {
+      const node = selection.$from.node(depth);
+      if (node.type.name === 'tipImage') return { node, at: selection.$from.before(depth) };
+    }
+    return null;
+  }
+
+  function resolveLeave(value) {
+    const decision = leaveDecision; leaveDecision = null; leaveWarning.hidden = true;
+    decision?.resolve(value);
+  }
+  function canLeave() {
+    if (!dialog.open) return Promise.resolve(true);
+    if (uploads || document.getElementById('codex-tip-cancel').disabled) {
+      error.textContent = t('请等待当前操作完成'); return Promise.resolve(false);
+    }
+    if (!dirty()) return Promise.resolve(true);
+    if (!leaveDecision) {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      leaveDecision = { promise, resolve }; leaveWarning.hidden = false;
+      document.getElementById('codex-tip-keep-editing').focus();
+    }
+    return leaveDecision.promise;
+  }
+  async function close() { if (await canLeave()) dialog.close(); }
 
   function validURL(value) {
     try { const url = new URL(value); return /^https?:$/.test(url.protocol) && !!url.hostname && !/[\s\x00-\x1f]/.test(value); }
@@ -51,17 +112,24 @@
 
   function updateToolbar() {
     if (!editor) return;
-    const checks = { bold: 'bold', italic: 'italic', link: 'link', bulletList: 'bulletList', orderedList: 'orderedList', codeBlock: 'codeBlock' };
+    let containsImage = !!selectedImage();
+    editor.state.doc.nodesBetween(editor.state.selection.from, editor.state.selection.to, node => {
+      if (node.type.name === 'tipImage') containsImage = true;
+    });
+    const checks = { bold: 'bold', italic: 'italic', link: 'link', code: 'code', bulletList: 'bulletList', orderedList: 'orderedList', codeBlock: 'codeBlock' };
     for (const button of toolbar.querySelectorAll('[data-tip-action]')) {
       const action = button.dataset.tipAction;
       if (checks[action]) button.setAttribute('aria-pressed', String(editor.isActive(checks[action])));
       button.disabled = action === 'undo' ? !editor.can().undo() : action === 'redo' ? !editor.can().redo()
-        : action === 'image' ? uploads > 0 : action === 'codeBlock' ? editor.isActive('tipImage') || !editor.can().toggleCodeBlock()
+        : action === 'image' ? uploads > 0 : action === 'clear' ? containsImage : action === 'codeBlock' ? editor.isActive('tipImage') || !editor.can().toggleCodeBlock()
         : ['bulletList', 'orderedList'].includes(action) ? editor.isActive('tipImage') || !editor.can()[`toggle${action[0].toUpperCase() + action.slice(1)}`]() : false;
     }
     const format = toolbar.querySelector('select');
     format.value = editor.isActive('heading', { level: 2 }) ? 'h2' : editor.isActive('heading', { level: 3 }) ? 'h3' : 'paragraph';
     format.disabled = editor.isActive('listItem') || editor.isActive('tipImage') || editor.isActive('codeBlock');
+    imageTools.hidden = mode !== 'edit' || !selectedImage();
+    for (const button of imageTools.querySelectorAll('button')) button.disabled = uploads > 0;
+    form.querySelector('[data-tip-mode="preview"]').disabled = uploads > 0;
   }
 
   async function uploadFiles(files, position) {
@@ -108,13 +176,14 @@
     if (!button || button.disabled || !editor) return;
     const action = button.dataset.tipAction;
     if (action === 'image') { picker.click(); return; }
+    if (action === 'clear') { editor.chain().focus().unsetAllMarks().clearNodes().run(); return; }
     if (action === 'link') {
       linkPanel.hidden = !linkPanel.hidden;
       if (!linkPanel.hidden) { linkInput.value = editor.getAttributes('link').href || ''; linkInput.focus(); }
       return;
     }
     const commands = { bold: 'toggleBold', italic: 'toggleItalic', bulletList: 'toggleBulletList', orderedList: 'toggleOrderedList',
-      codeBlock: 'toggleCodeBlock', undo: 'undo', redo: 'redo' };
+      code: 'toggleCode', codeBlock: 'toggleCodeBlock', undo: 'undo', redo: 'redo' };
     editor.chain().focus()[commands[action]]().run();
   });
   toolbar.querySelector('select').addEventListener('change', event => {
@@ -140,12 +209,45 @@
     if (event.key === 'Enter') { event.preventDefault(); linkPanel.querySelector('[data-link-action="save"]').click(); }
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); linkPanel.hidden = true; editor.commands.focus(); }
   });
+  imageTools.addEventListener('mousedown', event => { if (event.target.closest('button')) event.preventDefault(); });
+  imageTools.addEventListener('click', event => {
+    const action = event.target.closest('[data-tip-image-action]')?.dataset.tipImageAction;
+    const image = selectedImage();
+    if (!action || !image || uploads) return;
+    if (action === 'delete') editor.chain().focus().deleteRange({ from: image.at, to: image.at + image.node.nodeSize }).run();
+    else {
+      const at = action === 'before' ? image.at : image.at + image.node.nodeSize;
+      editor.chain().insertContentAt(at, { type: 'paragraph' }).setTextSelection(at + 1).focus().run();
+    }
+  });
+  for (const button of form.querySelectorAll('[data-tip-mode]')) button.addEventListener('click', () => { if (editor) setMode(button.dataset.tipMode); });
+  document.getElementById('codex-tip-expand').addEventListener('click', event => {
+    const expanded = dialog.classList.toggle('is-expanded');
+    event.currentTarget.setAttribute('aria-pressed', String(expanded));
+    event.currentTarget.textContent = t(expanded ? '还原窗口' : '展开编辑器');
+  });
+  document.getElementById('codex-tip-close').addEventListener('click', close);
+  document.getElementById('codex-tip-keep-editing').addEventListener('click', () => resolveLeave(false));
+  document.getElementById('codex-tip-discard').addEventListener('click', () => resolveLeave(true));
+  title.addEventListener('input', updateStatus);
+  dialog.addEventListener('cancel', event => { event.preventDefault(); if (leaveDecision) resolveLeave(false); else close(); });
+  dialog.addEventListener('close', () => resolveLeave(!dirty()));
+  dialog.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+      event.preventDefault(); if (!form.inert) form.requestSubmit();
+    }
+  });
+  window.addEventListener('beforeunload', event => {
+    if (dialog.open && (dirty() || uploads || form.inert)) { event.preventDefault(); event.returnValue = ''; }
+  });
+  document.addEventListener('site:language', updateStatus);
 
   async function open(tip) {
     if (editor) editor.destroy();
     editor = null;
     holder.replaceChildren();
     linkPanel.hidden = true;
+    mode = 'edit'; resolveLeave(false);
     editor = new Editor({
       element: holder, content: window.CodexTipFormat.toDocument(tip),
       extensions: [StarterKit.configure({ heading: { levels: [2, 3] }, blockquote: false, horizontalRule: false,
@@ -156,10 +258,16 @@
         onPaste: (instance, files) => { uploadFiles(files); },
         onDrop: (instance, files, position) => { uploadFiles(files, position); } }),
       ],
-      editorProps: { attributes: { class: 'codex-tip-article codex-tip-writing', role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': 'codex-tip-body-label' } },
-      onSelectionUpdate: updateToolbar, onTransaction: updateToolbar,
+      editorProps: {
+        attributes: { class: 'codex-tip-article codex-tip-writing', role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': 'codex-tip-body-label' },
+        handleClickOn(view, pos, node, nodePos, event) {
+          if (node.type.name !== 'tipImage' || event.target.tagName !== 'IMG') return false;
+          return editor.chain().setNodeSelection(nodePos).focus().run();
+        },
+      },
+      onSelectionUpdate: updateToolbar, onTransaction: updateToolbar, onUpdate: updateStatus,
     });
-    updateToolbar();
+    baseline = fingerprint(); setMode('edit'); updateStatus();
   }
 
   async function save() {
@@ -167,5 +275,6 @@
     return window.CodexTipFormat.fromDocument(editor.getJSON());
   }
 
-  window.CodexTipEditor = { open, save, busy: () => uploads > 0 };
+  window.CodexTipEditor = { open, save, close, canLeave, busy: () => uploads > 0,
+    markSaved() { baseline = fingerprint(); updateStatus(); resolveLeave(true); } };
 })();

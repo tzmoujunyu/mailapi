@@ -176,6 +176,10 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
       if(!push)history.replaceState(null,'',current.url);
       return true;
     }
+    if(url.href!==current.url && current.context.window.CodexTipEditor?.canLeave && !await current.context.window.CodexTipEditor.canLeave()) {
+      if(!push)history.replaceState(null,'',current.url);
+      return true;
+    }
     const {page, key} = route;
     const token = ++sequence;
     pending?.abort();
