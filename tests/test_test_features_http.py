@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -67,6 +68,122 @@ class FinanceFeatureHttpTests(unittest.TestCase):
             data={"project": project, "amount": "12.50", "application_note":application_note, "invoice_fields":self.invoice_fields(f'20261122{self.invoice_counter:012d}')},
             files=self.upload(),
         )
+
+    def save_draft(self, draft_id="draft-0123456789abcdef", revision=0, user="alice-id", fields=None, files=None):
+        return self.client.put("/api/finance/drafts/"+draft_id, headers={"x-test-user":user},
+                               data={"revision":revision,"fields":json.dumps(fields or {"project":"草稿","application_note":"备注"})}, files=files)
+
+    def test_drafts_persist_partial_fields_and_both_files_without_entering_finance(self):
+        files={**self.upload(), "payment_record":("payment.png",io.BytesIO(b"payment"),"image/png")}
+        result=self.save_draft(files=files)
+        self.assertEqual(result.status_code,200,result.text)
+        item=result.json()['item'];draft_id=item['id']
+        self.assertEqual(item['revision'],1);self.assertEqual(len(item['files']),2)
+        self.assertNotIn('stored_name',item['files'][0]);self.assertNotIn('user_id',item)
+        again=self.client.get('/api/finance/drafts/'+draft_id,headers={'x-test-user':'alice-id'}).json()['item']
+        self.assertEqual(again,item)
+        download=self.client.get(f'/api/finance/drafts/{draft_id}/files/invoice?revision=1',headers={'x-test-user':'alice-id'})
+        self.assertEqual(download.content,b'invoice');self.assertIn('no-store',download.headers['cache-control'])
+        self.assertEqual(self.store.list_finance_applications(),[])
+        self.assertEqual(self.store.finance_history(),[])
+        with sqlite3.connect(self.store.path) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM finance_notifications').fetchone()[0],0)
+
+    def test_drafts_are_private_even_from_admin_and_delegated_payer(self):
+        item=self.save_draft(files=self.upload()).json()['item'];draft_id=item['id']
+        self.assertEqual(self.client.get('/api/finance/drafts').json()['items'],[])
+        for method,url,kwargs in [
+            ('GET',f'/api/finance/drafts/{draft_id}',{}),
+            ('GET',f'/api/finance/drafts/{draft_id}/files/invoice?revision=1',{}),
+            ('DELETE',f'/api/finance/drafts/{draft_id}?revision=1',{}),
+            ('PUT',f'/api/finance/drafts/{draft_id}',{'data':{'revision':1,'fields':'{}'}}),
+        ]:
+            self.assertEqual(self.client.request(method,url,**kwargs).status_code,404)
+        proxy=self.save_draft('proxy-0123456789abcdef',user='admin-id',fields={'on_behalf':True,'payer_user_id':'alice-id'}).json()['item']
+        self.assertEqual(self.client.get('/api/finance/drafts/'+proxy['id'],headers={'x-test-user':'alice-id'}).status_code,404)
+        self.assertEqual(self.save_draft('forged-0123456789abcdef',fields={'on_behalf':True,'payer_user_id':'admin-id'}).status_code,403)
+
+    def test_draft_version_conflicts_keep_newer_text_and_files_and_cleanup_replacements(self):
+        item=self.save_draft(files=self.upload()).json()['item'];draft_id=item['id']
+        paths=set(self.store.files.iterdir())
+        update=self.save_draft(revision=1,fields={'project':'较新修改'},files=self.upload('new.pdf',b'new')).json()['item']
+        self.assertEqual(update['revision'],2)
+        self.assertTrue(paths.isdisjoint(set(self.store.files.iterdir())))
+        count=len(list(self.store.files.iterdir()))
+        self.assertEqual(self.save_draft(revision=1,files=self.upload('old.pdf',b'old')).status_code,409)
+        self.assertEqual(len(list(self.store.files.iterdir())),count)
+        self.assertEqual(self.client.delete(f'/api/finance/drafts/{draft_id}?revision=1',headers={'x-test-user':'alice-id'}).status_code,409)
+        self.assertEqual(self.client.delete(f'/api/finance/drafts/{draft_id}?revision=2',headers={'x-test-user':'alice-id'}).status_code,200)
+        self.assertEqual(list(self.store.files.iterdir()),[])
+        self.assertEqual(self.save_draft(revision=2).status_code,404)
+
+    def test_draft_autosave_retains_attachments_without_resending_and_accepts_incomplete_fields(self):
+        self.save_draft(files=self.upload())
+        files=list(self.store.files.iterdir())
+        response=self.save_draft(revision=1,fields={'project':'','invoice_fields':{'number':'123','total':''}})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(list(self.store.files.iterdir()),files)
+        self.assertEqual(len(response.json()['item']['files']),1)
+        self.assertEqual(self.save_draft(revision=2,fields={'invoice_fields':[]}).status_code,400)
+
+    def test_draft_is_consumed_atomically_on_submission_and_replay_cannot_duplicate_claim(self):
+        draft=self.save_draft(files=self.upload()).json()['item']
+        fields={'project':'草稿提交','invoice_fields':self.invoice_fields(),'draft_id':draft['id'],'draft_revision':'1'}
+        response=self.client.post('/api/finance/applications',headers={'x-test-user':'alice-id'},data=fields,files=self.upload())
+        self.assertEqual(response.status_code,201,response.text)
+        self.assertEqual(self.client.get('/api/finance/drafts',headers={'x-test-user':'alice-id'}).json()['items'],[])
+        self.assertEqual(len(list(self.store.files.iterdir())),1)
+        response=self.client.post('/api/finance/applications',headers={'x-test-user':'alice-id'},data=fields,files=self.upload())
+        self.assertEqual(response.status_code,404,response.text)
+        self.assertEqual(len(self.store.list_finance_applications()),1)
+        self.assertEqual(len(list(self.store.files.iterdir())),1)
+
+    def test_failed_submission_preserves_draft_and_draft_does_not_bypass_duplicate_or_payment_rules(self):
+        self.create_application()
+        draft=self.save_draft(files=self.upload()).json()['item']
+        fields={'project':'冲突申请','invoice_fields':self.invoice_fields('20261122000000000001'),'draft_id':draft['id'],'draft_revision':'1'}
+        response=self.client.post('/api/finance/applications',headers={'x-test-user':'alice-id'},data=fields,files=self.upload())
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertEqual(self.client.get('/api/finance/drafts/'+draft['id'],headers={'x-test-user':'alice-id'}).status_code,200)
+        invoice=json.loads(fields['invoice_fields']);invoice['total']='1000.00';fields['invoice_fields']=json.dumps(invoice)
+        response=self.client.post('/api/finance/applications',headers={'x-test-user':'alice-id'},data=fields,files=self.upload())
+        self.assertEqual(response.status_code,400,response.text);self.assertIn('1000',response.text)
+        self.assertEqual(len(list(self.store.files.iterdir())),2)
+
+    def test_draft_cleanup_failure_does_not_remove_committed_application_attachments(self):
+        draft=self.save_draft(files=self.upload()).json()['item']
+        draft_path=next(self.store.files.iterdir())
+        unlink=Path.unlink
+        def fail_obsolete(path, **kwargs):
+            if path==draft_path:
+                raise PermissionError('Simulated cleanup failure')
+            return unlink(path, **kwargs)
+        fields={'project':'草稿提交','invoice_fields':self.invoice_fields(),'draft_id':draft['id'],'draft_revision':'1'}
+        with patch.object(Path,'unlink',fail_obsolete), self.assertLogs('mailapi_shared.finance_drafts',level='ERROR'):
+            response=self.client.post('/api/finance/applications',headers={'x-test-user':'alice-id'},data=fields,files=self.upload())
+        self.assertEqual(response.status_code,201,response.text)
+        item=self.store.list_finance_applications()[0]
+        self.assertTrue((self.store.files/item['files'][0]['stored_name']).is_file())
+        self.assertEqual(self.client.get('/api/finance/drafts',headers={'x-test-user':'alice-id'}).json()['items'],[])
+
+    def test_edit_draft_is_private_versioned_and_consumed_only_with_matching_application(self):
+        app=self.create_application().json()['item']
+        fields={'application_id':app['id'],'version':'1','project':'待修改'}
+        draft=self.save_draft(fields=fields).json()['item']
+        response=self.client.put('/api/finance/applications/'+app['id'],headers={'x-test-user':'alice-id'},
+                                 data={'project':'修改成功','version':1,'draft_id':draft['id'],'draft_revision':1})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['item']['version'],2)
+        self.assertEqual(self.client.get('/api/finance/drafts',headers={'x-test-user':'alice-id'}).json()['items'],[])
+        self.assertEqual(self.save_draft('stale-0123456789abcdef',fields=fields).status_code,409)
+        self.assertEqual(self.save_draft('foreign-0123456789abcdef',user='admin-id',fields=fields).status_code,404)
+
+    def test_draft_upload_uses_finance_limits_and_rejects_unsupported_files(self):
+        response=self.save_draft(files=self.upload(content=b'x'*(1024*1024+10)))
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.save_draft(revision=1,files=self.upload(content=b'x'*(10*1024*1024+1))).status_code,400)
+        self.assertEqual(self.save_draft(revision=1,files=self.upload('test.txt',b'x','text/plain')).status_code,400)
+        self.assertEqual(len(list(self.store.files.iterdir())),1)
 
     def test_upload_limit_project_validation_and_current_metadata(self):
         long_filename = "发票" * 180 + ".pdf"

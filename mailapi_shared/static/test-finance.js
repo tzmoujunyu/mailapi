@@ -32,7 +32,7 @@ const financeController = (() => {
   const json = (method, body) => ({method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   const error = (id, value='') => { $(id).textContent = t(value); };
   const show = id => { const dialog = $(id); if (!dialog.open) dialog.showModal(); };
-  const hide = id => $(id).close();
+  const hide = id => id==='finance-dialog'&&window.FinanceDrafts ? window.FinanceDrafts.close() : $(id).close();
   document.querySelectorAll('#view-finance .fin-dialog').forEach(dialog => {
     let startedOutside = false;
     const outside = event => {
@@ -41,7 +41,7 @@ const financeController = (() => {
     };
     dialog.addEventListener('pointerdown', event => { startedOutside = outside(event); });
     dialog.addEventListener('click', event => {
-      if (startedOutside && outside(event)) dialog.close();
+      if (startedOutside && outside(event)) hide(dialog.id);
       startedOutside = false;
     });
   });
@@ -278,7 +278,36 @@ const financeController = (() => {
     applicationGroups(proxyActive?[]:groups,item);
     show('finance-dialog');
     window.FinanceInvoices?.fill(item);
-    if(proxyActive)loadPayers();
+    window.FinanceDrafts?.begin();
+    if(proxyActive)return loadPayers();
+  }
+  function draftFields() {
+    return {project:$('finance-project').value,application_note:$('finance-note').value,expense_group_id:$('fin-expense-group').value,
+      payer_user_id:proxyActive?$('fin-payer-user').value:'',on_behalf:proxyActive,application_id:$('finance-edit-id').value,version:$('finance-version').value,
+      invoice_fields:Object.fromEntries(['number','code','date','total','check_code'].map(key=>[key,$('fin-inv-'+key.replace('_','-')).value]))};
+  }
+  async function restoreDraft(fields, files) {
+    await load();
+    let item=null;
+    if(fields.application_id){
+      const data=await request(`/api/finance/applications/${encodeURIComponent(fields.application_id)}/history`);item=data.item;
+      if(!item||!['pending','rejected'].includes(item.status)||String(item.version)!==fields.version)throw new Error(t('申请已变化，请重新查看申请后编辑；草稿仍保留'));
+    }
+    if(fields.on_behalf&&!admin)throw new Error(t('需要管理员权限'));
+    await openApplication(item,fields.on_behalf);
+    if(fields.on_behalf){
+      const payer=payers.find(user=>user.id===fields.payer_user_id);
+      if(fields.payer_user_id&&!payer){$('finance-dialog').close();throw new Error(t('付款人已不存在，请重新选择'));}
+      $('fin-payer-user').value=fields.payer_user_id;applicationGroups(payer?.groups||[]);
+    }
+    $('finance-project').value=fields.project;$('finance-note').value=fields.application_note;
+    if([...$('fin-expense-group').options].some(option=>option.value===fields.expense_group_id))$('fin-expense-group').value=fields.expense_group_id;
+    for(const [kind,file] of Object.entries(files)){
+      $('fin-'+kind+'-name').textContent=file.name;$('fin-'+kind+'-name').title=file.name;
+      $('fin-'+kind+'-prompt').textContent=t(kind==='invoice'?'保留现有发票 / 替换':'保留现有支付记录 / 替换');
+    }
+    $('finance-invoice').required=!files.invoice&&!item;
+    window.FinanceInvoices?.fill({...item,invoice:{fields:fields.invoice_fields},files:[...(item?.files||[]),...Object.entries(files).map(([kind,file])=>({kind,size:file.size}))]});
   }
   function resizeNoticeEditor() {
     const dialog=$('fin-announcement-dialog'),body=$('announcement-body');if(!dialog.open)return;
@@ -439,8 +468,12 @@ const financeController = (() => {
     for(const [key,field] of [['project','finance-project'],['expense_group_id','fin-expense-group'],['application_note','finance-note']])form.set(key,$(field).value);
     if(id)form.set('version',$('finance-version').value);
     if(window.FinanceInvoices)form.set('invoice_fields',JSON.stringify(window.FinanceInvoices.getFields()));
-    for(const [key,field] of [['invoice','finance-invoice'],['payment_record','finance-payment']]){const file=$(field).files[0];if(file){if(file.size>10*1024*1024)throw new Error(t('单个报销文件不能超过 10 MB'));form.set(key,file);}}
-    await request((proxyActive?'/api/admin/finance/applications':'/api/finance/applications')+(id?`/${encodeURIComponent(id)}`:''),{method:id?'PUT':'POST',body:form});hide('finance-dialog');await load();error('finance-status',id?'申请已更新。':'申请已提交。');
+    for(const [key,field,kind] of [['invoice','finance-invoice','invoice'],['payment_record','finance-payment','payment']]){const file=window.FinanceDrafts?.file(kind)||$(field).files[0];if(file){if(file.size>10*1024*1024)throw new Error(t('单个报销文件不能超过 10 MB'));form.set(key,file);}}
+    try {
+      const draft=await window.FinanceDrafts?.beforeSubmit();if(draft){form.set('draft_id',draft.id);form.set('draft_revision',draft.revision);}
+      await request((proxyActive?'/api/admin/finance/applications':'/api/finance/applications')+(id?`/${encodeURIComponent(id)}`:''),{method:id?'PUT':'POST',body:form});
+      window.FinanceDrafts?.afterSubmit(true);$('finance-dialog').close();await load();error('finance-status',id?'申请已更新。':'申请已提交。');
+    } finally {window.FinanceDrafts?.afterSubmit();}
   });});
   $('fin-review-form').addEventListener('submit',event=>{event.preventDefault();submit('fin-review-submit','fin-review-error',async()=>{
     const reviewing=review,status=reviewing.eventId ? $('fin-re-review-result').value : reviewing.status;
@@ -467,5 +500,5 @@ const financeController = (() => {
   document.addEventListener('site:language',()=>{ownPayerLabel();renderNotices();render();resizeNoticeEditor();});
   document.addEventListener('finance:changed',()=>load().catch(e=>error('finance-status',e.message)));
   document.addEventListener('finance:open-application',event=>{if(location.hash==='#view-finance'&&typeof event.detail?.id==='string')load().then(()=>detail(event.detail.id)).catch(e=>error('finance-status',e.message));});
-  return {load,start(value,username=''){admin=value;accountName=username;ownPayerLabel();applyMenu(false);if(admin)$('finance-open-form').setAttribute('aria-haspopup','menu');else{$('finance-open-form').removeAttribute('aria-haspopup');$('finance-open-form').removeAttribute('aria-expanded');if(proxyActive&&$('finance-dialog').open)hide('finance-dialog');}window.FinanceInvoices?.start(value);$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');}};
+  return {load,start(value,username=''){admin=value;accountName=username;ownPayerLabel();applyMenu(false);if(admin)$('finance-open-form').setAttribute('aria-haspopup','menu');else{$('finance-open-form').removeAttribute('aria-haspopup');$('finance-open-form').removeAttribute('aria-expanded');if(proxyActive&&$('finance-dialog').open)hide('finance-dialog');}window.FinanceInvoices?.start(value);$('finance-admin').classList.toggle('hidden',!admin);$('finance-tabs').classList.toggle('hidden',!admin);$('fin-new-notice').classList.toggle('hidden',!admin);selectTab(admin?'review':'mine');window.FinanceDrafts?.start({read:draftFields,restore:restoreDraft});}};
 })();

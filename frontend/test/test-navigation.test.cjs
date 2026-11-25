@@ -164,6 +164,27 @@ test('browser back and forward restore content without remounting or rebuilding 
   assert.equal(mounts.get('admin'), 1);
 });
 
+test('draft leave guard keeps the current URL and page until the user agrees to leave', async t => {
+  const {w, router, contexts, mounts} = fixture(t);
+  await router.ready;
+  await router.navigate('/test-features#view-finance');
+  const current = w.location.href;
+  let allow = false, checks = 0;
+  contexts.get('features').window.FinanceDrafts = {async canLeave() {checks++; return allow;}};
+  await router.navigate('/test-features#view-api2api');
+  await router.navigate('/admin/access');
+  assert.equal(w.location.href, current);
+  assert.equal(mounts.has('access'), false);
+  w.history.replaceState(null, '', '/');
+  await router.navigate('/', {push: false});
+  assert.equal(w.location.href, current);
+  assert.equal(w.document.querySelector('[data-test-view]').dataset.testView, 'features');
+  allow = true;
+  await router.navigate('/admin/access');
+  assert.equal(w.location.pathname, '/admin/access');
+  assert.equal(checks, 4);
+});
+
 test('actual resources, accounts, console, API and finance controllers work together in the persistent shell', async t => {
   const {w, router, mounts, calls} = fixture(t, {real: true});
   await router.ready;

@@ -172,6 +172,10 @@ export function createWorkspaceRouter({loadController = name => import(`/api/tes
     const url = new URL(input, location.href);
     const route = routeFor(url);
     if (!route) return false;
+    if(url.href!==current.url && current.context.window.FinanceDrafts && !await current.context.window.FinanceDrafts.canLeave()) {
+      if(!push)history.replaceState(null,'',current.url);
+      return true;
+    }
     const {page, key} = route;
     const token = ++sequence;
     pending?.abort();

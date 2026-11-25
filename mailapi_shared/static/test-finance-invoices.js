@@ -35,7 +35,7 @@ window.FinanceInvoices = (() => {
     $('fin-inv-recognize').disabled=false;$('finance-submit').disabled=false;warnAmount();
   }
   async function recognizeSelected(){
-    const file=$('finance-invoice').files[0];if(!file&&!editingId){message('fin-inv-status','请先选择发票文件');return;}
+    const file=window.FinanceDrafts?.file('invoice')||$('finance-invoice').files[0];if(!file&&!editingId){message('fin-inv-status','请先选择发票文件');return;}
     analysis?.abort();const abort=new AbortController(),seq=++analysisSeq;analysis=abort;
     const form=new FormData();if(file)form.set('invoice',file);if(editingId)form.set('app_id',editingId);
     $('fin-inv-recognize').disabled=true;$('finance-submit').disabled=true;$('fin-inv-confirm').checked=false;
@@ -45,6 +45,7 @@ window.FinanceInvoices = (() => {
       if(abort.signal.aborted||seq!==analysisSeq||!$('finance-dialog').open)return;
       if(data.recognition.multiple){message('fin-inv-status','一笔申请仅支持一张发票，请拆分文件后提交');return;}
       fillValues('fin-inv',data.recognition.fields,true);
+      document.dispatchEvent(new CustomEvent('finance:invoice-filled'));
       message('fin-inv-status',data.duplicate?'该发票已被待审核或已通过的申请占用，不能重复报销':data.recognition.message==='请核对识别信息'?'':data.recognition.message);warnAmount();
     }catch(error){if(!abort.signal.aborted&&seq===analysisSeq)message('fin-inv-status',error.message);}
     finally{if(seq===analysisSeq){analysis=null;$('fin-inv-recognize').disabled=false;$('finance-submit').disabled=false;}}
@@ -52,7 +53,7 @@ window.FinanceInvoices = (() => {
   function getFields(){
     if(analysis)throw new Error(t('请等待发票识别完成'));
     if(!$('fin-inv-confirm').checked)throw new Error(t('请核对发票信息并勾选确认'));
-    if(Number(input('fin-inv','total').value)>=1000&&!hasPayment&&!$('finance-payment').files[0]?.size)throw new Error(t('价税合计满 1000 元，必须上传支付记录'));
+    if(Number(input('fin-inv','total').value)>=1000&&!hasPayment&&!(window.FinanceDrafts?.file('payment')||$('finance-payment').files[0])?.size)throw new Error(t('价税合计满 1000 元，必须上传支付记录'));
     return values('fin-inv');
   }
   for(const key of Object.keys(names))input('fin-inv',key).addEventListener('input',()=>{touched.add(key);$('fin-inv-confirm').checked=false;format('fin-inv');warnAmount();});
@@ -113,7 +114,7 @@ window.FinanceInvoices = (() => {
     finally{if(seq===detailSeq)$('fin-check-save').disabled=false;}
   });
   $('fin-invoice-dialog').addEventListener('close',()=>{detailAbort?.abort();detailSeq++;current=null;$('fin-check-save').disabled=false;$('fin-check-recognize').disabled=false;$('fin-check-summary').replaceChildren();$('fin-check-history').replaceChildren();$('fin-invoice-check-form').reset();});
-  window.addEventListener('hashchange',()=>{if(location.hash!=='#view-finance'){if($('finance-dialog').open)$('finance-dialog').close();if($('fin-invoice-dialog').open)$('fin-invoice-dialog').close();}});
+  window.addEventListener('hashchange',()=>{if(location.hash!=='#view-finance'){if($('fin-invoice-dialog').open)$('fin-invoice-dialog').close();}});
   return {start(value){admin=value;},fill,getFields,
     summary(item){const status=item.invoice?.verification.status||'unverified';return `<button type="button" class="fin-link fin-invoice-check-link" data-invoice-check="${esc(item.id)}">${esc(t(results[status]))}</button>`;}};
 })();

@@ -690,11 +690,13 @@ class TestFeatureStore:
                                    groups: list[str], project: str, amount_cents: int,
                                    files: list[dict[str, Any]], expense_group_id: str = "",
                                    expense_group_name: str = "未分组", invoice_fields=None, recognition=None,
-                                   submitted_by=None, application_note: str = "") -> dict[str, Any]:
+                                   submitted_by=None, application_note: str = "", draft=None) -> dict[str, Any]:
+        from .finance_drafts import consume_draft, remove_draft_files
         app_id, now = secrets.token_hex(12), _now()
         actor = submitted_by or {'id':user_id, 'username':username}
         with self._lock, closing(self._connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
+            draft_files = consume_draft(db, draft, '')
             invoice = next((file for file in files if file['kind'] == 'invoice'),None)
             self._assert_invoice_available(db,app_id,invoice_fields,invoice['sha256'] if invoice else '')
             db.execute(
@@ -707,6 +709,7 @@ class TestFeatureStore:
             if invoice_fields and invoice:
                 self._save_finance_invoice(db,app_id,invoice,invoice_fields,recognition or {})
             self._finance_event(db, app_id, "submitted", actor['id'], actor['username'])
+        remove_draft_files(self, draft_files)
         return self.finance_application(app_id)
 
     @staticmethod
@@ -784,13 +787,15 @@ class TestFeatureStore:
                                    amount_cents: int, replacements: dict[str, dict[str, Any]], *,
                                    expense_group: Optional[tuple[str, str]] = None,
                                    expected_version: Optional[int] = None, invoice_fields=None, recognition=None,
-                                   application_note: Optional[str] = None) -> Optional[dict[str, Any]]:
+                                   application_note: Optional[str] = None, draft=None) -> Optional[dict[str, Any]]:
+        from .finance_drafts import consume_draft, remove_draft_files
         with self._lock, closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             row = self._finance_row(db, app_id)
             if (not row or row["user_id"] != user_id or row["status"] not in {"pending", "rejected"}
                     or (expected_version is not None and row["version"] != expected_version)):
                 return None
+            draft_files = consume_draft(db, draft, app_id)
             invoice = replacements.get('invoice') or next((file for file in row['files'] if file['kind'] == 'invoice'),None)
             fields = invoice_fields or (row['invoice']['fields'] if row['invoice'] else None)
             self._assert_invoice_available(db,app_id,fields,invoice['sha256'] if invoice else '')
@@ -806,6 +811,7 @@ class TestFeatureStore:
                 self._save_finance_invoice(db,app_id,invoice,fields,recognition if recognition is not None else (row['invoice']['recognition'] if row['invoice'] else {}))
             # Physical files referenced by older versions remain available for audit/download.
             self._finance_event(db, app_id, "resubmitted" if row["status"] == "rejected" else "edited", user_id, row["username"])
+        remove_draft_files(self, draft_files)
         return self.finance_application(app_id)
 
     def cancel_finance_application(self, app_id: str, user_id: str, expected_version: Optional[int] = None) -> Optional[dict[str, Any]]:
@@ -1034,6 +1040,16 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                 (store.files / item["stored_name"]).unlink(missing_ok=True)
             raise
         return saved
+
+    from .finance_drafts import install_finance_drafts
+    install_finance_drafts(router, store, current_user, save_finance_uploads, _now)
+
+    def draft_reference(draft_id, revision, user):
+        if not draft_id:
+            return None
+        if revision is None or revision < 1:
+            raise HTTPException(400, '请先保存草稿后提交')
+        return (draft_id, user['id'], revision)
 
     def cached_invoice(key):
         now = time.monotonic()
@@ -1606,8 +1622,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
 
     @router.post('/api/admin/finance/applications', status_code=201)
     @router.post("/api/finance/applications", status_code=201)
-    async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None), payer_user_id: Optional[str] = Form(None), application_note: str = Form("")):
+    async def create_finance(request: Request, project: str = Form(...), invoice: UploadFile = File(...), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), invoice_fields: Optional[str] = Form(None), payer_user_id: Optional[str] = Form(None), application_note: str = Form(""), draft_id: Optional[str] = Form(None), draft_revision: Optional[int] = Form(None)):
         actor = current_user(request)
+        draft = draft_reference(draft_id, draft_revision, actor)
         if request.url.path == '/api/admin/finance/applications':
             require_admin(request)
             if not payer_user_id:
@@ -1635,7 +1652,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
                                                     user_note=account.get("note", ""), groups=groups,
                                                     project=project, amount_cents=amount_cents, files=saved,
                                                     expense_group_id=group_id, expense_group_name=group_name, invoice_fields=fields, recognition=recognition,
-                                                    submitted_by=actor, application_note=application_note)
+                                                    submitted_by=actor, application_note=application_note, draft=draft)
         except Exception:
             for entry in saved:
                 (store.files / entry["stored_name"]).unlink(missing_ok=True)
@@ -1643,8 +1660,9 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
         return {"item": public_application(request, item)}
 
     @router.put("/api/finance/applications/{app_id}")
-    async def update_finance(app_id: str, request: Request, project: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None), invoice_fields: Optional[str] = Form(None), application_note: Optional[str] = Form(None)):
+    async def update_finance(app_id: str, request: Request, project: str = Form(...), invoice: Optional[UploadFile] = File(None), payment_record: Optional[UploadFile] = File(None), expense_group_id: Optional[str] = Form(None), version: Optional[int] = Form(None), invoice_fields: Optional[str] = Form(None), application_note: Optional[str] = Form(None), draft_id: Optional[str] = Form(None), draft_revision: Optional[int] = Form(None)):
         user = current_user(request)
+        draft = draft_reference(draft_id, draft_revision, user)
         try:
             project = store._text(project, "报销项目", MAX_FINANCE_PROJECT, required=True)
             if 'application_note' in await request.form():
@@ -1670,7 +1688,7 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             fields, recognition = await prepare_invoice(saved,invoice_fields,user['id'],existing)
             amount_cents = application_amount(fields, saved, existing)
             updated = store.update_finance_application(app_id, user["id"], project, amount_cents, {item["kind"]: item for item in saved},
-                                                       expense_group=group, expected_version=version if version is not None else existing["version"],invoice_fields=fields,recognition=recognition,application_note=application_note)
+                                                       expense_group=group, expected_version=version if version is not None else existing["version"],invoice_fields=fields,recognition=recognition,application_note=application_note,draft=draft)
         except Exception:
             for item in saved:
                 (store.files / item["stored_name"]).unlink(missing_ok=True)
