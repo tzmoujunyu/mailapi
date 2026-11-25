@@ -99,7 +99,7 @@ from .site_accounts import ADMIN_ROLES, SiteAccountError
 from .site_database import DATABASE_NAME, LEGACY_NAME, open_site_accounts
 from .accounts import SESSION_COOKIE, create_account_router, read_payload, themed_page
 from .codex_tip_content import MAX_IMAGE_BYTES, image_directory, image_file, legacy_blocks, save_image, validate_blocks
-from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, same_origin
+from .web_security import BodyLimitMiddleware, ProxyIngress, SecurityHeadersMiddleware, UICompressionMiddleware, same_origin
 from .resource_database import DATABASE_NAME as RESOURCE_DATABASE_NAME, SECRET_DIRECTORY as RESOURCE_SECRET_DIRECTORY
 from .resource_database import FIELDS as RESOURCE_POOLS, ResourceDatabase
 
@@ -5098,6 +5098,7 @@ if WORKSPACE_ENABLED:
 
 
 app.include_router(create_account_router(STATIC_DIR, resource_catalog, on_admin_failure=log_admin_login_failure))
+app.add_middleware(UICompressionMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 

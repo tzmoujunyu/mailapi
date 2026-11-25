@@ -73,6 +73,19 @@ class FinanceFeatureHttpTests(unittest.TestCase):
         return self.client.put("/api/finance/drafts/"+draft_id, headers={"x-test-user":user},
                                data={"revision":revision,"fields":json.dumps(fields or {"project":"草稿","application_note":"备注"})}, files=files)
 
+    def test_controller_revalidation_still_checks_current_user_permissions(self):
+        first=self.client.get('/api/test-ui/views/admin.js')
+        self.assertEqual(first.status_code,200)
+        headers={'If-None-Match':first.headers['etag']}
+        cached=self.client.get('/api/test-ui/views/admin.js',headers=headers)
+        self.assertEqual(cached.status_code,304)
+        self.assertEqual(cached.content,b'')
+        denied=self.client.get('/api/test-ui/views/admin.js',headers={**headers,'x-test-user':'alice-id'})
+        self.assertEqual(denied.status_code,403)
+        changed=self.client.get('/api/test-ui/views/admin.js',headers={'If-None-Match':'"old-version"'})
+        self.assertEqual(changed.status_code,200)
+        self.assertEqual(changed.content,first.content)
+
     def test_drafts_persist_partial_fields_and_both_files_without_entering_finance(self):
         files={**self.upload(), "payment_record":("payment.png",io.BytesIO(b"payment"),"image/png")}
         result=self.save_draft(files=files)

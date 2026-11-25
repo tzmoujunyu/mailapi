@@ -7,6 +7,7 @@ import time
 from urllib.parse import urlsplit
 
 from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.responses import JSONResponse
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -18,6 +19,24 @@ MAX_LOGIN_BUCKETS = 10_000
 SMALL_BODY_LIMIT = 8192
 BODY_LIMIT = 1024 * 1024
 FINANCE_BODY_LIMIT = 22 * 1024 * 1024
+
+
+def is_ui_asset(path):
+    return (path.startswith('/static/') and path.endswith(('.js', '.css', '.svg', '.woff', '.woff2'))) or path in {
+        '/api/test-ui/views/home.js', '/api/test-ui/views/features.js', '/api/test-ui/views/access.js',
+        '/api/test-ui/views/admin.js', '/api/test-ui/views/editor.js',
+    }
+
+
+class UICompressionMiddleware:
+    """Compress UI code only; never buffer model streams or private API payloads."""
+    def __init__(self, app):
+        self.app = app
+        self.compressed = GZipMiddleware(app, minimum_size=1024, compresslevel=5)
+
+    async def __call__(self, scope, receive, send):
+        target = self.compressed if scope['type'] == 'http' and is_ui_asset(scope['path']) else self.app
+        await target(scope, receive, send)
 
 
 class LoginThrottle:
@@ -126,8 +145,17 @@ class SecurityHeadersMiddleware:
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
-                headers["Cache-Control"] = "no-store, private"
-                headers["Pragma"] = "no-cache"
+                if (scope['method'] in {'GET', 'HEAD'} and is_ui_asset(scope['path'])
+                        and message['status'] in {200, 304} and 'etag' in headers):
+                    # Always revalidate after authentication, including after a release or logout.
+                    headers['Cache-Control'] = 'private, no-cache'
+                    if 'pragma' in headers:
+                        del headers['pragma']
+                    if not headers['etag'].startswith('W/'):
+                        headers['ETag'] = 'W/' + headers['etag']
+                else:
+                    headers["Cache-Control"] = "no-store, private"
+                    headers["Pragma"] = "no-cache"
                 headers["X-Content-Type-Options"] = "nosniff"
                 path = scope["path"]
                 callback = path.endswith("/callback") or path.startswith("/oauth2callback/") or (

@@ -1137,8 +1137,12 @@ def install_test_features(app, static_dir: Path, data_dir: str, keyring: Optiona
             name == "access" and user["role"] not in ADMIN_ROLES
         ):
             raise HTTPException(403, "需要管理员权限")
-        return Response(page_controller(static_dir, name), media_type="application/javascript",
-                        headers={"Cache-Control": "no-store, private"})
+        source = page_controller(static_dir, name)
+        etag = '"' + hashlib.sha256(source.encode('utf-8')).hexdigest() + '"'
+        headers = {'Cache-Control': 'private, no-cache', 'ETag': 'W/' + etag}
+        if etag in [tag.strip().removeprefix('W/') for tag in request.headers.get('if-none-match', '').split(',')]:
+            return Response(status_code=304, headers=headers)
+        return Response(source, media_type="application/javascript", headers=headers)
 
     @router.get("/api/test-ui/preferences")
     def interface_preferences(request: Request):
